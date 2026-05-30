@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A股截面多因子量化框架 · 架构设计</title>
+<style>
+  :root{
+    --bg:#fbfbfa; --fg:#23272e; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#2563eb; --accent2:#0e7490; --good:#15803d; --warn:#b45309; --bad:#b91c1c;
+    --code-bg:#1e293b; --code-fg:#e2e8f0; --card:#ffffff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.7;font-size:15.5px}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px 120px}
+  header.hero{padding:48px 28px 28px;border-bottom:1px solid var(--line);margin-bottom:8px}
+  header.hero h1{font-size:30px;margin:0 0 6px;letter-spacing:-.5px}
+  header.hero .sub{color:var(--muted);font-size:15px}
+  .meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:22px}
+  .meta-grid .m{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .meta-grid .m .k{font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--muted)}
+  .meta-grid .m .v{font-weight:600;margin-top:2px}
+  h2{font-size:22px;margin:46px 0 12px;padding-top:10px;border-top:2px solid var(--line)}
+  h2 .n{color:var(--accent);font-weight:700;margin-right:8px}
+  h3{font-size:17px;margin:26px 0 8px;color:#111827}
+  h4{font-size:14.5px;margin:18px 0 4px;color:#374151}
+  p{margin:8px 0}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{background:#eef2f7;color:#0f172a;padding:1.5px 6px;border-radius:5px;font-size:13px;
+    font-family:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace}
+  pre{background:var(--code-bg);color:var(--code-fg);padding:16px 18px;border-radius:10px;overflow:auto;
+    font-family:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;font-size:12.8px;line-height:1.55;margin:12px 0}
+  pre code{background:none;color:inherit;padding:0}
+  .cmt{color:#7f93ad}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.8px;background:var(--card)}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#f1f5f9;font-weight:600}
+  tr:nth-child(even) td{background:#fafbfc}
+  .tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 8px;border-radius:999px;line-height:1.6}
+  .tag.new{background:#dcfce7;color:#166534}
+  .tag.core{background:#dbeafe;color:#1e40af}
+  .tag.mvp{background:#fef9c3;color:#854d0e}
+  .tag.late{background:#f3e8ff;color:#6b21a8}
+  .callout{border-radius:10px;padding:13px 16px;margin:14px 0;border:1px solid;font-size:14px}
+  .callout .ti{font-weight:700;margin-bottom:3px;display:flex;align-items:center;gap:7px}
+  .why{background:#eff6ff;border-color:#bfdbfe}
+  .why .ti{color:var(--accent)}
+  .pit{background:#fef2f2;border-color:#fecaca}
+  .pit .ti{color:var(--bad)}
+  .ok{background:#f0fdf4;border-color:#bbf7d0}
+  .ok .ti{color:var(--good)}
+  /* layered diagram */
+  .arch{margin:18px 0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card)}
+  .band{display:flex;align-items:stretch;border-bottom:1px solid var(--line)}
+  .band:last-child{border-bottom:none}
+  .band .lbl{flex:0 0 120px;background:#f8fafc;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:700;color:var(--muted);text-align:center;padding:8px;border-right:1px solid var(--line)}
+  .band .cells{flex:1;display:flex;flex-wrap:wrap;gap:8px;padding:10px 12px}
+  .cell{background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;color:#3730a3}
+  .cell.new{background:#dcfce7;border-color:#86efac;color:#166534}
+  .cell.edge{background:#fff7ed;border-color:#fed7aa;color:#9a3412}
+  .cell .s{display:block;font-size:11px;font-weight:400;color:#64748b;margin-top:1px}
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:14px 0;font-size:13.5px}
+  .flow .step{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font-weight:600}
+  .flow .arr{color:var(--accent);font-weight:700}
+  .flow .step .s{display:block;font-size:11px;font-weight:400;color:var(--muted)}
+  nav.toc{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0 8px}
+  nav.toc .t{font-weight:700;margin-bottom:8px;font-size:14px}
+  nav.toc ol{margin:0;padding-left:20px;columns:2;column-gap:32px;font-size:13.6px}
+  nav.toc li{margin:3px 0;break-inside:avoid}
+  .small{font-size:12.5px;color:var(--muted)}
+  hr{border:none;border-top:1px solid var(--line);margin:22px 0}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:8px 0 0}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>A股截面多因子量化框架 · 架构设计</h1>
+  <div class="sub">Cross-sectional multi-factor stock-selection framework — 研究优先、渐进到实盘</div>
+  <div class="meta-grid">
+    <div class="m"><div class="k">范式</div><div class="v">截面多因子选股</div></div>
+    <div class="m"><div class="k">标的</div><div class="v">A股</div></div>
+    <div class="m"><div class="k">数据频率</div><div class="v">分钟级（调仓频率可配）</div></div>
+    <div class="m"><div class="k">目标路径</div><div class="v">回测研究 → 实盘</div></div>
+    <div class="m"><div class="k">构建方式</div><div class="v">成熟工具 + 自建因子层</div></div>
+    <div class="m"><div class="k">日期</div><div class="v">2026-05-30</div></div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="t">目录</div>
+  <ol>
+    <li><a href="#s1">设计原则（架构的脊梁）</a></li>
+    <li><a href="#s2">整体分层架构</a></li>
+    <li><a href="#s3">核心数据结构：Panel 面板</a></li>
+    <li><a href="#s4">标准多因子工作流</a></li>
+    <li><a href="#s5">各层详解 + 接口签名</a></li>
+    <li><a href="#s6">投研↔实盘 seam（Ports &amp; Adapters）</a></li>
+    <li><a href="#s7">因子层：Feature Store 与一致性</a></li>
+    <li><a href="#s8">致命陷阱清单</a></li>
+    <li><a href="#s9">技术选型</a></li>
+    <li><a href="#s10">目录结构</a></li>
+    <li><a href="#s11">分阶段路线图</a></li>
+  </ol>
+</nav>
+
+<!-- ============ 1 ============ -->
+<h2 id="s1"><span class="n">1</span>设计原则（架构的脊梁）</h2>
+<p>所有结构决定都从这 5 条推出来。看不懂某个设计为什么这么分时，回到这里对照。</p>
+<table>
+  <tr><th style="width:30px">#</th><th style="width:200px">原则</th><th>含义 &amp; 为什么</th></tr>
+  <tr><td>1</td><td><b>回测即实盘</b><br><span class="small">backtest = live</span></td>
+    <td>边界做 adapter、中间共享同一份定义和数据。<code>factor / alpha / portfolio</code> 层一行不改地两边复用，差异只压在系统"边缘"。<b>这是"渐进到实盘"能省力的根本。</b></td></tr>
+  <tr><td>2</td><td><b>防未来函数优先</b><br><span class="small">lookahead-safe by design</span></td>
+    <td>宁可慢、宁可多写一层，也要让"用到未来信息"在架构上难以发生。截面里未来函数有 4 个隐蔽来源（见 §8），每一个都对应一层防线。</td></tr>
+  <tr><td>3</td><td><b>分层解耦</b><br><span class="small">separation of concerns</span></td>
+    <td><code>factor</code> 不碰数据源、<code>strategy</code> 不碰下单。每层只认上一层的接口。坏味道：策略里直接 <code>tushare.get(...)</code>。</td></tr>
+  <tr><td>4</td><td><b>渐进 / 不过度设计</b><br><span class="small">progressive</span></td>
+    <td>先打通最细一条链路（MVP），按需加层。新手头号坑是一上来就搭完整 Feature Store。见 §11 路线图。</td></tr>
+  <tr><td>5</td><td><b>透明可控</b><br><span class="small">transparent over black-box</span></td>
+    <td>核心（因子/合成/组合/截面回测）自建——内核很短、完全可读。把 qlib 这类黑盒框架当参照而非地基。</td></tr>
+</table>
+
+<!-- ============ 2 ============ -->
+<h2 id="s2"><span class="n">2</span>整体分层架构</h2>
+<p>数据自下而上流动；<span class="tag new">新</span> 是截面相较择时新增的层，<span class="tag core">核心</span> 是你自建的主战场，橙色是投研/实盘分实现的"边缘"。</p>
+
+<div class="arch">
+  <div class="band"><div class="lbl">绩效 / 检验</div><div class="cells">
+    <div class="cell">analytics<span class="s">alphalens(因子) · quantstats(组合)</span></div>
+  </div></div>
+  <div class="band"><div class="lbl">运行 · runtime</div><div class="cells">
+    <div class="cell edge">backtest<span class="s">遍历历史调仓日 + 模拟撮合/成本</span></div>
+    <div class="cell edge">live<span class="s">定时触发 + 券商/QMT 下单</span></div>
+  </div></div>
+  <div class="band"><div class="lbl">决策</div><div class="cells">
+    <div class="cell new">alpha<span class="s">多因子合成/预测（独立）</span></div>
+    <div class="cell new">portfolio<span class="s">排序/分层 · 权重 · 换手 · 风控约束</span></div>
+  </div></div>
+  <div class="band"><div class="lbl">因子（核心）</div><div class="cells">
+    <div class="cell core">factors/compute<span class="s">按 date 算截面因子</span></div>
+    <div class="cell new">factors/process<span class="s">去极值→标准化→中性化</span></div>
+    <div class="cell core">factors/store<span class="s">date×symbol×factor 落盘</span></div>
+  </div></div>
+  <div class="band"><div class="lbl">域</div><div class="cells">
+    <div class="cell new">universe<span class="s">PIT 成分股 · 可交易过滤</span></div>
+  </div></div>
+  <div class="band"><div class="lbl">边缘 · 数据</div><div class="cells">
+    <div class="cell edge">data/feed<span class="s">历史回放 / 实时</span></div>
+    <div class="cell">data/clean<span class="s">复权 · 对齐披露日</span></div>
+    <div class="cell">data/store<span class="s">panel parquet</span></div>
+  </div></div>
+</div>
+<div class="legend">
+  <span><i class="dot" style="background:#c7d2fe"></i>常规层</span>
+  <span><i class="dot" style="background:#86efac"></i>截面新增 / 自建核心</span>
+  <span><i class="dot" style="background:#fed7aa"></i>边缘（投研/实盘分实现）</span>
+</div>
+
+<div class="callout why"><div class="ti">为什么 vnpy 从"主干"退为"下单通道"</div>
+vnpy / backtrader 是<b>逐标的、事件驱动</b>，为择时(CTA)而生。截面是"每个调仓日把全市场几百只股票一起排序"——这是它们的死穴。所以回测主干换成 <b>pandas/polars 面板 + 自写调仓回测</b>，vnpy 只在实盘阶段当下单网关（也可换 QMT / 券商 API）。</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="s3"><span class="n">3</span>核心数据结构：Panel 面板</h2>
+<p>截面框架里<b>一切都是面板</b>：行情、因子、得分、权重、收益，全是同一个形状——<code>MultiIndex (date, symbol)</code> 的 DataFrame。这是与择时最大的结构差异（择时是单标的一维时间序列）。</p>
+<pre><code><span class="cmt"># 行情面板 / 因子面板 长这样：双层索引，列是字段/因子</span>
+                        close     volume    momentum_20   vol_60
+date        symbol
+2026-05-28  000001     11.23   1.2e8         0.034       0.018
+            000002      8.41   0.9e8        -0.012       0.025
+            600519   1683.00   3.1e6         0.051       0.011
+2026-05-29  000001     11.31   1.1e8         0.029       0.018
+            ...
+
+<span class="cmt"># 取某一天的"截面"（横切一刀）= 当天所有股票的因子，用于排序选股</span>
+panel.loc["2026-05-29"]        <span class="cmt"># -> 一个截面 DataFrame</span>
+<span class="cmt"># 取某只股票的"时序"（纵切）= 因子在时间上滚动算的来源</span>
+panel.xs("600519", level="symbol")</code></pre>
+<div class="callout ok"><div class="ti">时序 vs 截面，不矛盾</div>
+因子<b>计算</b>是时序的（动量=过去20日收益、波动=过去60日std），但<b>决策</b>是截面的（每个时点横向比较、挑分高的）。"正统多因子"= 用时序算特征、在截面上做选择。你说的"factors/portfolio 有点择时性质"指的就是前半句，没问题。</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="s4"><span class="n">4</span>标准多因子工作流</h2>
+<p>截面的工作流和择时很不一样：<b>不是写完策略直接回测，而是先验证因子有没有用（IC/分层），有效才进组合。</b></p>
+<div class="flow">
+  <div class="step">① 单因子<span class="s">compute</span></div><span class="arr">→</span>
+  <div class="step">② 预处理<span class="s">去极值/标准化/中性化</span></div><span class="arr">→</span>
+  <div class="step">③ 因子检验<span class="s">alphalens: IC / 分层</span></div><span class="arr">→</span>
+  <div class="step">④ 多因子合成<span class="s">alpha</span></div><span class="arr">→</span>
+  <div class="step">⑤ 组合构建<span class="s">portfolio</span></div><span class="arr">→</span>
+  <div class="step">⑥ 调仓回测<span class="s">backtest</span></div><span class="arr">→</span>
+  <div class="step">⑦ 实盘<span class="s">execution</span></div>
+</div>
+<p class="small">③ 是择时框架里没有的关键关卡：先用 alphalens 看因子的 IC（信息系数，因子值与下期收益的截面相关）和分层单调性，淘汰无效因子，再花力气进组合回测。省时间、也防过拟合。</p>
+
+<!-- ============ 5 ============ -->
+<h2 id="s5"><span class="n">5</span>各层详解 + 接口签名</h2>
+<p>接口先定签名、不写实现——这就是"分层解耦"落到代码上的样子。每层只依赖下一层的<b>抽象接口</b>。</p>
+
+<h3>5.1 数据层 <code>data/</code></h3>
+<p>采集 → 清洗（复权 + <b>按披露日对齐</b>财务数据）→ 存成面板 parquet。feed 是边缘（回测=历史、实盘=实时），但对上层暴露同一接口。</p>
+<pre><code><span class="cmt"># data/feed/base.py</span>
+class DataFeed(ABC):
+    def get_bars(self, symbols, start, end, freq) -> DataFrame: ...   <span class="cmt"># 返回 panel</span>
+
+<span class="cmt"># data/store/panel_store.py  —— 按 date 分区，DuckDB 直接 SQL 查</span>
+class PanelStore:
+    def write(self, name, df): ...
+    def read(self, name, start, end, symbols=None) -> DataFrame: ...</code></pre>
+
+<h3>5.2 域层 <code>universe/</code> <span class="tag new">截面新增</span></h3>
+<p>截面独有、且是<b>最容易被忽略的偏差来源</b>。两个职责：① 给出某日的成分股（point-in-time，不能用今天的成分回测历史）；② 过滤"看得到买不到"的标的。</p>
+<pre><code><span class="cmt"># universe/base.py</span>
+class Universe(ABC):
+    def members(self, date) -> list[str]: ...    <span class="cmt"># PIT 成分股（沪深300/中证500/全A）</span>
+    def tradable(self, date) -> list[str]: ...   <span class="cmt"># 排除 停牌/涨跌停/ST/上市未满N天</span></code></pre>
+
+<h3>5.3 因子层 <code>factors/</code> <span class="tag core">自建核心</span></h3>
+<p>拆三块：<b>compute</b>（定义+计算）、<b>process</b>（截面预处理三件套）、<b>store</b>（落盘，见 §7）。因子定义只写一次，batch（回测）和 incremental（实盘）是它的两种执行方式。</p>
+<pre><code><span class="cmt"># factors/base.py</span>
+class Factor(ABC):
+    name: str; deps: list[str]; params: dict
+    def compute(self, panel) -> Series: ...         <span class="cmt"># 输入面板 -> 因子值, batch（回测）</span>
+    def update(self, state, bar) -> float: ...      <span class="cmt"># 增量更新, 实盘（可选, 见 §7）</span>
+
+<span class="cmt"># factors/process/pipeline.py —— 每个截面（按 date 分组）依次做：</span>
+def winsorize(s, method="mad", n=3)  -> Series: ...   <span class="cmt"># 去极值</span>
+def standardize(s, method="zscore")  -> Series: ...   <span class="cmt"># 标准化（或 rank）</span>
+def neutralize(s, industry, mktcap)  -> Series: ...   <span class="cmt"># 中性化：回归取残差，去掉行业+市值暴露</span></code></pre>
+
+<h3>5.4 合成层 <code>alpha/</code> <span class="tag new">截面新增</span><span class="tag core">独立成层</span></h3>
+<p>把多个处理后的因子合成一个综合得分。<b>独立成层、不并入 factors</b>——合成要用未来收益拟合权重，必须和"永不碰未来收益"的因子层隔开（守住防未来函数边界，见 §7）。从等权起步，逐步到 IC 加权、线性回归，将来可上树模型（这时才需要 ML）。</p>
+<pre><code><span class="cmt"># alpha/base.py</span>
+class AlphaModel(ABC):
+    def fit(self, factors, fwd_returns): ...
+    def predict(self, factors_today) -> Series: ...   <span class="cmt"># -> 每只股票的综合得分</span>
+<span class="cmt"># 实现: EqualWeight -> ICWeight -> LinearReg -> (LightGBM 以后)</span></code></pre>
+
+<h3>5.5 组合层 <code>portfolio/</code> <span class="tag new">截面新增</span>（含 risk 约束）</h3>
+<p>得分 → 目标权重。<b>风控的"事前约束"并入这一层</b>（约束本就是组合构建的 constraints）：最大权重、行业中性、换手上限。要考虑当前持仓以控制换手（成本敏感）。<span class="small">运行期风控（实盘熔断/监控）不在这层，归 runtime/live。</span></p>
+<pre><code><span class="cmt"># portfolio/construct.py</span>
+class PortfolioConstructor(ABC):
+    def build(self, scores, current_w) -> Series: ...   <span class="cmt"># -> 目标权重</span>
+<span class="cmt"># 实现: TopN 等权 -> 分位数分层 -> 均值方差优化(cvxpy/riskfolio)</span>
+
+<span class="cmt"># portfolio/risk.py —— 事前约束（构建期）</span>
+def apply_constraints(w, industry, max_w, turnover_cap) -> Series: ...</code></pre>
+
+<h3>5.6 运行层 <code>runtime/</code>（边缘 · 合并原 backtest + execution）</h3>
+<p>回测和实盘是<b>同一层的两套实现</b>，各含两个角色：<b>driver</b>（回测=遍历历史调仓日 / 实盘=每日定时触发）+ <b>execution</b>（回测=模拟撮合成本 / 实盘=券商下单）。这是"回测即实盘"落到代码上的样子。</p>
+<h4>driver —— 截面调仓驱动（内核很短，这就是不需要重型引擎的原因）</h4>
+<pre><code><span class="cmt"># runtime/backtest/driver.py   （实盘版: 把循环换成"每日定时触发一次"）</span>
+def run(scores_panel, universe, constructor, execution, rebalance="M"):
+    nav = 1.0
+    for date in rebalance_dates(rebalance):
+        uni    = universe.tradable(date)              <span class="cmt"># 当日可交易池</span>
+        score  = scores_panel.loc[date, uni]
+        w      = constructor.build(score, current_w)  <span class="cmt"># 目标权重</span>
+        execution.rebalance_to(w)                     <span class="cmt"># 交给执行角色（回测/实盘同接口）</span>
+        nav   *= 1 + execution.last_return()
+        current_w = w
+    return nav_series</code></pre>
+<h4>execution —— 同接口、两实现</h4>
+<pre><code><span class="cmt"># runtime/execution.py</span>
+class Execution(ABC):
+    def rebalance_to(self, target_w): ...    <span class="cmt"># 调到目标组合</span>
+    def positions(self) -> Series: ...
+<span class="cmt"># backtest/ -> SimExecution(撮合/成本)   live/ -> LiveExecution(vnpy gateway / QMT)</span></code></pre>
+
+<!-- ============ 6 ============ -->
+<h2 id="s6"><span class="n">6</span>投研↔实盘 seam（Ports &amp; Adapters）</h2>
+<p>投研和实盘的差异本质在系统"边缘"，集中在 <code>data/feed</code> 与 <code>runtime</code> 两层。截面因为低频批处理，seam 比择时<b>更薄</b>——时钟差异退化为"定时跑一次"：</p>
+<table>
+  <tr><th>边界（Port）</th><th>回测实现</th><th>实盘实现</th><th>上层是否感知</th></tr>
+  <tr><td><b>data/feed</b></td><td>历史面板回放</td><td>当日最新面板</td><td>❌</td></tr>
+  <tr><td><b>runtime/driver</b></td><td>遍历历史调仓日（模拟时钟）</td><td>每日定时触发（真实时钟）</td><td>❌</td></tr>
+  <tr><td><b>runtime/execution</b></td><td>撮合 + 成本模型</td><td>券商/QMT 下单</td><td>❌</td></tr>
+</table>
+<div class="callout why"><div class="ti">落地提醒：execution 抽象别和 vnpy 打架</div>
+如果实盘用 vnpy 当下单通道，vnpy 的 gateway 本身就是一套 adapter。你的 <code>Execution</code> 接口要<b>薄薄地包一层</b>就好，不要重写 vnpy 已有的东西。抽象的价值在于让 <code>portfolio</code> 以上不感知下单细节，不在于复刻网关。</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="s7"><span class="n">7</span>因子层：Feature Store 与一致性</h2>
+<p>因子拆"计算 / 存储 / 元数据"是对的（这是 ML 工程的 Feature Store 模式）。但<b>真正的难点不在存储，在计算的一致性</b>：</p>
+<div class="callout pit"><div class="ti">头号验收项：batch ≡ incremental</div>
+同一因子，回测是 batch 算（整列 pandas），实盘是 incremental 算（每根新 bar 增量更新）。<b>两条路必须算出完全一致的值</b>，否则回测在"撒谎"，实盘行为对不上。这在 ML 里叫<b>训练-服务偏移 (training-serving skew)</b>，是 Feature Store 存在的头号理由。<br>
+对策：因子<b>定义只写一次</b>；batch / incremental 是两种执行方式；用一条单元测试锁死"两者在同一段数据上输出相等"。</div>
+<table>
+  <tr><th>子层</th><th>职责</th><th>关键风险 / 要求</th><th>何时做</th></tr>
+  <tr><td><b>compute</b> 计算</td><td>定义 + batch/incremental 两种执行</td><td>一致性（上面那条）</td><td><span class="tag mvp">MVP</span></td></tr>
+  <tr><td><b>store</b> 存储</td><td>因子值落盘、缓存，避免重算</td><td><b>必须带时间戳</b>(point-in-time)；回测/实盘读同一份 → 防偏移</td><td><span class="tag mvp">MVP(简版)</span></td></tr>
+  <tr><td><b>registry</b> 元数据</td><td>因子名、依赖、参数、版本</td><td>因子多了才需要，别过早做</td><td><span class="tag late">后期</span></td></tr>
+</table>
+<p class="small">MVP 阶段：因子就是纯函数 <code>def factor(panel) -> Series</code>，batch 算、存 parquet 当缓存，元数据用文件名/简单 dict。因子数 &gt;20 或开始实盘需要增量时，再上正式的 registry + 增量引擎。</p>
+
+<!-- ============ 8 ============ -->
+<h2 id="s8"><span class="n">8</span>致命陷阱清单（架构必须挡住）</h2>
+<p>每一条都对应架构里的一道防线。这张表是这份文档最该贴在墙上的部分。</p>
+<table>
+  <tr><th>陷阱</th><th>后果</th><th>挡在哪一层</th></tr>
+  <tr><td><b>未来函数</b> lookahead</td><td>回测神话、实盘崩</td><td>事件顺序 + 严格 shift；因子只用 ≤t 的数据</td></tr>
+  <tr><td><b>PIT 成分股</b> / 幸存者偏差</td><td>用今天的成分回测历史 → 高估</td><td><code>universe.members(date)</code> 存历史成分</td></tr>
+  <tr><td><b>可交易过滤</b></td><td>停牌/涨跌停"看得到买不到"，虚高</td><td><code>universe.tradable(date)</code></td></tr>
+  <tr><td><b>财务数据披露滞后</b></td><td>用报告期≠披露日 → 最隐蔽的未来函数</td><td>数据层按<b>披露日</b>对齐</td></tr>
+  <tr><td><b>复权</b></td><td>分红送股导致价格跳变</td><td>数据层统一前复权</td></tr>
+  <tr><td><b>训练-服务偏移</b></td><td>回测因子≠实盘因子</td><td>batch≡incremental 测试 + 共享 store（§7）</td></tr>
+  <tr><td><b>中性化遗漏</b></td><td>因子收益其实来自行业/市值暴露</td><td><code>factors/process</code> 中性化</td></tr>
+  <tr><td><b>过拟合</b> 因子挖矿</td><td>样本外失效</td><td>IC 稳定性 + 样本内外分离 + walk-forward</td></tr>
+  <tr><td><b>交易成本/换手</b></td><td>截面换手常很高，不建模就高估</td><td>成本模型 + <code>portfolio</code> 换手控制</td></tr>
+</table>
+
+<!-- ============ 9 ============ -->
+<h2 id="s9"><span class="n">9</span>技术选型</h2>
+<table>
+  <tr><th>用途</th><th>选型</th><th>说明</th></tr>
+  <tr><td>语言/环境</td><td>Python 3.10+ · conda 或 uv</td><td>uv 装依赖快</td></tr>
+  <tr><td>数据处理</td><td>pandas（+ polars 可选加速）· numpy</td><td>面板就是 MultiIndex DataFrame</td></tr>
+  <tr><td>存储</td><td>pyarrow + parquet · DuckDB</td><td>按 date 分区，DuckDB 直接 SQL 查面板</td></tr>
+  <tr><td><b>因子检验</b></td><td><b>alphalens-reloaded</b></td><td>截面标配：IC、IC_IR、分层回测、换手</td></tr>
+  <tr><td>绩效报告</td><td>quantstats</td><td>一行出夏普/回撤/收益曲线</td></tr>
+  <tr><td>回归/合成</td><td>statsmodels · scikit-learn</td><td>中性化回归、因子合成</td></tr>
+  <tr><td>组合优化（可选）</td><td>cvxpy · riskfolio-lib</td><td>均值方差/风险约束，后期再上</td></tr>
+  <tr><td>数据源</td><td>akshare（免费）· tushare pro（分钟需积分）</td><td>见下方提醒</td></tr>
+  <tr><td>实盘下单（后期）</td><td>vnpy gateway · miniqmt(QMT) · easytrader</td><td>仅当下单通道</td></tr>
+  <tr><td>配置 / 测试</td><td>pydantic-settings + YAML · pytest</td><td>配置类型校验；一致性测试</td></tr>
+  <tr><td>研究</td><td>jupyter</td><td><code>research/</code> 探索区</td></tr>
+</table>
+<div class="callout pit"><div class="ti">现实痛点：A股分钟级历史数据</div>
+分钟数据不是代码问题、是数据问题：akshare 免费但只有近期、质量参差；tushare 分钟要 5000+ 积分；券商行情要实盘阶段才有。<b>建议先用日线把整条链路跑通</b>（免费易得），跑通后只换数据层换成分钟——架构完全一样。</div>
+
+<!-- ============ 10 ============ -->
+<h2 id="s10"><span class="n">10</span>目录结构</h2>
+<p><span class="tag new">新</span>=截面新增 &nbsp; <span class="tag core">核心</span>=自建主战场 &nbsp; <span class="tag mvp">MVP</span>=第一阶段就做</p>
+<pre><code>Quantitative_Trading/
+├── config/                 <span class="cmt"># YAML: 数据源key、回测区间、调仓频率、风控阈值</span>
+├── data/
+│   ├── feed/               <span class="cmt"># 采集 adapter (akshare/tushare)            [MVP]</span>
+│   ├── clean/              <span class="cmt"># 复权 + 按披露日对齐</span>
+│   └── store/              <span class="cmt"># panel parquet 读写 (DuckDB)              [MVP]</span>
+├── universe/          <span class="cmt"># ★新  PIT成分股 + 可交易过滤</span>
+├── factors/           <span class="cmt"># ★核心</span>
+│   ├── compute/            <span class="cmt"># 截面因子计算 (按 date 分组)              [MVP]</span>
+│   ├── process/       <span class="cmt"># ★新  去极值→标准化→中性化</span>
+│   └── store/              <span class="cmt"># 因子值落盘 date×symbol×factor</span>
+├── alpha/             <span class="cmt"># ★新  多因子合成/预测 (独立, 守未来函数边界)</span>
+├── portfolio/         <span class="cmt"># ★新  组合构建 + 风控约束</span>
+│   ├── construct.py   <span class="cmt">#   分层/权重/换手</span>
+│   └── risk.py        <span class="cmt">#   事前约束: max权重/行业中性/换手上限</span>
+├── runtime/           <span class="cmt"># 回测+实盘统一: driver + execution         [MVP]</span>
+│   ├── backtest/      <span class="cmt">#   遍历历史调仓日 + 模拟撮合/成本           [MVP]</span>
+│   └── live/          <span class="cmt">#   定时触发 + 券商/QMT 下单 (后期)</span>
+├── analytics/         <span class="cmt"># alphalens(因子) + quantstats(组合)        [MVP]</span>
+├── research/          <span class="cmt"># jupyter 探索区</span>
+├── tests/                <span class="cmt"># 含 batch≡incremental 一致性测试</span>
+├── config.yaml
+└── pyproject.toml</code></pre>
+
+<!-- ============ 11 ============ -->
+<h2 id="s11"><span class="n">11</span>分阶段路线图</h2>
+<p>别一次铺满。每个阶段都是一条<b>能端到端跑通</b>的链路，跑通了再加层。</p>
+<table>
+  <tr><th style="width:60px">阶段</th><th>目标</th><th>做哪些层</th><th>验收</th></tr>
+  <tr><td><b>Phase 0</b><br><span class="tag mvp">MVP</span></td>
+    <td>打通最细一条链路、验证选型</td>
+    <td>data(<b>先日线</b>) + 1个因子(如20日动量) + alphalens检验 + TopN等权回测 + quantstats</td>
+    <td>单因子的 IC 图 + 一条净值曲线，亲手跑出来</td></tr>
+  <tr><td><b>Phase 1</b></td>
+    <td>升级成"真·多因子"</td>
+    <td>+ universe(PIT+过滤) + process(预处理三件套) + alpha(多因子合成) + 分层回测</td>
+    <td>多因子组合跑赢基准、分层单调</td></tr>
+  <tr><td><b>Phase 2</b></td>
+    <td>工程化、防偏差</td>
+    <td>+ factors/store + registry + 配置化 + 成本模型精细化 + walk-forward</td>
+    <td>换数据/因子靠改配置；样本外稳定</td></tr>
+  <tr><td><b>Phase 3</b></td>
+    <td>渐进到实盘</td>
+    <td>+ runtime/live(driver+execution: 定时调度 + 券商下单) + 运行期风控 + 监控</td>
+    <td>实盘持仓与回测目标一致（一致性达标）</td></tr>
+</table>
+
+<div class="callout ok"><div class="ti">立刻可做的第一步（你来主刀）</div>
+<b>Phase 0，用日线起步</b>：① conda 建环境，装 <code>pandas pyarrow duckdb akshare alphalens-reloaded quantstats</code>；② 抓沪深300成分一段日线，落 parquet；③ 写 20 日动量因子（纯函数）；④ 用 alphalens 看 IC 和分层；⑤ TopN 等权 + 月调仓回测，quantstats 出报告。<br>
+这条线打通，你就亲手验证了<b>面板数据流 + 因子/组合解耦 + 截面工作流</b>是否顺手，再决定怎么扩。</div>
+
+<hr>
+<p class="small">本文档整合自架构讨论（2026-05-30）。定位：A股截面多因子选股、研究优先、渐进到实盘、成熟工具 + 自建因子层。设计脊梁见 §1，最该贴墙的是 §8 陷阱清单。</p>
+
+</div>
+</body>
+</html>
