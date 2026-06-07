@@ -20,11 +20,14 @@
 
 ## 可交易过滤
 
-- 状态: **部分处理(P0)**。
-- P0 仅实现 `missing_close` 过滤:截面日 `close` 为 NaN 的标的不可交易(UNI-004)。
-- 停牌 / ST / 涨跌停过滤接口已预留(`UniverseFilters`),但 P0 未实现(降级),P1 补齐。
-- 退市 / 无数据标的(如 `000003.SZ`,2024 已退市)表现为不在 panel 中而被隐式剔除。PIT 历史成分已由 `PITIndexUniverse` 处理(见上节);停牌期间的显式停牌标记过滤仍是后续项。
-- `universe.min_listing_days` 已在配置中(默认 60),但 P0 **未执行**(no-op,降级):新上市标的不会被剔除。该空操作在此显式披露(INV-007),P1 接入上市日期后强制执行。
+- 状态: **停牌 / ST / 涨跌停已实现(P1)**。
+- `missing_close`(总是开):截面日 `close` 为 NaN 的标的不可交易(UNI-004)。
+- 统一在 `universe.filters.apply_tradable_filters` 按 `UniverseFilters` 开关执行;flag 由 `data.clean.tradability.enrich_tradability` 从 tushare `suspend_d` / `namechange` / `stk_limit` 富化到 panel(StaticUniverse 与 PITIndexUniverse 共用)。demo 无 flag 数据时各过滤自动 no-op。
+- **ST(UNI-006)**:`namechange` 名称区间含 'ST'/'*ST' 即标记,按 date 取生效名称(实证:`000005.SZ` 2024 全程 ST,正确剔除)。
+- **涨跌停(UNI-007)**:close 触及当日 `up_limit`/`down_limit` 标记 `at_up_limit`/`at_down_limit`(实证:`000005.SZ` 2024-02-01 触跌停)。当前选股层对两个方向都剔除;**方向感知**(买入只看涨停、持有跌停不强卖)属执行层,后续细化。
+- **停牌(UNI-005)**:`suspend_d` 标记停牌日。**实测发现**:tushare 全天停牌当日**无 bar** → 已被 `missing_close` 剔除,故显式 suspended flag 与之重叠;其价值在盘中停牌(`suspend_timing`)或会给停牌日 bar 的数据源,属防御性。
+- 退市 / 无数据标的(如 `000003.SZ`)同样表现为不在 panel 而被剔除。PIT 历史成分见上节。
+- `universe.min_listing_days` 已在配置中(默认 60),但仍 **未执行**(no-op,降级):新上市标的不会被剔除。显式披露(INV-007),后续接上市日期后强制。
 
 ## ann_date 财务对齐
 

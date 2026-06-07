@@ -37,10 +37,12 @@ from alpha.equal_weight import EqualWeightAlpha
 from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
 from analytics.performance import performance_summary
 from data.clean.adjust import front_adjust
+from data.clean.tradability import enrich_tradability
 from data.feed.base import DataFeed
 from data.feed.demo_feed import DemoFeed
 from data.feed.index_feed import IndexConstituentsFeed
 from data.feed.tushare_feed import TushareFeed
+from data.feed.tushare_flags import TushareFlagsFeed
 from data.store.panel_store import PanelStore
 from factors.compute.momentum import MomentumFactor
 from factors.process.pipeline import ProcessingPipeline
@@ -359,10 +361,37 @@ def _load_panel(
     # Store stays RAW (+ adj_factor, incremental-safe); front-adjust in memory so
     # factors / backtest see continuous qfq prices. Identity for demo (adj=1.0).
     panel = front_adjust(panel)
+    panel = _enrich_tradability(cfg, panel, symbols, logger)
     logger.info(
         "data: %d rows, %d symbols (front-adjusted)",
         len(panel),
         panel.index.get_level_values("symbol").nunique(),
+    )
+    return panel
+
+
+def _enrich_tradability(
+    cfg: RootConfig, panel: pd.DataFrame, symbols: list[str], logger: logging.Logger
+) -> pd.DataFrame:
+    """Add suspended / ST / price-limit flags when filters need them (tushare only).
+
+    No-op for the offline demo source (no flag data) and when no flag-driven
+    filter is enabled, so the demo path is unchanged. Flags are joined as boolean
+    columns that :func:`universe.filters.apply_tradable_filters` consults.
+    """
+    flt = cfg.universe.filters
+    if cfg.data.source != "tushare" or not (flt.suspended or flt.st or flt.limit_up_down):
+        return panel
+    feed = TushareFlagsFeed(
+        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+    )
+    suspended = feed.suspended(symbols, cfg.data.start, cfg.data.end) if flt.suspended else None
+    st = feed.st_intervals(symbols) if flt.st else None
+    limits = feed.limits(symbols, cfg.data.start, cfg.data.end) if flt.limit_up_down else None
+    panel = enrich_tradability(panel, suspended=suspended, st_intervals=st, limits=limits)
+    logger.info(
+        "tradability: flags enriched (suspended=%s st=%s limit_up_down=%s)",
+        flt.suspended, flt.st, flt.limit_up_down,
     )
     return panel
 

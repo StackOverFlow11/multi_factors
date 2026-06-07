@@ -21,6 +21,7 @@ import bisect
 import pandas as pd
 
 from universe.base import Universe
+from universe.filters import apply_tradable_filters
 
 
 class PITIndexUniverse(Universe):
@@ -53,16 +54,10 @@ class PITIndexUniverse(Universe):
         return list(self._by_date[self._snapshots[idx]])
 
     def tradable(self, date: pd.Timestamp, panel: pd.DataFrame) -> list[str]:
-        """PIT members minus names with a missing close on ``date`` (UNI-004)."""
-        members = self.members(date)
-        if not members:
-            return []
-        if "close" not in panel.columns:
-            raise ValueError("tradable() needs a panel with a 'close' column.")
-        target = pd.Timestamp(date).normalize()
-        try:
-            cross = panel.xs(target, level="date")
-        except KeyError:
-            return []  # no market data for that date -> nothing tradable
-        valid = set(cross.index[cross["close"].notna()])
-        return [s for s in members if s in valid]
+        """PIT members tradable on ``date`` via the shared tradability filters.
+
+        Drops missing-close names (UNI-004) and, when the matching ``filters``
+        toggle is on and the flag column is present, suspended / ST / at-limit
+        names (P1 — :mod:`universe.filters`).
+        """
+        return apply_tradable_filters(self.members(date), date, panel, self._filters)

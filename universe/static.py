@@ -19,6 +19,7 @@ from __future__ import annotations
 import pandas as pd
 
 from universe.base import Universe
+from universe.filters import apply_tradable_filters
 
 
 class StaticUniverse(Universe):
@@ -48,42 +49,12 @@ class StaticUniverse(Universe):
         return list(self._symbols)
 
     def tradable(self, date: pd.Timestamp, panel: pd.DataFrame) -> list[str]:
-        """Return members that are tradable on ``date`` (UNI-004 missing_close).
+        """Return members tradable on ``date`` via the shared tradability filters.
 
-        A member is tradable if it has a row at ``date`` in ``panel`` with a
-        non-NaN ``close``. Members absent from the panel on that date, or with a
-        missing close, are excluded. The result is always a subset of
-        ``members(date)`` and preserves the configured symbol order. An empty
-        result (no members, or none with a valid close) is returned cleanly and
-        never raises.
+        Always drops missing-close names (UNI-004); also drops suspended / ST /
+        at-limit names when the matching ``filters`` toggle is on AND the panel
+        carries the corresponding flag column (P1 — :mod:`universe.filters`). The
+        result is a subset of ``members(date)`` preserving configured order and
+        never raises on an empty/absent cross-section.
         """
-        members = self.members(date)
-        if not members:
-            return []
-
-        valid_closes = self._valid_close_symbols(date, panel)
-        return [symbol for symbol in members if symbol in valid_closes]
-
-    @staticmethod
-    def _valid_close_symbols(date: pd.Timestamp, panel: pd.DataFrame) -> set[str]:
-        """Symbols with a non-NaN ``close`` at ``date`` in ``panel``.
-
-        Reads only the cross-section at ``date`` from the canonical
-        MultiIndex(date, symbol) panel. Returns an empty set if the date is
-        absent or the panel has no ``close`` rows there, so callers never crash.
-        """
-        if "close" not in panel.columns:
-            raise ValueError(
-                "panel is missing the 'close' column required for the "
-                "missing_close tradability filter"
-            )
-
-        norm_date = pd.Timestamp(date).normalize()
-        date_level = panel.index.get_level_values("date")
-        cross_section = panel.loc[date_level == norm_date, "close"]
-        if cross_section.empty:
-            return set()
-
-        valid = cross_section.dropna()
-        symbols = valid.index.get_level_values("symbol")
-        return {str(symbol) for symbol in symbols}
+        return apply_tradable_filters(self.members(date), date, panel, self._filters)

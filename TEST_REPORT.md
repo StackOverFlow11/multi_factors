@@ -15,7 +15,7 @@ Run from the repo root with the project python:
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **120 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **135 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` | exit `0`, writes `artifacts/reports/phase0_summary.md` |
@@ -46,7 +46,10 @@ Run from the repo root with the project python:
 | `test_index_feed.py` | 4 | P1 — index_weight feed + paging (NEW) |
 | `test_index_pipeline.py` | 1 | P1 — pre-start as-of snapshot wiring (NEW) |
 | `test_config_index.py` | 3 | P1 — universe.type=index config (NEW) |
-| **Total** | **120** | |
+| `test_tradability_filters.py` | 7 | P1 — shared suspended/ST/limit filter (NEW) |
+| `test_tradability_enrich.py` | 5 | P1 — flag enrichment onto panel (NEW) |
+| `test_tushare_flags.py` | 3 | P1 — suspend_d/namechange/stk_limit feed (NEW) |
+| **Total** | **135** | |
 
 ## New integration tests (this slice)
 
