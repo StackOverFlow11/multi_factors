@@ -39,6 +39,7 @@ from analytics.performance import performance_summary
 from data.clean.adjust import front_adjust
 from data.feed.base import DataFeed
 from data.feed.demo_feed import DemoFeed
+from data.feed.index_feed import IndexConstituentsFeed
 from data.feed.tushare_feed import TushareFeed
 from data.store.panel_store import PanelStore
 from factors.compute.momentum import MomentumFactor
@@ -48,6 +49,8 @@ from qt.config import RootConfig, load_config
 from qt.reports import write_phase0_summary
 from runtime.backtest.driver import BacktestDriver
 from runtime.backtest.sim_execution import SimExecution
+from universe.base import Universe
+from universe.index_universe import PITIndexUniverse
 from universe.static import StaticUniverse
 
 _LOGGER_NAME = "qt.run_phase0"
@@ -57,6 +60,7 @@ _LOGGER_NAME = "qt.run_phase0"
 # cadence, NOT the daily 252 that ``performance_summary`` defaults to.
 _PERIODS_PER_YEAR: dict[str, int] = {"monthly": 12}
 _DEFAULT_PERIODS_PER_YEAR: int = 12
+_INDEX_UNIVERSE_LOOKBACK_DAYS: int = 370
 
 
 def _periods_per_year(rebalance: str) -> int:
@@ -149,10 +153,21 @@ def _build_scores(
 
 def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
     """Enumerate the P0 downgrades that MUST be disclosed (INV-007)."""
+    if cfg.universe.type == "index":
+        membership = (
+            f"Index universe (PITIndexUniverse, {cfg.universe.index_code}): "
+            "point-in-time membership from tushare index_weight snapshots (latest "
+            "snapshot on-or-before each date; survivorship-safe). This RESOLVES the "
+            "P0 static-universe PIT downgrade (UNI-003/UNI-009)."
+        )
+    else:
+        membership = (
+            "Static universe (StaticUniverse): membership is date-independent, NOT "
+            "point-in-time index constituents (UNI-003 PIT downgrade). Survivorship / "
+            "look-ahead membership bias is present and intentional for P0."
+        )
     items = [
-        "Static universe (StaticUniverse): membership is date-independent, NOT "
-        "point-in-time index constituents (UNI-003 PIT downgrade). Survivorship / "
-        "look-ahead membership bias is present and intentional for P0.",
+        membership,
         f"Daily ({cfg.data.freq}) bars only; minute-level link is deferred (P1).",
         "IC / quantile returns use a simple numpy/pandas implementation, NOT "
         "alphalens-reloaded (simple-vs-alphalens fallback, INV-007).",
@@ -183,14 +198,15 @@ def run_phase0(config_path: str) -> Phase0Result:
     logger = _make_logger(log_path)
     logger.info("phase0 start: project=%s source=%s", cfg.project.name, cfg.data.source)
 
-    panel = _load_panel(cfg, logger)
+    universe, symbols = _build_universe(cfg, logger)
+    panel = _load_panel(cfg, symbols, logger)
     factor = _enabled_momentum(cfg)
     factor_panel = _compute_factor_panel(cfg, panel, factor, logger)
 
     processed = _process_factors(cfg, factor_panel)
     scores = _build_scores(processed, EqualWeightAlpha())
 
-    nav_table = _run_backtest(cfg, panel, scores, factor.name, logger)
+    nav_table = _run_backtest(cfg, panel, scores, factor.name, universe, logger)
     ic_mean, ic_ir, q_returns = _factor_analytics(cfg, panel, factor_panel, factor.name)
     perf = (
         performance_summary(
@@ -268,13 +284,67 @@ def _build_feed(cfg: RootConfig) -> DataFeed:
     )
 
 
-def _load_panel(cfg: RootConfig, logger: logging.Logger) -> pd.DataFrame:
-    """Fetch the market panel, persist it, and read it back through the store."""
-    symbols = list(cfg.universe.symbols)
-    if not symbols:
-        raise ValueError(
-            "universe.symbols is empty; configure at least one symbol to run phase0."
+def _build_universe(
+    cfg: RootConfig, logger: logging.Logger
+) -> tuple[Universe, list[str]]:
+    """Construct the universe and the symbol set whose market data must be loaded.
+
+    ``static`` -> :class:`StaticUniverse` over the configured symbols (PIT downgrade).
+    ``index``  -> :class:`PITIndexUniverse` from real tushare ``index_weight``
+    snapshots; the symbol set is the union of all historical constituents so the
+    backtest can settle names that later left the index (no survivorship bias).
+    """
+    filters = cfg.universe.filters.model_dump()
+    if cfg.universe.type == "static":
+        symbols = list(cfg.universe.symbols)
+        if not symbols:
+            raise ValueError(
+                "universe.symbols is empty; configure at least one symbol (static)."
+            )
+        return StaticUniverse(symbols, filters), symbols
+    if cfg.universe.type == "index":
+        if cfg.data.source != "tushare":
+            raise ValueError(
+                "universe.type='index' requires data.source='tushare' "
+                "(constituents come from tushare index_weight; demo has no index)."
+            )
+        if not cfg.data.external_secret_file:
+            raise ValueError(
+                "universe.type='index' requires data.external_secret_file "
+                "(token for index_weight)."
+            )
+        feed = IndexConstituentsFeed(
+            cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
         )
+        # As-of membership at cfg.data.start needs the latest snapshot *before*
+        # the backtest window too. Pulling only [start, end] can leave early
+        # rebalance dates empty when the run starts between two index snapshots.
+        cons_start = (
+            pd.Timestamp(cfg.data.start) - pd.Timedelta(days=_INDEX_UNIVERSE_LOOKBACK_DAYS)
+        ).strftime("%Y-%m-%d")
+        cons = feed.get_constituents(cfg.universe.index_code, cons_start, cfg.data.end)
+        if cons.empty:
+            raise ValueError(
+                f"No constituents for index {cfg.universe.index_code} over "
+                f"[{cfg.data.start}, {cfg.data.end}]."
+            )
+        symbols = sorted(cons["symbol"].unique().tolist())
+        logger.info(
+            "universe: index %s, %d snapshots, %d distinct constituents",
+            cfg.universe.index_code,
+            cons["date"].nunique(),
+            len(symbols),
+        )
+        return PITIndexUniverse(cons, filters), symbols
+    raise ValueError(f"Unsupported universe.type {cfg.universe.type!r}.")
+
+
+def _load_panel(
+    cfg: RootConfig, symbols: list[str], logger: logging.Logger
+) -> pd.DataFrame:
+    """Fetch the market panel for ``symbols``, persist it, and read it back."""
+    if not symbols:
+        raise ValueError("No symbols to load; the universe produced an empty set.")
     feed = _build_feed(cfg)
     panel = feed.get_bars(symbols, cfg.data.start, cfg.data.end, freq=cfg.data.freq)
     if panel.empty:
@@ -349,10 +419,10 @@ def _run_backtest(
     panel: pd.DataFrame,
     scores: pd.Series,
     factor_name: str,
+    universe: Universe,
     logger: logging.Logger,
 ) -> pd.DataFrame:
     """Wire the universe + scores + constructor + execution into the driver."""
-    universe = StaticUniverse(list(cfg.universe.symbols), cfg.universe.filters.model_dump())
     constructor = TopNEqualWeight(cfg.portfolio.top_n, long_only=cfg.portfolio.long_only)
     execution = SimExecution(fee_rate=cfg.cost.fee_rate, cash_return=cfg.backtest.cash_return)
     driver = BacktestDriver(

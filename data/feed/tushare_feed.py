@@ -18,13 +18,13 @@ Field mapping (tushare ``daily`` -> CORE_COLUMNS):
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import pandas as pd
 
 from data.clean.schema import CORE_COLUMNS, normalize_panel
 from data.feed.base import DataFeed
+from data.feed.throttle import request_with_retry
 
 # tushare raw column -> canonical column.
 _FIELD_MAP: dict[str, str] = {
@@ -105,32 +105,14 @@ class TushareFeed(DataFeed):
         return self._pro
 
     # -- rate limit + retry (SEC-004) --------------------------------------- #
-    def _throttle(self) -> None:
-        """Sleep to respect ``rate_limit`` calls per minute (no-op if unset)."""
-        if self._rate_limit:
-            time.sleep(60.0 / self._rate_limit)
-
     def _call(self, fn, **kwargs):
-        """Invoke a tushare endpoint with retry + throttle.
-
-        Retries transient errors with exponential backoff, then throttles to the
-        configured per-minute cap. Never echoes the token: the failure message
-        carries only the exception TYPE, not its payload.
-        """
-        last_exc: Exception | None = None
-        for attempt in range(self._max_retries):
-            try:
-                result = fn(**kwargs)
-            except Exception as exc:  # transient API / network error
-                last_exc = exc
-                time.sleep(min(2.0**attempt, 8.0))
-                continue
-            self._throttle()
-            return result
-        raise RuntimeError(
-            f"tushare call failed after {self._max_retries} attempt(s): "
-            f"{type(last_exc).__name__}. Check connectivity / rate limit."
-        ) from last_exc
+        """Invoke a tushare endpoint with the shared retry + per-minute throttle."""
+        return request_with_retry(
+            fn,
+            max_retries=self._max_retries,
+            rate_limit=self._rate_limit,
+            **kwargs,
+        )
 
     # -- DataFeed API ------------------------------------------------------- #
     def get_bars(

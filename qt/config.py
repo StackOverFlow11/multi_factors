@@ -77,10 +77,20 @@ class UniverseFilters(_Strict):
 
 
 class UniverseCfg(_Strict):
-    type: Literal["static"] = "static"
+    type: Literal["static", "index"] = "static"
     symbols: list[str] = Field(default_factory=list)
+    index_code: str | None = None  # required when type == "index" (PIT membership)
     min_listing_days: int = 60
     filters: UniverseFilters = Field(default_factory=UniverseFilters)
+
+    @model_validator(mode="after")
+    def _check_type_requirements(self) -> "UniverseCfg":
+        if self.type == "index" and not self.index_code:
+            raise ValueError(
+                "universe.type is 'index' but universe.index_code is not set "
+                "(e.g. '000300.SH' for CSI300)."
+            )
+        return self
 
 
 class FactorCfg(_Strict):
