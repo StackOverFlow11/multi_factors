@@ -1,0 +1,41 @@
+# Bias Audit (Phase 0)
+
+本文件记录 P0 框架对各类偏差/未来函数的处理状态与降级。每个小节标注当前状态(已处理 / 降级 / 待办)。
+
+## 未来函数 / lookahead
+
+- 状态: **已处理(P0)**。
+- `momentum_20[t] = close[t] / close[t-window] - 1`,严格只用 t 及之前的收盘价(`groupby(symbol).shift(window)`)。
+- 事件顺序固定:在 t 收盘计算因子,t 收盘后调仓,从 t+1 持有。回测用**下一持有期**的收益结算,绝不使用因子已经看见的当日收益。
+- forward returns 只在 `analytics/` 计算,因子层永远拿不到未来收益(INV-001)。
+
+## PIT 成分股
+
+- 状态: **降级(P0)**。
+- 使用 `StaticUniverse`:成分与日期无关,返回配置中的固定 symbol 列表,**不是**真正的 point-in-time 历史成分(UNI-003)。
+- 因此存在幸存者偏差 / 成分前视偏差。该降级是 P0 有意为之,并在`phase0_summary.md` 的 DOWNGRADES 小节显式记录。P1 接入`index_weight` 历史成分后修复。
+
+## 可交易过滤
+
+- 状态: **部分处理(P0)**。
+- P0 仅实现 `missing_close` 过滤:截面日 `close` 为 NaN 的标的不可交易(UNI-004)。
+- 停牌 / ST / 涨跌停过滤接口已预留(`UniverseFilters`),但 P0 未实现(降级),P1 补齐。
+- `universe.min_listing_days` 已在配置中(默认 60),但 P0 **未执行**(no-op,降级):新上市标的不会被剔除。该空操作在此显式披露(INV-007),P1 接入上市日期后强制执行。
+
+## ann_date 财务对齐
+
+- 状态: **不适用 / 待办(P0)**。
+- P0 只用行情动量因子,不使用任何财务数据,因此本期不存在财务前视风险。
+- 一旦引入财务因子,财务特征必须按披露日 `ann_date` 对齐,不能早于披露日出现(DATA-012,P1)。
+
+## 复权
+
+- 状态: **保留 adj_factor(P0)**。
+- panel 始终携带 `adj_factor` 列(DemoFeed 中恒为 1.0)。P0 未做完整前复权重算价格序列;真实 tushare 接入时需用 `adj_factor` 做前复权(DATA-003)。该降级在报告中说明。
+
+## 交易成本
+
+- 状态: **已处理(P0)**。
+- 成本 = L1 换手 × `fee_rate`;`turnover = sum(|target_w - current_w|)`,在 symbol 并集上对齐计算。
+- 每个调仓期 `net_return = gross_return - cost`,成本拖累在`phase0_summary.md` 中汇总(BT-004)。slippage 参数已预留。
+- **结算价缺失约定(P0 降级)**:若持仓标的在持有期末(end)的 `close` 为 NaN(停牌 / 缺数据),回测以 0.0(持平)记其该期收益,而非剔除或用最近可得价结算。该约定在此显式披露(INV-007);P1 接入真实停牌/退市处理后改进结算逻辑。

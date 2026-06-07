@@ -1,0 +1,385 @@
+"""Phase 0 end-to-end orchestration (the spine that wires every slice).
+
+This module owns the *only* place where the slices are composed into a single
+reproducible run:
+
+    demo feed -> normalize_panel -> PanelStore.write/read
+      -> StaticUniverse -> MomentumFactor.compute
+      -> ProcessingPipeline.transform
+      -> EqualWeightAlpha.fit(None).predict (per rebalance date)
+      -> TopNEqualWeight.build
+      -> BacktestDriver.run (SimExecution)
+      -> analytics (IC via forward_returns, performance summary)
+      -> markdown report writers.
+
+It is deliberately thin glue: every layer keeps its own boundary. The CLI
+(:mod:`qt.cli`) only parses args and calls :func:`run_phase0`.
+
+Design invariants honoured here (CLAUDE.md / CONTRACTS.md):
+  * factors never see forward returns (analytics is the forward-return boundary);
+  * portfolio never touches a data source or places orders;
+  * backtest/live share the ``Execution`` port (we use ``SimExecution``);
+  * the event order is fixed: factor at close[t], hold from t+1 (the driver
+    settles each rebalance against the NEXT holding period's return);
+  * all writes land under the configured ``output`` dirs (SEC-003);
+  * the run is re-entrant: re-running over existing files must not fail (INV-006).
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+
+import pandas as pd
+
+from alpha.equal_weight import EqualWeightAlpha
+from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
+from analytics.performance import performance_summary
+from data.feed.base import DataFeed
+from data.feed.demo_feed import DemoFeed
+from data.feed.tushare_feed import TushareFeed
+from data.store.panel_store import PanelStore
+from factors.compute.momentum import MomentumFactor
+from factors.process.pipeline import ProcessingPipeline
+from portfolio.construct import TopNEqualWeight
+from qt.config import RootConfig, load_config
+from qt.reports import write_phase0_summary
+from runtime.backtest.driver import BacktestDriver
+from runtime.backtest.sim_execution import SimExecution
+from universe.static import StaticUniverse
+
+_LOGGER_NAME = "qt.run_phase0"
+
+# Periods per year per rebalance cadence. The nav table has one row per rebalance
+# (monthly -> 12 rows/year), so performance metrics must annualize against that
+# cadence, NOT the daily 252 that ``performance_summary`` defaults to.
+_PERIODS_PER_YEAR: dict[str, int] = {"monthly": 12}
+_DEFAULT_PERIODS_PER_YEAR: int = 12
+
+
+def _periods_per_year(rebalance: str) -> int:
+    """Annualization factor for the configured rebalance cadence (P0: monthly=12)."""
+    return _PERIODS_PER_YEAR.get(rebalance, _DEFAULT_PERIODS_PER_YEAR)
+
+
+@dataclass(frozen=True)
+class Phase0Result:
+    """Immutable summary of one phase0 run (what the report/tests consume)."""
+
+    config: RootConfig
+    panel_rows: int
+    panel_symbols: int
+    factor_name: str
+    ic_mean: float
+    ic_ir: float
+    quantile_returns: pd.DataFrame
+    nav_table: pd.DataFrame
+    performance: dict[str, float]
+    avg_turnover: float
+    cost_drag: float
+    downgrades: tuple[str, ...]
+    data_path: Path
+    factor_path: Path
+    report_path: Path
+    log_path: Path
+
+
+class _FrameScores:
+    """Scores source backed by a precomputed (date, symbol) score panel.
+
+    Bridges the processed factor panel + alpha model to the ``ScoresSource``
+    port the :class:`BacktestDriver` depends on. It only *reads* scores already
+    computed from past/current factors — it never sees forward returns, so the
+    no-lookahead boundary is preserved.
+    """
+
+    def __init__(self, score_panel: pd.Series) -> None:
+        # score_panel: MultiIndex(date, symbol) -> score (one column collapsed).
+        self._scores = score_panel
+
+    def get(self, date: pd.Timestamp, symbols: list[str]) -> pd.Series:
+        """Return symbol-indexed scores for ``date`` restricted to ``symbols``."""
+        norm = pd.Timestamp(date).normalize()
+        date_level = self._scores.index.get_level_values("date")
+        cross = self._scores.loc[date_level == norm]
+        if cross.empty:
+            return pd.Series(index=list(symbols), dtype=float)
+        cross = pd.Series(cross.to_numpy(), index=cross.index.get_level_values("symbol"))
+        return cross.reindex(list(symbols))
+
+
+def _make_logger(log_path: Path) -> logging.Logger:
+    """A run-scoped logger that writes to ``log_path`` (and never logs secrets)."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger(_LOGGER_NAME)
+    logger.setLevel(logging.INFO)
+    # Re-entrant: drop handlers from a previous run so we don't double-write.
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+    file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(file_handler)
+    logger.propagate = False
+    return logger
+
+
+def _build_scores(
+    processed: pd.DataFrame, alpha: EqualWeightAlpha
+) -> pd.Series:
+    """Predict one score per (date, symbol) from the processed factor panel.
+
+    The alpha is fit with ``forward_returns=None`` (equal-weight needs no future
+    data) and predicts per-date cross-sections, so a single (date, symbol) score
+    panel is produced for the backtest scores source.
+    """
+    alpha.fit(processed, None)
+    dates = processed.index.get_level_values("date")
+    blocks: list[pd.Series] = []
+    for date, block in processed.groupby(dates, sort=True):
+        scores = alpha.predict(block)
+        idx = pd.MultiIndex.from_product([[date], list(scores.index)], names=["date", "symbol"])
+        blocks.append(pd.Series(scores.to_numpy(), index=idx))
+    if not blocks:
+        return pd.Series(dtype=float, index=processed.index[:0])
+    return pd.concat(blocks).rename("score")
+
+
+def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
+    """Enumerate the P0 downgrades that MUST be disclosed (INV-007)."""
+    items = [
+        "Static universe (StaticUniverse): membership is date-independent, NOT "
+        "point-in-time index constituents (UNI-003 PIT downgrade). Survivorship / "
+        "look-ahead membership bias is present and intentional for P0.",
+        f"Daily ({cfg.data.freq}) bars only; minute-level link is deferred (P1).",
+        "IC / quantile returns use a simple numpy/pandas implementation, NOT "
+        "alphalens-reloaded (simple-vs-alphalens fallback, INV-007).",
+        "Performance metrics use a simple numpy/pandas implementation, NOT "
+        "quantstats (simple-vs-quantstats fallback, INV-007).",
+        f"universe.min_listing_days is configured ({cfg.universe.min_listing_days}) "
+        "but NOT enforced in P0 (no-op); newly listed names are not excluded. "
+        "Disclosed per INV-007; enforcement is deferred to P1.",
+    ]
+    if cfg.data.source == "demo":
+        items.append(
+            "Data source is the offline DemoFeed (deterministic, network-free); "
+            "no real tushare data is used in this run (CFG-005)."
+        )
+    return tuple(items)
+
+
+def run_phase0(config_path: str) -> Phase0Result:
+    """Run the full Phase 0 pipeline from a YAML config and write the reports.
+
+    Returns a :class:`Phase0Result`. Raises ``ConfigError`` (readable) on a bad
+    config and ``ValueError`` (readable) on an empty/degenerate run. All file
+    writes are confined to the configured ``output`` directories (SEC-003).
+    """
+    cfg = load_config(config_path)
+
+    log_path = Path(cfg.output.log_dir) / "run_phase0.log"
+    logger = _make_logger(log_path)
+    logger.info("phase0 start: project=%s source=%s", cfg.project.name, cfg.data.source)
+
+    panel = _load_panel(cfg, logger)
+    factor = _enabled_momentum(cfg)
+    factor_panel = _compute_factor_panel(cfg, panel, factor, logger)
+
+    processed = _process_factors(cfg, factor_panel)
+    scores = _build_scores(processed, EqualWeightAlpha())
+
+    nav_table = _run_backtest(cfg, panel, scores, factor.name, logger)
+    ic_mean, ic_ir, q_returns = _factor_analytics(cfg, panel, factor_panel, factor.name)
+    perf = (
+        performance_summary(
+            nav_table["nav"],
+            periods_per_year=_periods_per_year(cfg.backtest.rebalance),
+        )
+        if not nav_table.empty
+        else {
+            "annual_return": float("nan"),
+            "max_drawdown": float("nan"),
+            "volatility": float("nan"),
+            "sharpe": float("nan"),
+        }
+    )
+    avg_turnover = float(nav_table["turnover"].mean()) if not nav_table.empty else 0.0
+    cost_drag = float(nav_table["cost"].sum()) if not nav_table.empty else 0.0
+
+    downgrades = _collect_downgrades(cfg)
+    result = Phase0Result(
+        config=cfg,
+        panel_rows=len(panel),
+        panel_symbols=panel.index.get_level_values("symbol").nunique(),
+        factor_name=factor.name,
+        ic_mean=ic_mean,
+        ic_ir=ic_ir,
+        quantile_returns=q_returns,
+        nav_table=nav_table,
+        performance=perf,
+        avg_turnover=avg_turnover,
+        cost_drag=cost_drag,
+        downgrades=downgrades,
+        data_path=Path(cfg.output.data_dir) / f"{cfg.data.output_name}.parquet",
+        factor_path=Path(cfg.output.factor_dir) / "factors.parquet",
+        report_path=Path(cfg.output.report_dir) / "phase0_summary.md",
+        log_path=log_path,
+    )
+    write_phase0_summary(result)
+    logger.info(
+        "phase0 done: ic_mean=%.4f ic_ir=%.4f annual_return=%.4f report=%s",
+        ic_mean,
+        ic_ir,
+        perf.get("annual_return", float("nan")),
+        result.report_path,
+    )
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Step helpers (each small + single-purpose; orchestration stays linear above).
+# --------------------------------------------------------------------------- #
+def _build_feed(cfg: RootConfig) -> DataFeed:
+    """Construct the DataFeed for the configured source (``demo`` | ``tushare``).
+
+    Dispatches on ``cfg.data.source`` so a ``tushare`` config is NOT silently
+    served demo data. The tushare branch requires ``external_secret_file`` (the
+    token never lives in the repo); constructing the feed performs no network /
+    token read — that is deferred to first ``get_bars`` (SEC-001/004).
+    """
+    if cfg.data.source == "demo":
+        return DemoFeed(calendar_start=cfg.data.start)
+    if cfg.data.source == "tushare":
+        secret_file = cfg.data.external_secret_file
+        if not secret_file:
+            raise ValueError(
+                "data.source is 'tushare' but data.external_secret_file is not set. "
+                "Point it at your .config.json (the token is read from there, never "
+                "hardcoded)."
+            )
+        return TushareFeed(
+            secret_file=secret_file,
+            token_key=cfg.data.tushare_token_key,
+        )
+    raise ValueError(
+        f"Unsupported data.source {cfg.data.source!r}; expected 'demo' or 'tushare'."
+    )
+
+
+def _load_panel(cfg: RootConfig, logger: logging.Logger) -> pd.DataFrame:
+    """Fetch the market panel, persist it, and read it back through the store."""
+    symbols = list(cfg.universe.symbols)
+    if not symbols:
+        raise ValueError(
+            "universe.symbols is empty; configure at least one symbol to run phase0."
+        )
+    feed = _build_feed(cfg)
+    panel = feed.get_bars(symbols, cfg.data.start, cfg.data.end, freq=cfg.data.freq)
+    if panel.empty:
+        raise ValueError(
+            "No market data returned for the configured window "
+            f"[{cfg.data.start}, {cfg.data.end}] and symbols {symbols}."
+        )
+
+    store = PanelStore(cfg.output.data_dir)
+    store.write(cfg.data.output_name, panel, overwrite=cfg.output.overwrite)
+    panel = store.read(cfg.data.output_name)
+    logger.info("data: %d rows, %d symbols", len(panel), panel.index.get_level_values("symbol").nunique())
+    return panel
+
+
+def _enabled_momentum(cfg: RootConfig) -> MomentumFactor:
+    """Instantiate the (single P0) enabled momentum factor from config."""
+    enabled = [f for f in cfg.factors if f.enabled]
+    if not enabled:
+        raise ValueError("No enabled factor in config.factors; phase0 needs momentum_20.")
+    spec = enabled[0]
+    params = dict(spec.params)
+    window = int(params.get("window", 20))
+    price_col = str(params.get("price_col", "close"))
+    return MomentumFactor(window=window, price_col=price_col)
+
+
+def _compute_factor_panel(
+    cfg: RootConfig,
+    panel: pd.DataFrame,
+    factor: MomentumFactor,
+    logger: logging.Logger,
+) -> pd.DataFrame:
+    """Compute the factor series, frame it, and persist it via PanelStore-style write."""
+    series = factor.compute(panel)
+    factor_panel = series.to_frame(name=factor.name)
+    _write_factor_panel(cfg, factor_panel)
+    logger.info("factor: %s computed (%d rows)", factor.name, len(factor_panel))
+    return factor_panel
+
+
+def _write_factor_panel(cfg: RootConfig, factor_panel: pd.DataFrame) -> None:
+    """Persist the factor panel to ``factors/factors.parquet`` (re-entrant)."""
+    target = Path(cfg.output.factor_dir) / "factors.parquet"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    flat = factor_panel.reset_index()
+    tmp = target.with_suffix(".parquet.tmp")
+    flat.to_parquet(tmp, engine="pyarrow", index=False)
+    tmp.replace(target)
+
+
+def _process_factors(cfg: RootConfig, factor_panel: pd.DataFrame) -> pd.DataFrame:
+    """Run drop_missing + z-score (per-date) from config toggles."""
+    pipeline = ProcessingPipeline(
+        drop_missing=cfg.processing.drop_missing,
+        standardize=cfg.processing.standardize.enabled,
+        winsorize=cfg.processing.winsorize.enabled,
+        neutralize=cfg.processing.neutralize.enabled,
+    )
+    return pipeline.transform(factor_panel)
+
+
+def _run_backtest(
+    cfg: RootConfig,
+    panel: pd.DataFrame,
+    scores: pd.Series,
+    factor_name: str,
+    logger: logging.Logger,
+) -> pd.DataFrame:
+    """Wire the universe + scores + constructor + execution into the driver."""
+    universe = StaticUniverse(list(cfg.universe.symbols), cfg.universe.filters.model_dump())
+    constructor = TopNEqualWeight(cfg.portfolio.top_n, long_only=cfg.portfolio.long_only)
+    execution = SimExecution(fee_rate=cfg.cost.fee_rate, cash_return=cfg.backtest.cash_return)
+    driver = BacktestDriver(
+        universe=universe,
+        scores=_FrameScores(scores),
+        constructor=constructor,
+        execution=execution,
+        prices=panel,
+        rebalance=cfg.backtest.rebalance,
+        fee_rate=cfg.cost.fee_rate,
+        initial_nav=cfg.backtest.initial_nav,
+        cash_return=cfg.backtest.cash_return,
+    )
+    nav_table = driver.run()
+    logger.info("backtest: %d rebalance rows", len(nav_table))
+    return nav_table
+
+
+def _factor_analytics(
+    cfg: RootConfig,
+    panel: pd.DataFrame,
+    factor_panel: pd.DataFrame,
+    factor_name: str,
+) -> tuple[float, float, pd.DataFrame]:
+    """IC summary + quantile returns from the RAW factor + forward returns.
+
+    Analytics is the only place forward returns are computed (INV-001). We use
+    the first configured forward-return period for IC (the holding horizon proxy).
+    """
+    periods = tuple(int(p) for p in cfg.analytics.forward_return_periods)
+    fwd = forward_returns(panel, periods=periods)
+    horizon = periods[0]
+    fwd_col = fwd[f"forward_return_{horizon}d"]
+    factor_series = factor_panel[factor_name]
+    ic = compute_ic(factor_series, fwd_col)
+    summary = ic_summary(ic)
+    q_returns = quantile_returns(factor_series, fwd_col, quantiles=cfg.analytics.quantiles)
+    return summary["ic_mean"], summary["ic_ir"], q_returns
