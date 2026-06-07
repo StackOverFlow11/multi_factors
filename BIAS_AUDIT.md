@@ -20,6 +20,7 @@
 - 状态: **部分处理(P0)**。
 - P0 仅实现 `missing_close` 过滤:截面日 `close` 为 NaN 的标的不可交易(UNI-004)。
 - 停牌 / ST / 涨跌停过滤接口已预留(`UniverseFilters`),但 P0 未实现(降级),P1 补齐。
+- 退市 / 无数据标的(如 `000003.SZ`,2024 已退市)当前仅表现为不在 panel 中而被隐式剔除;真正的 PIT 历史成分与退市处理是下一步 P1(`index_weight`)。
 - `universe.min_listing_days` 已在配置中(默认 60),但 P0 **未执行**(no-op,降级):新上市标的不会被剔除。该空操作在此显式披露(INV-007),P1 接入上市日期后强制执行。
 
 ## ann_date 财务对齐
@@ -30,8 +31,10 @@
 
 ## 复权
 
-- 状态: **保留 adj_factor(P0)**。
-- panel 始终携带 `adj_factor` 列(DemoFeed 中恒为 1.0)。P0 未做完整前复权重算价格序列;真实 tushare 接入时需用 `adj_factor` 做前复权(DATA-003)。该降级在报告中说明。
+- 状态: **前复权已实现(P1)**。
+- panel 始终携带 `adj_factor` 列(DemoFeed 中恒为 1.0)。`data/clean/adjust.py` 的 `front_adjust` 用 `adj_factor` 做前复权(qfq),在 pipeline 读盘后、因子计算前于内存中应用(DATA-003)。
+- 约定:按 symbol 锚定窗口内最新日 (`qfq = raw × adj_factor / adj_factor[latest]`)。锚定项在任何价格比值中约掉,故所有收益率 / 因子值对锚定与扩窗都不变 —— PanelStore 保持 raw(+adj_factor),复权在内存做,batch≡incremental 一致。
+- 实证:平安银行 2024-06-14 除权,raw 当日 -5.74%(分红跳空),qfq +0.99%(真实涨跌);momentum_20 因此最多变动 6.77pp。demo(adj=1.0)下为恒等。
 
 ## 交易成本
 

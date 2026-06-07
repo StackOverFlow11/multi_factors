@@ -15,7 +15,7 @@ Run from the repo root with the project python:
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **93 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **105 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` | exit `0`, writes `artifacts/reports/phase0_summary.md` |
@@ -40,7 +40,9 @@ Run from the repo root with the project python:
 | `test_analytics_performance.py` | 3 | 11 — analytics (perf) |
 | `test_phase0_pipeline.py` | 8 | 12 — phase0 pipeline (NEW) |
 | `test_bias_audit_report.py` | 4 | 13 — bias audit (NEW) |
-| **Total** | **93** | |
+| `test_adjust.py` | 7 | P1 — front-adjust / qfq (NEW) |
+| `test_tushare_throttle.py` | 5 | P1 — tushare rate-limit + retry (NEW) |
+| **Total** | **105** | |
 
 ## New integration tests (this slice)
 

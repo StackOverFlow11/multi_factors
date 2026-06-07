@@ -36,6 +36,7 @@ import pandas as pd
 from alpha.equal_weight import EqualWeightAlpha
 from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
 from analytics.performance import performance_summary
+from data.clean.adjust import front_adjust
 from data.feed.base import DataFeed
 from data.feed.demo_feed import DemoFeed
 from data.feed.tushare_feed import TushareFeed
@@ -285,7 +286,14 @@ def _load_panel(cfg: RootConfig, logger: logging.Logger) -> pd.DataFrame:
     store = PanelStore(cfg.output.data_dir)
     store.write(cfg.data.output_name, panel, overwrite=cfg.output.overwrite)
     panel = store.read(cfg.data.output_name)
-    logger.info("data: %d rows, %d symbols", len(panel), panel.index.get_level_values("symbol").nunique())
+    # Store stays RAW (+ adj_factor, incremental-safe); front-adjust in memory so
+    # factors / backtest see continuous qfq prices. Identity for demo (adj=1.0).
+    panel = front_adjust(panel)
+    logger.info(
+        "data: %d rows, %d symbols (front-adjusted)",
+        len(panel),
+        panel.index.get_level_values("symbol").nunique(),
+    )
     return panel
 
 

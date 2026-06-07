@@ -18,6 +18,7 @@ Field mapping (tushare ``daily`` -> CORE_COLUMNS):
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -71,10 +72,9 @@ class TushareFeed(DataFeed):
     ) -> None:
         self._secret_file = str(secret_file)
         self._token_key = token_key
-        # Reserved for SEC-004 (per-minute call cap + retry). Wiring a real
-        # limiter is P1; we store the knobs now so the interface is stable.
+        # SEC-004: per-minute call cap (calls/min) + retry on transient errors.
         self._rate_limit = rate_limit
-        self._max_retries = int(max_retries)
+        self._max_retries = max(1, int(max_retries))
         self._pro = None  # lazily built tushare pro client
 
     # -- secret handling ---------------------------------------------------- #
@@ -104,6 +104,34 @@ class TushareFeed(DataFeed):
             self._pro = ts.pro_api(token)
         return self._pro
 
+    # -- rate limit + retry (SEC-004) --------------------------------------- #
+    def _throttle(self) -> None:
+        """Sleep to respect ``rate_limit`` calls per minute (no-op if unset)."""
+        if self._rate_limit:
+            time.sleep(60.0 / self._rate_limit)
+
+    def _call(self, fn, **kwargs):
+        """Invoke a tushare endpoint with retry + throttle.
+
+        Retries transient errors with exponential backoff, then throttles to the
+        configured per-minute cap. Never echoes the token: the failure message
+        carries only the exception TYPE, not its payload.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                result = fn(**kwargs)
+            except Exception as exc:  # transient API / network error
+                last_exc = exc
+                time.sleep(min(2.0**attempt, 8.0))
+                continue
+            self._throttle()
+            return result
+        raise RuntimeError(
+            f"tushare call failed after {self._max_retries} attempt(s): "
+            f"{type(last_exc).__name__}. Check connectivity / rate limit."
+        ) from last_exc
+
     # -- DataFeed API ------------------------------------------------------- #
     def get_bars(
         self,
@@ -127,8 +155,11 @@ class TushareFeed(DataFeed):
 
         frames: list[pd.DataFrame] = []
         for symbol in symbols:
-            raw = pro.daily(
-                ts_code=symbol, start_date=start_compact, end_date=end_compact
+            raw = self._call(
+                pro.daily,
+                ts_code=symbol,
+                start_date=start_compact,
+                end_date=end_compact,
             )
             if raw is None or len(raw) == 0:
                 continue
@@ -148,7 +179,9 @@ class TushareFeed(DataFeed):
         getter = getattr(pro, "adj_factor", None)
         if getter is None:
             return None
-        adj = getter(ts_code=symbol, start_date=start_compact, end_date=end_compact)
+        adj = self._call(
+            getter, ts_code=symbol, start_date=start_compact, end_date=end_compact
+        )
         if adj is None or len(adj) == 0:
             return None
         return adj[["ts_code", "trade_date", "adj_factor"]].copy()
