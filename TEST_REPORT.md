@@ -1,8 +1,8 @@
-# TEST_REPORT — Phase 0
+# TEST_REPORT — Phase 1 (bias-boundary)
 
 ## Commands
 
-Run from the repo root with the project python:
+Run from the repo root with the project python (env `quant_mf`):
 
 ```bash
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m pytest -q
@@ -15,85 +15,80 @@ Run from the repo root with the project python:
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **135 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **164 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
-| Config validation | `validate-config` | exit `0`, prints `OK` |
-| End-to-end run | `run-phase0` | exit `0`, writes `artifacts/reports/phase0_summary.md` |
+| Config validation | `validate-config` (demo + `example_tushare.yaml`) | exit `0`, prints `OK` |
+| End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-## Per-file breakdown (full suite)
+Counts below are the actual `pytest --collect-only` numbers (sum = 164).
 
-| Test file | Tests | Slice |
+## Per-file breakdown — Phase 0 core (93)
+
+| Test file | Tests | Area |
 |---|---|---|
-| `test_project_bootstrap.py` | 10 | 0 — bootstrap |
-| `test_config.py` | 5 | 1 — config |
-| `test_data_schema.py` | 6 | 2 — schema |
-| `test_panel_store.py` | 6 | 2 — store |
-| `test_data_feed.py` | 5 | 3 — feeds |
-| `test_universe.py` | 4 | 4 — universe |
-| `test_factors_momentum.py` | 6 | 5 — momentum |
-| `test_factor_processing.py` | 4 | 6 — processing |
-| `test_alpha_equal_weight.py` | 4 | 7 — alpha |
-| `test_portfolio_topn.py` | 8 | 8 — portfolio |
-| `test_sim_execution.py` | 8 | 9 — sim execution |
-| `test_backtest_driver.py` | 7 | 10 — backtest |
-| `test_analytics_factor.py` | 5 | 11 — analytics (factor) |
-| `test_analytics_performance.py` | 3 | 11 — analytics (perf) |
-| `test_phase0_pipeline.py` | 8 | 12 — phase0 pipeline (NEW) |
-| `test_bias_audit_report.py` | 4 | 13 — bias audit (NEW) |
-| `test_adjust.py` | 7 | P1 — front-adjust / qfq (NEW) |
-| `test_tushare_throttle.py` | 5 | P1 — rate-limit + retry (shared helper) |
-| `test_index_universe.py` | 7 | P1 — PIT index universe (NEW) |
-| `test_index_feed.py` | 4 | P1 — index_weight feed + paging (NEW) |
-| `test_index_pipeline.py` | 1 | P1 — pre-start as-of snapshot wiring (NEW) |
-| `test_config_index.py` | 3 | P1 — universe.type=index config (NEW) |
-| `test_tradability_filters.py` | 7 | P1 — shared suspended/ST/limit filter (NEW) |
-| `test_tradability_enrich.py` | 5 | P1 — flag enrichment onto panel (NEW) |
-| `test_tushare_flags.py` | 3 | P1 — suspend_d/namechange/stk_limit feed (NEW) |
-| **Total** | **135** | |
+| `test_project_bootstrap.py` | 10 | bootstrap / imports / config |
+| `test_config.py` | 5 | config schema |
+| `test_data_schema.py` | 6 | panel schema |
+| `test_panel_store.py` | 6 | parquet store |
+| `test_data_feed.py` | 5 | demo + tushare feed boundary |
+| `test_universe.py` | 4 | static universe |
+| `test_factors_momentum.py` | 6 | momentum (no-lookahead) |
+| `test_factor_processing.py` | 4 | drop_missing + z-score |
+| `test_alpha_equal_weight.py` | 4 | equal-weight alpha |
+| `test_portfolio_topn.py` | 8 | TopN construction |
+| `test_sim_execution.py` | 8 | sim execution + cost |
+| `test_backtest_driver.py` | 7 | backtest driver |
+| `test_analytics_factor.py` | 5 | IC / quantile |
+| `test_analytics_performance.py` | 3 | performance metrics |
+| `test_phase0_pipeline.py` | 8 | end-to-end pipeline |
+| `test_bias_audit_report.py` | 4 | bias audit doc |
 
-## New integration tests (this slice)
+## Per-file breakdown — Phase 1 bias-boundary (71)
 
-`tests/test_phase0_pipeline.py` (Slice 12) — runs the REAL spine
-(`qt.pipeline.run_phase0`) on the offline DemoFeed, all writes redirected under
-`tmp_path` (no repo `artifacts/` pollution, SEC-003):
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_adjust.py` | 7 | front-adjust (qfq); ex-dividend gap removed |
+| `test_tushare_throttle.py` | 5 | shared rate-limit + retry |
+| `test_index_universe.py` | 7 | PIT index membership (as-of, survivorship) |
+| `test_index_feed.py` | 4 | index_weight feed + 90-day paging |
+| `test_index_pipeline.py` | 1 | pre-start snapshot lookback (as-of edge) |
+| `test_config_index.py` | 3 | `universe.type=index` config |
+| `test_tradability_filters.py` | 7 | shared suspended/ST/limit filter |
+| `test_tradability_enrich.py` | 5 | flag enrichment onto panel |
+| `test_tushare_flags.py` | 3 | suspend_d/namechange/stk_limit feed |
+| `test_pit_financials.py` | 6 | **ann_date as-of** (no disclosure leak) |
+| `test_tushare_fina.py` | 2 | fina_indicator feed |
+| `test_factors_financial.py` | 3 | financial factor (roe/netprofit_yoy) |
+| `test_financial_pipeline.py` | 4 | factor dispatch + demo-source guard |
+| `test_neutralize.py` | 4 | industry+size residual orthogonality |
+| `test_processing_neutralize.py` | 2 | neutralize wiring (covariates required) |
+| `test_covariates_enrich.py` | 3 | industry + market_cap enrichment |
+| `test_tushare_covariates.py` | 2 | stock_basic + daily_basic feed |
+| `test_real_path_config.py` | 3 | demo vs real-path downgrade disclosure |
+| **Total (P0 + P1)** | **164** | |
 
-- `test_phase0_pipeline_runs_with_demo_data` — end-to-end run returns a populated
-  result (NAV table with the contract columns; performance dict with the P0
-  metrics).
-- `test_phase0_pipeline_writes_expected_artifacts` — `daily.parquet`,
-  `factors.parquet`, `phase0_summary.md`, `run_phase0.log` all exist and live
-  inside the temp output dir.
-- `test_phase0_summary_mentions_static_universe_downgrade` — the summary's
-  DOWNGRADES section discloses the static-universe PIT downgrade, daily-data, and
-  the simple-vs-alphalens/quantstats fallback (INV-007).
-- `test_phase0_pipeline_is_reentrant` — re-running over already-written files
-  succeeds (INV-006).
-- `test_phase0_headline_metrics_are_finite_and_sane` — monthly NAV is annualized
-  at 12 periods/year, not daily 252 (HIGH-1 regression).
-- `test_phase0_report_has_no_hidden_na_quantile` — quantile means stay finite;
-  no hidden `inf` rendered as `n/a` (MEDIUM-1 regression).
-- `test_phase0_tushare_source_requires_secret_file` — `source='tushare'` without
-  a secret path raises a readable error, not silent demo fallback (HIGH-3).
-- `test_phase0_tushare_source_routes_to_tushare_feed` — a tushare config
-  dispatches to `TushareFeed` without network/token access in the test (HIGH-3).
+## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
-`tests/test_bias_audit_report.py` (Slice 13):
+Verified directly against tushare (results recorded in `BIAS_AUDIT.md` and
+`artifacts/reports/phase1_summary.md`):
 
-- `test_bias_audit_contains_required_sections` — every required section is present
-  (未来函数/lookahead, PIT 成分股, 可交易过滤, ann_date 财务对齐, 复权, 交易成本).
-- `test_bias_audit_records_known_phase0_limitations` — the audit records the P0
-  downgrades (static universe PIT downgrade, missing_close-only tradable filter,
-  adj_factor retained, forward returns confined to analytics).
-- `test_bias_audit_discloses_min_listing_days_noop` — configured-but-unenforced
-  `min_listing_days` is disclosed as a no-op downgrade.
-- `test_bias_audit_discloses_missing_settlement_price_convention` — missing
-  settlement close is disclosed as flat 0.0 return in P0.
+- **front-adjust**: 平安银行 2024-06-14 ex-dividend — raw −5.74% vs qfq +0.99%;
+  momentum_20 shifts up to 6.77pp.
+- **PIT index**: CSI300 2024 — 24 snapshots, 328 distinct names (28 in / 28 out);
+  `members(2024-06-15)` uses the 2024-06-03 snapshot; a dropped name stays in its era.
+- **ann_date**: 平安银行 Q1 (end 2024-03-31, ann 2024-04-20) — as-of roe stays the
+  prior annual (10.24) until 04-19, switches to Q1 (3.12) on 04-22; no leak.
+- **neutralization**: 12 names / 4 industries — corr(momentum, log_mcap)
+  −0.617 → −0.000; per-industry residual means ≈ 0.
 
 ## Notes
 
-- No test hits the network or reads the tushare token (TEST-002, INV-004): the
-  whole suite runs on `DemoFeed` / fixtures.
-- The demo portfolio's annualized return is intentionally extreme — the demo
-  price paths include a 3x jump (`000005.SZ`) and P0 does NOT optimize for
-  realistic returns (spec §19). The pipeline correctness (event order, costs,
-  no-lookahead) is what is under test, not strategy performance.
+- No test hits the network or reads the tushare token (TEST-002, INV-004): the whole
+  suite runs on `DemoFeed` / fixtures / monkeypatched SDKs.
+- Financial factors, the PIT index universe, tradability filters and neutralization
+  all require the real tushare path; on demo they raise a readable error rather than
+  fabricate (verified by `test_financial_pipeline.py`, `_build_universe`, the
+  neutralize guard).
+- The demo portfolio's annualized return is intentionally extreme (demo price paths
+  include a 3x jump); P0/P1 do not optimize for realistic returns — pipeline
+  correctness (event order, costs, no-lookahead) is what is under test.
