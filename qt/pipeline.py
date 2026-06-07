@@ -160,36 +160,87 @@ def _build_scores(
 
 
 def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
-    """Enumerate the P0 downgrades that MUST be disclosed (INV-007)."""
+    """Enumerate the downgrades that MUST be disclosed (INV-007), path-aware.
+
+    The first item states the active DATA PATH explicitly so a reader can never
+    mistake a demo run for a real PIT / financial validation, or vice versa.
+    """
+    real = cfg.data.source == "tushare"
+    factor_name = cfg.factors[0].name if cfg.factors else "?"
+    is_financial = factor_name in SUPPORTED_FINANCIAL_FIELDS
+
+    if real:
+        parts = ["front-adjusted (qfq) prices"]
+        parts.append(
+            f"PIT index membership ({cfg.universe.index_code})"
+            if cfg.universe.type == "index"
+            else "STATIC universe (still a PIT downgrade — see below)"
+        )
+        parts.append(
+            f"ann_date-aligned financial factor '{factor_name}'"
+            if is_financial
+            else f"price factor '{factor_name}'"
+        )
+        if cfg.processing.neutralize.enabled:
+            parts.append("industry+size neutralized")
+        path = "DATA PATH = REAL tushare: " + "; ".join(parts) + "."
+    else:
+        path = (
+            "DATA PATH = DEMO / offline (DemoFeed, deterministic, network-free): "
+            "this is NOT real market data; results must NOT be read as a real PIT, "
+            "ann_date, or financial validation (CFG-005)."
+        )
+
+    # membership
     if cfg.universe.type == "index":
         membership = (
             f"Index universe (PITIndexUniverse, {cfg.universe.index_code}): "
             "point-in-time membership from tushare index_weight snapshots (latest "
-            "snapshot on-or-before each date; survivorship-safe). This RESOLVES the "
-            "P0 static-universe PIT downgrade (UNI-003/UNI-009)."
+            "snapshot on-or-before each date; survivorship-safe). RESOLVES the "
+            "static-universe PIT downgrade (UNI-003/UNI-009)."
         )
     else:
         membership = (
             "Static universe (StaticUniverse): membership is date-independent, NOT "
             "point-in-time index constituents (UNI-003 PIT downgrade). Survivorship / "
-            "look-ahead membership bias is present and intentional for P0."
+            "look-ahead membership bias is present."
         )
+
+    # financials / ann_date
+    if is_financial:
+        financials = (
+            f"Financial factor '{factor_name}' is ann_date PIT-aligned (DATA-012): "
+            "a figure is used only after its disclosure date, never by report period."
+        )
+    else:
+        financials = (
+            "No financial factor in this run; ann_date alignment is implemented and "
+            "available but unused here (price factor only)."
+        )
+
+    # neutralization
+    if cfg.processing.neutralize.enabled:
+        neutral = (
+            "Factor is industry + market-cap neutralized; the industry tag is the "
+            "CURRENT one (stock_basic), a mild PIT downgrade (historical industry is "
+            "a later item)."
+        )
+    else:
+        neutral = "No neutralization in this run (raw cross-sectional factor)."
+
     items = [
+        path,
         membership,
-        f"Daily ({cfg.data.freq}) bars only; minute-level link is deferred (P1).",
+        financials,
+        neutral,
+        f"Daily ({cfg.data.freq}) bars only; minute-level link is deferred.",
         "IC / quantile returns use a simple numpy/pandas implementation, NOT "
         "alphalens-reloaded (simple-vs-alphalens fallback, INV-007).",
         "Performance metrics use a simple numpy/pandas implementation, NOT "
         "quantstats (simple-vs-quantstats fallback, INV-007).",
         f"universe.min_listing_days is configured ({cfg.universe.min_listing_days}) "
-        "but NOT enforced in P0 (no-op); newly listed names are not excluded. "
-        "Disclosed per INV-007; enforcement is deferred to P1.",
+        "but NOT enforced (no-op); newly listed names are not excluded (INV-007).",
     ]
-    if cfg.data.source == "demo":
-        items.append(
-            "Data source is the offline DemoFeed (deterministic, network-free); "
-            "no real tushare data is used in this run (CFG-005)."
-        )
     return tuple(items)
 
 
