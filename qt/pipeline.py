@@ -37,13 +37,17 @@ from alpha.equal_weight import EqualWeightAlpha
 from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
 from analytics.performance import performance_summary
 from data.clean.adjust import front_adjust
+from data.clean.pit_financials import asof_financials
 from data.clean.tradability import enrich_tradability
 from data.feed.base import DataFeed
 from data.feed.demo_feed import DemoFeed
 from data.feed.index_feed import IndexConstituentsFeed
 from data.feed.tushare_feed import TushareFeed
+from data.feed.tushare_fina import TushareFinancialFeed
 from data.feed.tushare_flags import TushareFlagsFeed
 from data.store.panel_store import PanelStore
+from factors.compute.financial import SUPPORTED_FIELDS as SUPPORTED_FINANCIAL_FIELDS
+from factors.compute.financial import FinancialFactor
 from factors.compute.momentum import MomentumFactor
 from factors.process.pipeline import ProcessingPipeline
 from portfolio.construct import TopNEqualWeight
@@ -202,7 +206,8 @@ def run_phase0(config_path: str) -> Phase0Result:
 
     universe, symbols = _build_universe(cfg, logger)
     panel = _load_panel(cfg, symbols, logger)
-    factor = _enabled_momentum(cfg)
+    factor = _build_factor(cfg)
+    panel = _maybe_enrich_financials(cfg, panel, symbols, factor, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factor, logger)
 
     processed = _process_factors(cfg, factor_panel)
@@ -396,16 +401,62 @@ def _enrich_tradability(
     return panel
 
 
-def _enabled_momentum(cfg: RootConfig) -> MomentumFactor:
-    """Instantiate the (single P0) enabled momentum factor from config."""
+def _build_factor(cfg: RootConfig):
+    """Instantiate the (single, first-enabled) factor from config by name.
+
+    ``momentum*`` -> :class:`MomentumFactor` (price-based, P0). A financial field
+    name (e.g. ``roe``, ``netprofit_yoy``) -> :class:`FinancialFactor`, which needs
+    the tushare data path (ann_date alignment) — not available for demo data.
+    """
     enabled = [f for f in cfg.factors if f.enabled]
     if not enabled:
-        raise ValueError("No enabled factor in config.factors; phase0 needs momentum_20.")
+        raise ValueError("No enabled factor in config.factors; phase0 needs a factor.")
     spec = enabled[0]
     params = dict(spec.params)
-    window = int(params.get("window", 20))
-    price_col = str(params.get("price_col", "close"))
-    return MomentumFactor(window=window, price_col=price_col)
+    if spec.name in SUPPORTED_FINANCIAL_FIELDS:
+        return FinancialFactor(field=spec.name)
+    if spec.name.startswith("momentum"):
+        return MomentumFactor(
+            window=int(params.get("window", 20)),
+            price_col=str(params.get("price_col", "close")),
+        )
+    raise ValueError(
+        f"Unknown factor {spec.name!r}; expected 'momentum*' or one of "
+        f"{SUPPORTED_FINANCIAL_FIELDS}."
+    )
+
+
+def _maybe_enrich_financials(
+    cfg: RootConfig,
+    panel: pd.DataFrame,
+    symbols: list[str],
+    factor,
+    logger: logging.Logger,
+) -> pd.DataFrame:
+    """Attach the ann_date-aligned financial column when a financial factor is used.
+
+    Financial factors require the tushare data path: a demo run has no disclosure
+    dates, so we fail with a readable error rather than fabricate financials.
+    """
+    if not isinstance(factor, FinancialFactor):
+        return panel
+    if cfg.data.source != "tushare":
+        raise ValueError(
+            f"Factor '{factor.name}' is a financial factor and needs real financial "
+            f"data (data.source='tushare'); it cannot run on demo data."
+        )
+    feed = TushareFinancialFeed(
+        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+    )
+    fina = feed.get_fina_indicator(symbols, cfg.data.start, cfg.data.end, fields=[factor.name])
+    enriched = panel.copy()
+    aligned = asof_financials(panel.index, fina, [factor.name])
+    enriched[factor.name] = aligned[factor.name]
+    logger.info(
+        "financials: as-of aligned '%s' by ann_date (%d disclosed rows)",
+        factor.name, len(fina),
+    )
+    return enriched
 
 
 def _compute_factor_panel(

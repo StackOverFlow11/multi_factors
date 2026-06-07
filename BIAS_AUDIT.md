@@ -31,9 +31,10 @@
 
 ## ann_date 财务对齐
 
-- 状态: **不适用 / 待办(P0)**。
-- P0 只用行情动量因子,不使用任何财务数据,因此本期不存在财务前视风险。
-- 一旦引入财务因子,财务特征必须按披露日 `ann_date` 对齐,不能早于披露日出现(DATA-012,P1)。
+- 状态: **已实现(P1)**。
+- 财务因子(`roe` / `netprofit_yoy`)经 `data.clean.pit_financials.asof_financials` 按披露日 `ann_date` 做 backward as-of 对齐:每个 trade_date 只取 `ann_date <= trade_date` 的最近一期报告,**绝不按 `end_date`(报告期末)join**(DATA-012)。
+- 实证:平安银行 2024 Q1(end_date 2024-03-31)披露日 ann_date 2024-04-20;as-of roe 在 04-19 仍是上一期年报值(10.2436),04-22 才切到 Q1(3.1176)——晚于报告期末约 3 周,证明无未来披露泄漏。
+- 财务因子仅在 tushare 数据路径可用;demo 无披露日,配置财务因子 + demo 源会报可读错误,**不伪造财务**。
 
 ## 复权
 
