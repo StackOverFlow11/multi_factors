@@ -27,10 +27,11 @@ from __future__ import annotations
 import pandas as pd
 
 from factors.process.base import FactorProcessor
+from factors.process.neutralize import neutralize_by_date
 
 
 class ProcessingPipeline(FactorProcessor):
-    """Configurable by-date factor processor (drop_missing + z-score for P0)."""
+    """Configurable by-date factor processor (drop_missing/winsorize/neutralize/zscore)."""
 
     def __init__(
         self,
@@ -39,12 +40,17 @@ class ProcessingPipeline(FactorProcessor):
         standardize: bool = True,
         winsorize: bool = False,
         neutralize: bool = False,
+        industry: pd.Series | None = None,
+        market_cap: pd.Series | None = None,
     ) -> None:
-        # Step toggles. P1 hooks default off and are no-ops in P0.
+        # Step toggles. winsorize stays a P1 no-op; neutralize is implemented (P1)
+        # and needs the industry + market_cap cross-sectional covariates.
         self._drop_missing = drop_missing
         self._standardize = standardize
         self._winsorize = winsorize
         self._neutralize = neutralize
+        self._industry = industry
+        self._market_cap = market_cap
 
     def transform(self, factors: pd.DataFrame) -> pd.DataFrame:
         """Process every column cross-sectionally, per date.
@@ -72,10 +78,10 @@ class ProcessingPipeline(FactorProcessor):
             out = self._apply_drop_missing(out)
         if self._winsorize:
             out = self._apply_winsorize(out, date_level)
+        if self._neutralize:
+            out = self._apply_neutralize(out)
         if self._standardize:
             out = self._apply_zscore(out, date_level)
-        if self._neutralize:
-            out = self._apply_neutralize(out, date_level)
 
         return out.sort_index()
 
@@ -106,7 +112,20 @@ class ProcessingPipeline(FactorProcessor):
         """P1 hook: clip extremes per date. No-op in P0 (returns unchanged)."""
         return frame
 
-    @staticmethod
-    def _apply_neutralize(frame: pd.DataFrame, date_level: str) -> pd.DataFrame:
-        """P1 hook: industry/size neutralization per date. No-op in P0."""
-        return frame
+    def _apply_neutralize(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Per-date industry + size residual for every factor column (P1).
+
+        Requires the ``industry`` and ``market_cap`` covariates (set at
+        construction). If neutralization is enabled but either is missing, raise a
+        readable error rather than silently skipping or fabricating values.
+        """
+        if self._industry is None or self._market_cap is None:
+            raise ValueError(
+                "processing.neutralize is enabled but industry/market_cap are not "
+                "available. They require the tushare data path (industry + market "
+                "cap enrichment); demo data has neither, so neutralization cannot run."
+            )
+        out = frame.copy()
+        for column in out.columns:
+            out[column] = neutralize_by_date(out[column], self._industry, self._market_cap)
+        return out

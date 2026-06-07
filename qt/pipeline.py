@@ -37,11 +37,13 @@ from alpha.equal_weight import EqualWeightAlpha
 from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
 from analytics.performance import performance_summary
 from data.clean.adjust import front_adjust
+from data.clean.covariates import enrich_covariates
 from data.clean.pit_financials import asof_financials
 from data.clean.tradability import enrich_tradability
 from data.feed.base import DataFeed
 from data.feed.demo_feed import DemoFeed
 from data.feed.index_feed import IndexConstituentsFeed
+from data.feed.tushare_covariates import TushareCovariatesFeed
 from data.feed.tushare_feed import TushareFeed
 from data.feed.tushare_fina import TushareFinancialFeed
 from data.feed.tushare_flags import TushareFlagsFeed
@@ -208,9 +210,10 @@ def run_phase0(config_path: str) -> Phase0Result:
     panel = _load_panel(cfg, symbols, logger)
     factor = _build_factor(cfg)
     panel = _maybe_enrich_financials(cfg, panel, symbols, factor, logger)
+    panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factor, logger)
 
-    processed = _process_factors(cfg, factor_panel)
+    processed = _process_factors(cfg, factor_panel, panel)
     scores = _build_scores(processed, EqualWeightAlpha())
 
     nav_table = _run_backtest(cfg, panel, scores, factor.name, universe, logger)
@@ -483,15 +486,50 @@ def _write_factor_panel(cfg: RootConfig, factor_panel: pd.DataFrame) -> None:
     tmp.replace(target)
 
 
-def _process_factors(cfg: RootConfig, factor_panel: pd.DataFrame) -> pd.DataFrame:
-    """Run drop_missing + z-score (per-date) from config toggles."""
+def _process_factors(
+    cfg: RootConfig, factor_panel: pd.DataFrame, panel: pd.DataFrame
+) -> pd.DataFrame:
+    """Run drop_missing + (winsorize) + neutralize + z-score from config toggles.
+
+    Neutralization pulls the ``industry`` / ``market_cap`` covariates off the panel
+    (placed there by :func:`_maybe_enrich_covariates`). When neutralize is enabled
+    but they are absent, ``ProcessingPipeline`` raises a readable error.
+    """
+    industry = panel["industry"] if "industry" in panel.columns else None
+    market_cap = panel["market_cap"] if "market_cap" in panel.columns else None
     pipeline = ProcessingPipeline(
         drop_missing=cfg.processing.drop_missing,
         standardize=cfg.processing.standardize.enabled,
         winsorize=cfg.processing.winsorize.enabled,
         neutralize=cfg.processing.neutralize.enabled,
+        industry=industry,
+        market_cap=market_cap,
     )
     return pipeline.transform(factor_panel)
+
+
+def _maybe_enrich_covariates(
+    cfg: RootConfig, panel: pd.DataFrame, symbols: list[str], logger: logging.Logger
+) -> pd.DataFrame:
+    """Attach industry + market_cap when neutralization is enabled (tushare only)."""
+    if not cfg.processing.neutralize.enabled:
+        return panel
+    if cfg.data.source != "tushare":
+        raise ValueError(
+            "processing.neutralize is enabled but data.source is not 'tushare'; "
+            "industry + market_cap need real data (demo has neither)."
+        )
+    feed = TushareCovariatesFeed(
+        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+    )
+    industry = feed.industry(symbols)
+    market_cap = feed.market_cap(symbols, cfg.data.start, cfg.data.end)
+    panel = enrich_covariates(panel, industry=industry, market_cap=market_cap)
+    logger.info(
+        "covariates: industry(%d symbols) + market_cap(%d rows) for neutralization",
+        len(industry), len(market_cap),
+    )
+    return panel
 
 
 def _run_backtest(

@@ -49,3 +49,10 @@
 - 成本 = L1 换手 × `fee_rate`;`turnover = sum(|target_w - current_w|)`,在 symbol 并集上对齐计算。
 - 每个调仓期 `net_return = gross_return - cost`,成本拖累在`phase0_summary.md` 中汇总(BT-004)。slippage 参数已预留。
 - **结算价缺失约定(P0 降级)**:若持仓标的在持有期末(end)的 `close` 为 NaN(停牌 / 缺数据),回测以 0.0(持平)记其该期收益,而非剔除或用最近可得价结算。该约定在此显式披露(INV-007);P1 接入真实停牌/退市处理后改进结算逻辑。
+
+## 中性化
+
+- 状态: **行业 + 市值中性化已实现(P1)**。
+- `factors.process.neutralize.neutralize_by_date`:每个 date 截面把因子对 `[log(market_cap), one-hot(industry)]` 做 OLS,取残差,移除规模与行业暴露。缺行业 / 市值或截面名称 < 3 时返回 NaN,**不静默乱算**;`processing.neutralize` 开启但协变量缺失(如 demo 路径)直接报可读错误。
+- 实证:12 只票横跨 4 行业(2024-09-30),corr(原始 momentum, log市值) = -0.617 → 中性化后 -0.000,各行业残差均值 ≈ 0,确认规模/行业暴露被移除。
+- **降级**:行业来自 `stock_basic.industry` 的**当前**行业标签,非按历史时点,故行业中性化带有轻微成分前视(市值 `daily_basic.total_mv` 为逐日真值)。PIT 行业历史是后续项,此降级在此显式披露(INV-007)。
