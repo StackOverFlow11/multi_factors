@@ -51,11 +51,18 @@ class TushareFinancialFeed:
         end: str,
         fields: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Return financial records over [start, end] (filtered by ann_date).
+        """Return financial records whose REPORT PERIOD falls in [start, end].
+
+        tushare ``fina_indicator`` filters ``start_date``/``end_date`` by the
+        report period (``end_date``), NOT by the announcement date — every report
+        whose period ends in the window is returned, regardless of when it was
+        disclosed. Both ``ann_date`` (disclosure) and ``end_date`` (period) are
+        returned; the point-in-time ``ann_date <= trade_date`` alignment is done
+        downstream in :func:`data.clean.pit_financials.asof_financials`. This feed
+        never joins to trade dates and never looks ahead.
 
         Output columns: ``symbol``, ``ann_date`` (str YYYYMMDD), ``end_date``, and
-        the requested ``fields``. Reports announced in the window are returned; the
-        as-of alignment to trade dates happens in the clean layer.
+        the requested ``fields``.
         """
         wanted = list(fields) if fields else list(DEFAULT_FIELDS)
         col_spec = ",".join(["ts_code", "ann_date", "end_date", *wanted])
