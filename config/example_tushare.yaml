@@ -1,0 +1,97 @@
+# Real-data (tushare) P1 path — the "does not fool itself" configuration.
+#
+# This documents the REAL path (contrast with config/example.yaml = demo/offline):
+#   - source: tushare           -> real front-adjusted (qfq) prices
+#   - universe.type: index      -> point-in-time CSI300 membership (survivorship-safe)
+#   - filters all on            -> suspended / ST / limit_up_down tradability filtering
+#   - processing.neutralize on  -> industry + market-cap neutralized factor
+#
+# To exercise the ann_date PIT financial path instead, set
+#   factors: [{name: roe}]   (or net_profit_yoy)
+# which is aligned by disclosure date (ann_date <= trade_date), never report period.
+#
+# NOTE: an index run loads ~300 names x daily (+ flags/covariates), so it is heavy
+# and hits tushare; it is provided as documentation of the real path, not for CI.
+
+project:
+  name: quantitative_trading_phase1_tushare
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2024-01-01"
+  end: "2024-12-31"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: daily
+
+universe:
+  type: index
+  index_code: "000300.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+factors:
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+
+alpha:
+  model: equal_weight
+  params: {}
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 30
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+analytics:
+  forward_return_periods:
+    - 1
+    - 5
+    - 20
+  quantiles: 5
+  benchmark: null
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true

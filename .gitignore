@@ -10,6 +10,7 @@ venv/
 .env
 
 # Data artifacts (quant: keep large data out of git)
+artifacts/
 *.parquet
 *.feather
 *.h5
