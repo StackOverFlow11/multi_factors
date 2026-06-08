@@ -41,6 +41,18 @@ def test_asof_uses_ann_date_not_end_date():
     assert roe_on("2024-04-21") == 3.1
 
 
+def test_asof_carries_forward_report_disclosed_before_window():
+    # a single report disclosed 2023-12-31; the whole trade window is mid-2024.
+    fina = pd.DataFrame(
+        {"symbol": ["000001.SZ"], "ann_date": ["20231231"],
+         "end_date": ["20230930"], "roe": [8.0]}
+    )
+    idx = _index(["2024-06-03", "2024-06-10", "2024-06-17"])
+    out = asof_financials(idx, fina, ["roe"])
+    # the prior disclosed report carries forward to every trade date (no NaN gap)
+    assert (out["roe"] == 8.0).all()
+
+
 def test_asof_nan_before_first_disclosure():
     idx = _index(["2023-06-01"])  # before the earliest ann_date (2023-12-31)
     out = asof_financials(idx, _fina(), ["roe"])

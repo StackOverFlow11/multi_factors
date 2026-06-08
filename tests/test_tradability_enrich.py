@@ -70,3 +70,33 @@ def test_enrich_does_not_mutate_input():
     before = set(panel.columns)
     enrich_tradability(panel, suspended=set())
     assert set(panel.columns) == before
+
+
+def test_limit_flag_uses_raw_close_and_survives_front_adjust():
+    # adj_factor varies (1.0 then 2.0) so qfq close != raw close on the first date.
+    from data.clean.adjust import front_adjust
+
+    d0, d1 = pd.Timestamp("2024-03-01"), pd.Timestamp("2024-03-04")
+
+    def row(d, close, af):
+        return {"date": d, "symbol": "000001.SZ", "open": close, "high": close,
+                "low": close, "close": close, "volume": 1.0, "amount": 1.0, "adj_factor": af}
+
+    raw = normalize_panel(pd.DataFrame([row(d0, 10.0, 1.0), row(d1, 12.0, 2.0)]))
+    limits = pd.DataFrame(
+        {"date": [d0], "symbol": ["000001.SZ"], "up_limit": [10.0], "down_limit": [1.0]}
+    )
+    # CORRECT order: enrich on RAW close (10 == up_limit 10) -> at_up_limit True
+    enriched = enrich_tradability(raw, limits=limits)
+    assert bool(enriched.loc[(d0, "000001.SZ"), "at_up_limit"]) is True
+
+    adjusted = front_adjust(enriched)
+    # front-adjust scales the d0 close (anchor af=2.0 -> ratio 0.5 -> qfq 5.0) ...
+    assert adjusted.loc[(d0, "000001.SZ"), "close"] != 10.0
+    # ... yet the limit flag (computed on raw) survives unchanged.
+    assert bool(adjusted.loc[(d0, "000001.SZ"), "at_up_limit"]) is True
+
+    # WRONG order (regression guard): enriching AFTER front-adjust compares the qfq
+    # close (5.0) to the raw limit (10.0) -> would miss the limit. We must NOT do this.
+    wrong = enrich_tradability(front_adjust(raw), limits=limits)
+    assert bool(wrong.loc[(d0, "000001.SZ"), "at_up_limit"]) is False

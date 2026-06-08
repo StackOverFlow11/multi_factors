@@ -46,3 +46,35 @@ def test_unknown_factor_name_raises(tmp_path, example_config_path):
     cfg = _cfg(tmp_path, example_config_path, "totally_made_up", "demo")
     with pytest.raises(ValueError, match="Unknown factor"):
         _build_factor(cfg)
+
+
+def test_financial_fetch_uses_lookback_before_start(tmp_path, example_config_path, monkeypatch):
+    # the financial fetch must reach BEFORE data.start so the prior disclosed
+    # report can be carried forward onto early trade dates.
+    from qt.pipeline import _FINANCIAL_LOOKBACK_DAYS, _maybe_enrich_financials
+
+    cfg = _cfg(tmp_path, example_config_path, "roe", "tushare")
+    captured = {}
+
+    class _FakeFeed:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_fina_indicator(self, symbols, start, end, fields=None):
+            captured["start"] = start
+            return pd.DataFrame(
+                {"symbol": [], "ann_date": [], "end_date": [], "roe": []}
+            )
+
+    monkeypatch.setattr("qt.pipeline.TushareFinancialFeed", _FakeFeed)
+    idx = pd.MultiIndex.from_product(
+        [pd.to_datetime([cfg.data.start]), ["000001.SZ"]], names=["date", "symbol"]
+    )
+    panel = pd.DataFrame({"close": [1.0]}, index=idx)
+    _maybe_enrich_financials(
+        cfg, panel, ["000001.SZ"], FinancialFactor("roe"), logging.getLogger("test")
+    )
+    fetched = pd.Timestamp(captured["start"])
+    assert fetched <= pd.Timestamp(cfg.data.start) - pd.Timedelta(
+        days=_FINANCIAL_LOOKBACK_DAYS - 1
+    )

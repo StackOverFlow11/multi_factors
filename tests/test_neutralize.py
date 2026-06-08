@@ -37,19 +37,33 @@ def test_residual_is_orthogonal_to_size_and_industry():
 
 
 def test_missing_inputs_become_nan_not_fabricated():
-    syms = [f"{i:06d}.SZ" for i in range(4)]
+    syms = [f"{i:06d}.SZ" for i in range(8)]  # enough names to keep DOF > 0
     f, i, m = _cross_section(
-        "2024-03-04", syms, [1.0, 2.0, 3.0, 4.0], ["A", "A", "B", "B"], [10, 20, 30, 40]
+        "2024-03-04",
+        syms,
+        list(range(1, 9)),
+        ["A", "A", "A", "A", "B", "B", "B", "B"],
+        list(np.exp(np.arange(8) + 20.0)),
     )
     i.iloc[0] = np.nan  # missing industry for one name
     resid = neutralize_by_date(f, i, m)
-    assert pd.isna(resid.iloc[0])
-    assert resid.iloc[1:].notna().all()
+    assert pd.isna(resid.iloc[0])  # missing-industry name -> NaN
+    assert resid.iloc[1:].notna().all()  # the other 7 (DOF > 0) get residuals
 
 
 def test_degenerate_cross_section_returns_nan():
     f, i, m = _cross_section("2024-03-04", ["A.SZ", "B.SZ"], [1.0, 2.0], ["X", "Y"], [10, 20])
     resid = neutralize_by_date(f, i, m)  # only 2 names (< 3) -> NaN
+    assert resid.isna().all()
+
+
+def test_saturated_cross_section_returns_nan_not_zeros():
+    # 3 names, 2 industries -> n_params = 1 + 2 = 3, residual DOF = 0.
+    # A saturated fit would yield ~0 residuals; we must return NaN instead.
+    f, i, m = _cross_section(
+        "2024-03-04", ["A.SZ", "B.SZ", "C.SZ"], [1.0, 2.0, 3.0], ["X", "X", "Y"], [10, 20, 30]
+    )
+    resid = neutralize_by_date(f, i, m)
     assert resid.isna().all()
 
 

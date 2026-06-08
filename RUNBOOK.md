@@ -108,6 +108,17 @@ report's DATA PATH / DOWNGRADES section and `BIAS_AUDIT.md`):
 Financial factors / index universe / neutralization require the tushare path; on
 the demo source they raise a readable error instead of fabricating data.
 
+Correctness details (locked by tests):
+
+- **Price-limit flags use RAW close** vs the raw `stk_limit` (limits are quoted in
+  unadjusted price); flags are enriched BEFORE front-adjust, so the qfq close is
+  used only for factors/returns, never for the limit comparison.
+- **Financials look back ~16 months** before `start`, so the most recent report
+  disclosed before the backtest starts is fetched and as-of carried forward onto
+  the early trade dates (no NaN gap), still gated by `ann_date <= trade_date`.
+- **Neutralization returns NaN** on a saturated cross-section (names ≤ 1 + #industries,
+  i.e. no residual degrees of freedom) rather than fabricated ~0 residuals.
+
 ## Quality gate
 
 ```bash

@@ -24,7 +24,7 @@
 - `missing_close`(总是开):截面日 `close` 为 NaN 的标的不可交易(UNI-004)。
 - 统一在 `universe.filters.apply_tradable_filters` 按 `UniverseFilters` 开关执行;flag 由 `data.clean.tradability.enrich_tradability` 从 tushare `suspend_d` / `namechange` / `stk_limit` 富化到 panel(StaticUniverse 与 PITIndexUniverse 共用)。demo 无 flag 数据时各过滤自动 no-op。
 - **ST(UNI-006)**:`namechange` 名称区间含 'ST'/'*ST' 即标记,按 date 取生效名称(实证:`000005.SZ` 2024 全程 ST,正确剔除)。
-- **涨跌停(UNI-007)**:close 触及当日 `up_limit`/`down_limit` 标记 `at_up_limit`/`at_down_limit`(实证:`000005.SZ` 2024-02-01 触跌停)。当前选股层对两个方向都剔除;**方向感知**(买入只看涨停、持有跌停不强卖)属执行层,后续细化。
+- **涨跌停(UNI-007)**:用**未复权 raw close** 与当日 raw `up_limit`/`down_limit` 比较,标记 `at_up_limit`/`at_down_limit`(qfq 复权价仅用于因子/回测收益;flag 富化在 front_adjust **之前**完成,故比较的是同口径 raw 价)。实证:`000005.SZ` 2024-02-01 触跌停。当前选股层对两个方向都剔除;**方向感知**(买入只看涨停、持有跌停不强卖)属执行层,后续细化。
 - **停牌(UNI-005)**:`suspend_d` 标记停牌日。**实测发现**:tushare 全天停牌当日**无 bar** → 已被 `missing_close` 剔除,故显式 suspended flag 与之重叠;其价值在盘中停牌(`suspend_timing`)或会给停牌日 bar 的数据源,属防御性。
 - 退市 / 无数据标的(如 `000003.SZ`)同样表现为不在 panel 而被剔除。PIT 历史成分见上节。
 - `universe.min_listing_days` 已在配置中(默认 60),但仍 **未执行**(no-op,降级):新上市标的不会被剔除。显式披露(INV-007),后续接上市日期后强制。
@@ -33,6 +33,7 @@
 
 - 状态: **已实现(P1)**。
 - 财务因子(`roe` / `netprofit_yoy`)经 `data.clean.pit_financials.asof_financials` 按披露日 `ann_date` 做 backward as-of 对齐:每个 trade_date 只取 `ann_date <= trade_date` 的最近一期报告,**绝不按 `end_date`(报告期末)join**(DATA-012)。
+- 拉取窗口向回看约 16 个月(`start` 之前),确保回测 `start` 前已披露的上一期财报在集合内、能 as-of **carry forward** 到早期交易日,避免早期 NaN 缺口。
 - 实证:平安银行 2024 Q1(end_date 2024-03-31)披露日 ann_date 2024-04-20;as-of roe 在 04-19 仍是上一期年报值(10.2436),04-22 才切到 Q1(3.1176)——晚于报告期末约 3 周,证明无未来披露泄漏。
 - 财务因子仅在 tushare 数据路径可用;demo 无披露日,配置财务因子 + demo 源会报可读错误,**不伪造财务**。
 
@@ -53,6 +54,6 @@
 ## 中性化
 
 - 状态: **行业 + 市值中性化已实现(P1)**。
-- `factors.process.neutralize.neutralize_by_date`:每个 date 截面把因子对 `[log(market_cap), one-hot(industry)]` 做 OLS,取残差,移除规模与行业暴露。缺行业 / 市值或截面名称 < 3 时返回 NaN,**不静默乱算**;`processing.neutralize` 开启但协变量缺失(如 demo 路径)直接报可读错误。
+- `factors.process.neutralize.neutralize_by_date`:每个 date 截面把因子对 `[log(market_cap), one-hot(industry)]` 做 OLS,取残差,移除规模与行业暴露。缺行业 / 市值,或**残差自由度 ≤ 0**(名称数 ≤ 1+行业数,饱和拟合会给出无意义的伪 0 残差)时返回 **NaN**,绝不静默乱算;`processing.neutralize` 开启但协变量缺失(如 demo 路径)直接报可读错误。
 - 实证:12 只票横跨 4 行业(2024-09-30),corr(原始 momentum, log市值) = -0.617 → 中性化后 -0.000,各行业残差均值 ≈ 0,确认规模/行业暴露被移除。
 - **降级**:行业来自 `stock_basic.industry` 的**当前**行业标签,非按历史时点,故行业中性化带有轻微成分前视(市值 `daily_basic.total_mv` 为逐日真值)。PIT 行业历史是后续项,此降级在此显式披露(INV-007)。

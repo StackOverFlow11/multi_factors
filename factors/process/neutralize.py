@@ -49,8 +49,12 @@ def _residual_one_date(
     valid = df.dropna(subset=["y", "ind", "lmc"])
 
     out = pd.Series(np.nan, index=y.index, dtype=float)
-    if len(valid) < _MIN_NAMES:
-        return out  # too few names to regress -> leave NaN (no fabrication)
+    # Need residual degrees of freedom > 0, else the fit is saturated and the
+    # "residuals" are fabricated ~0 (a perfect in-sample fit), not a real neutral
+    # factor. n_params = log(market cap) + one-hot(industry); require n > n_params.
+    n_params = 1 + valid["ind"].nunique()
+    if len(valid) < _MIN_NAMES or len(valid) <= n_params:
+        return out  # too few names / no residual DOF -> NaN (no fabrication)
 
     dummies = pd.get_dummies(valid["ind"], drop_first=False).astype(float)
     design = np.column_stack([valid["lmc"].to_numpy(dtype=float), dummies.to_numpy()])

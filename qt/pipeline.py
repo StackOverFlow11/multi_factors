@@ -69,6 +69,11 @@ _LOGGER_NAME = "qt.run_phase0"
 _PERIODS_PER_YEAR: dict[str, int] = {"monthly": 12}
 _DEFAULT_PERIODS_PER_YEAR: int = 12
 _INDEX_UNIVERSE_LOOKBACK_DAYS: int = 370
+# Financials are fetched from before the backtest start so the latest report
+# DISCLOSED before start (its period end is months earlier than its ann_date) is
+# in the set and can be as-of carried forward onto early trade dates. ~16 months
+# covers an annual report disclosed up to a year-plus before start.
+_FINANCIAL_LOOKBACK_DAYS: int = 500
 
 
 def _periods_per_year(rebalance: str) -> int:
@@ -417,10 +422,14 @@ def _load_panel(
     store = PanelStore(cfg.output.data_dir)
     store.write(cfg.data.output_name, panel, overwrite=cfg.output.overwrite)
     panel = store.read(cfg.data.output_name)
+    # Tradability flags FIRST, on RAW prices: the price-limit flags must compare
+    # the UNADJUSTED close against the raw stk_limit (limits are quoted in raw
+    # price terms). front-adjust below only scales OHLC and leaves the boolean
+    # flags intact, so factors/backtest see qfq prices while limit flags stay right.
+    panel = _enrich_tradability(cfg, panel, symbols, logger)
     # Store stays RAW (+ adj_factor, incremental-safe); front-adjust in memory so
     # factors / backtest see continuous qfq prices. Identity for demo (adj=1.0).
     panel = front_adjust(panel)
-    panel = _enrich_tradability(cfg, panel, symbols, logger)
     logger.info(
         "data: %d rows, %d symbols (front-adjusted)",
         len(panel),
@@ -502,7 +511,12 @@ def _maybe_enrich_financials(
     feed = TushareFinancialFeed(
         cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
     )
-    fina = feed.get_fina_indicator(symbols, cfg.data.start, cfg.data.end, fields=[factor.name])
+    # Look back before start so the prior already-disclosed report is fetched and
+    # can be as-of carried forward onto the early trade dates (no NaN gap).
+    fetch_start = (
+        pd.Timestamp(cfg.data.start) - pd.Timedelta(days=_FINANCIAL_LOOKBACK_DAYS)
+    ).strftime("%Y-%m-%d")
+    fina = feed.get_fina_indicator(symbols, fetch_start, cfg.data.end, fields=[factor.name])
     enriched = panel.copy()
     aligned = asof_financials(panel.index, fina, [factor.name])
     enriched[factor.name] = aligned[factor.name]

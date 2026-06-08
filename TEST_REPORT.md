@@ -15,12 +15,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **164 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **168 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` (demo + `example_tushare.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual `pytest --collect-only` numbers (sum = 164).
+Counts below are the actual `pytest --collect-only` numbers (sum = 168).
 
 ## Per-file breakdown — Phase 0 core (93)
 
@@ -43,7 +43,7 @@ Counts below are the actual `pytest --collect-only` numbers (sum = 164).
 | `test_phase0_pipeline.py` | 8 | end-to-end pipeline |
 | `test_bias_audit_report.py` | 4 | bias audit doc |
 
-## Per-file breakdown — Phase 1 bias-boundary (71)
+## Per-file breakdown — Phase 1 bias-boundary (75)
 
 | Test file | Tests | Red-line / feature |
 |---|---|---|
@@ -54,18 +54,18 @@ Counts below are the actual `pytest --collect-only` numbers (sum = 164).
 | `test_index_pipeline.py` | 1 | pre-start snapshot lookback (as-of edge) |
 | `test_config_index.py` | 3 | `universe.type=index` config |
 | `test_tradability_filters.py` | 7 | shared suspended/ST/limit filter |
-| `test_tradability_enrich.py` | 5 | flag enrichment onto panel |
+| `test_tradability_enrich.py` | 6 | flag enrichment onto panel |
 | `test_tushare_flags.py` | 3 | suspend_d/namechange/stk_limit feed |
-| `test_pit_financials.py` | 6 | **ann_date as-of** (no disclosure leak) |
+| `test_pit_financials.py` | 7 | **ann_date as-of** (no disclosure leak) |
 | `test_tushare_fina.py` | 2 | fina_indicator feed |
 | `test_factors_financial.py` | 3 | financial factor (roe/netprofit_yoy) |
-| `test_financial_pipeline.py` | 4 | factor dispatch + demo-source guard |
-| `test_neutralize.py` | 4 | industry+size residual orthogonality |
+| `test_financial_pipeline.py` | 5 | factor dispatch + demo-source guard |
+| `test_neutralize.py` | 5 | industry+size residual orthogonality |
 | `test_processing_neutralize.py` | 2 | neutralize wiring (covariates required) |
 | `test_covariates_enrich.py` | 3 | industry + market_cap enrichment |
 | `test_tushare_covariates.py` | 2 | stock_basic + daily_basic feed |
 | `test_real_path_config.py` | 3 | demo vs real-path downgrade disclosure |
-| **Total (P0 + P1)** | **164** | |
+| **Total (P0 + P1)** | **168** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -92,3 +92,11 @@ Verified directly against tushare (results recorded in `BIAS_AUDIT.md` and
 - The demo portfolio's annualized return is intentionally extreme (demo price paths
   include a 3x jump); P0/P1 do not optimize for realistic returns — pipeline
   correctness (event order, costs, no-lookahead) is what is under test.
+- P1 acceptance hardening (locked by tests): price-limit flags compare the RAW
+  (unadjusted) close to the raw `stk_limit`, enriched BEFORE front-adjust
+  (`test_tradability_enrich::test_limit_flag_uses_raw_close_and_survives_front_adjust`);
+  financials are fetched ~16 months before `start` so the prior disclosed report
+  carries forward (`test_pit_financials::test_asof_carries_forward_report_disclosed_before_window`,
+  `test_financial_pipeline::test_financial_fetch_uses_lookback_before_start`);
+  neutralization returns NaN on a saturated cross-section instead of fabricated ~0
+  residuals (`test_neutralize::test_saturated_cross_section_returns_nan_not_zeros`).
