@@ -57,14 +57,22 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。main 已有骨架；当前在 `data` 分支搭数据层。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。main 已有骨架；`data` 分支已含 P0+P1（PR #1 `data→main`，OPEN）。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
 
 ## 当前进度
-- ✅ 7 层骨架 + 架构文档（已在 `main`）
-- ✅ Phase 0 MVP（`data` 分支，未提交）：DemoFeed → PanelStore → StaticUniverse → momentum_20 → zscore → EqualWeightAlpha → TopN 等权 → 月度回测（成本/换手）→ IC/绩效报告。
-- ✅ 质量门：`python -m pytest` 93 passed；`python -m ruff check .` clean；`python -m qt.cli run-phase0 --config config/example.yaml` 可复现。
-- ⚠️ P0 显式降级：静态 universe 非 PIT、简版 IC/绩效未走 alphalens/quantstats、`min_listing_days` 配置未生效、持有期末缺价按 0% 结算、tushare 路径接入但未实网验证。
-- 下一步 P1：接真 tushare 日线/复权/PIT 成分/可交易过滤，然后再扩因子和中性化。
+- ✅ 7 层骨架 + 架构文档（`main`）
+- ✅ **Phase 0 MVP**（PR #1）：DemoFeed → PanelStore → StaticUniverse → momentum_20 → zscore → EqualWeightAlpha → TopN 等权 → 月度回测（成本/换手）→ IC/绩效报告，单命令可复现。
+- ✅ **Phase 1 偏差边界**（PR #1，全部真数据实证）：
+  - 前复权（qfq；store 存 raw，内存复权 → batch≡incremental 安全）
+  - PIT 指数成分（`index_weight` as-of，survivorship-safe；370 天 pre-start 回看 + 90 天分页）
+  - 可交易过滤（停牌 / ST / 涨跌停；**涨跌停用未复权 raw close** 比 `stk_limit`）
+  - 财务 `ann_date` 披露日 as-of（绝不按 end_date；500 天 lookback carry forward）
+  - 行业 + 市值中性化（按 date 截面 OLS 残差；欠定/无自由度截面 → NaN）
+  - 路径感知降级披露（demo/static vs tushare/index/ann_date，绝不把 demo 当真实验证）
+- ✅ 质量门：`pytest` **168 passed**；`ruff` clean；`validate-config`（demo + `config/example_tushare.yaml`）+ `run-phase0`（demo）均 OK。
+- ✅ 真数据实证（tushare，非 CI）：复权除权日 raw−5.74%→qfq+0.99% / CSI300 全年 24 快照 328 名换手 / ann_date Q1 延后至 04-20 / 中性化 corr −0.617→0。详见 `BIAS_AUDIT.md`、`artifacts/reports/phase1_summary.md`。
+- ⚠️ 剩余 P2（已显式披露）：行业标签用**当前值**非 PIT、涨跌停未方向感知、`min_listing_days` no-op、日线 only、简版 IC/绩效未走 alphalens/quantstats、demo 路径非真数据。
+- 路线图下一步：财务因子组合 / 历史 PIT 行业 / 更细交易约束（architecture.html §11）。
