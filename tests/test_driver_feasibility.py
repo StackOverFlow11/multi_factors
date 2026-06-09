@@ -116,3 +116,18 @@ def test_feasibility_log_aligns_with_nav_index():
     nav = driver.run()
     log = driver.feasibility_log()
     assert list(log.index) == list(nav.index)  # settled dates only, 1:1
+
+
+def test_holdings_log_reports_achieved_not_desired_target():
+    # The auditability red-line (review HIGH): when A's sell is blocked at the
+    # down-limit, the DESIRED target is B but the ACHIEVED book is the carried A.
+    # holdings_log must report A (what was held), never B (what was wanted).
+    panel = _panel({(_FEB, "A"): {"at_down_limit": True}})
+    driver = _driver(panel)
+    driver.run()
+    h = driver.holdings_log()
+    feb = h[h["date"] == _FEB]
+    assert list(feb["symbol"]) == ["A"]   # carried (achieved), NOT desired B
+    assert "B" not in set(feb["symbol"])
+    # and it equals the execution's actual end-of-run book (Feb is the last step)
+    assert set(feb["symbol"]) == set(driver._execution.positions().index)

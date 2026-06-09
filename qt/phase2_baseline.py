@@ -11,9 +11,11 @@ path can be eyeballed and reproduced:
     turnover / cost · IC / quantile returns · performance · P2 downgrades.
 
 It reuses :mod:`qt.pipeline`'s step helpers verbatim (same universe / panel /
-factor / neutralization / backtest), so "baseline == the real pipeline". The
-extra reporting (holdings, filter hits, coverage) is **read-only**: it never
-changes the strategy and never sees forward returns at the factor stage.
+factor / neutralization / backtest), so "baseline == the real pipeline".
+Per-period holdings are the ACHIEVED book recorded by the driver during the run
+(``BacktestDriver.holdings_log()``, post execution-feasibility); the other extra
+reporting (filter hits, ann_date coverage) is read-only diagnostics. Nothing here
+changes the strategy or sees forward returns at the factor stage.
 
 Guard: the baseline REQUIRES ``data.source='tushare'``. Running it on the demo
 source is a category error (no PIT / ann_date / tradability meaning) and raises
@@ -75,6 +77,9 @@ class Phase2Result:
     panel_symbols: int
     # universe / PIT membership
     universe_summary: dict
+    # min_listing_days list_date coverage (known vs disclosed data gap, this run)
+    list_date_known: int
+    list_date_total: int
     # ann_date financial coverage (diagnostic)
     financial_field: str
     financial_coverage_overall: float
@@ -227,36 +232,6 @@ def tradability_hit_stats(
     return frame
 
 
-def reconstruct_holdings(
-    scores: _FrameScores,
-    universe,
-    panel: pd.DataFrame,
-    constructor: TopNEqualWeight,
-    rebalance_dates: list[pd.Timestamp],
-) -> pd.DataFrame:
-    """Rebuild per-period target holdings READ-ONLY (mirrors the driver's step).
-
-    For each rebalance date: tradable members -> scores -> constructor.build, the
-    exact same chain :meth:`BacktestDriver._step` runs. We only read the resulting
-    target weights (the holdings); we never settle or see forward returns, so this
-    is a faithful, side-effect-free view of what the backtest held each period.
-    Returns a long-form frame with columns ``[date, symbol, weight, rank]``.
-    """
-    rows: list[dict] = []
-    for date in rebalance_dates:
-        target_date = pd.Timestamp(date).normalize()
-        tradable = list(universe.tradable(target_date, panel))
-        if not tradable:
-            continue
-        cross_scores = scores.get(target_date, tradable)
-        weights = constructor.build(cross_scores)
-        for rank, (sym, w) in enumerate(weights.items(), start=1):
-            rows.append(
-                {"date": target_date, "symbol": str(sym), "weight": float(w), "rank": rank}
-            )
-    return pd.DataFrame(rows, columns=["date", "symbol", "weight", "rank"])
-
-
 def financial_coverage_at_dates(
     aligned_col: pd.Series,
     universe,
@@ -309,9 +284,9 @@ def _phase2_downgrades(cfg: RootConfig, financial_field: str) -> tuple[str, ...]
         f"'{financial_field}' (how well disclosed reports populate the universe "
         "as-of); it is NOT the alpha factor in this baseline (the factor is the "
         "configured price factor). No financial signal is traded here.",
-        "Per-period holdings are RECONSTRUCTED read-only (universe -> scores -> "
-        "constructor.build), the same chain the backtest driver runs; they are a "
-        "faithful view, not an independent recomputation of returns.",
+        "Per-period holdings are the ACHIEVED book recorded by the backtest driver "
+        "(post execution-feasibility), NOT the constructor's desired target: a "
+        "blocked sell shows the carried name and a blocked buy is absent.",
         "This is a SMALL-SCALE baseline (a small index over a short window) for "
         "reproducibility/plumbing validation, NOT a performance claim; numbers are "
         "not optimized and must not be read as a strategy result.",
@@ -416,7 +391,19 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     hits = tradability_hit_stats(
         universe, panel, settled_dates, cfg.universe.filters.model_dump()
     )
-    holdings = reconstruct_holdings(scores, universe, panel, constructor, settled_dates)
+    # ACHIEVED holdings (post-feasibility) from the driver — the actual book held,
+    # NOT the constructor's desired target (which differs once a trade is blocked).
+    holdings = driver.holdings_log()
+
+    # list_date coverage for the min_listing_days disclosure (how many names had a
+    # known listing date this run vs a disclosed data gap).
+    if "list_date" in panel.columns:
+        _ld = panel["list_date"].groupby(level="symbol").first()
+        list_date_known = int(_ld.notna().sum())
+        list_date_total = int(len(_ld))
+    else:
+        list_date_known = 0
+        list_date_total = 0
 
     dates = panel.index.get_level_values("date")
     result = Phase2Result(
@@ -430,6 +417,8 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         universe_summary=summarize_universe(
             universe, cfg.universe.type, cfg.data.start, cfg.data.end
         ),
+        list_date_known=list_date_known,
+        list_date_total=list_date_total,
         financial_field=financial_field,
         financial_coverage_overall=coverage_overall,
         financial_coverage_by_rebalance=coverage_by_rebalance,

@@ -146,9 +146,10 @@ Guards (correctness / honesty):
 - **Demo source is refused.** `run-phase2-baseline` raises a readable error on
   `data.source != 'tushare'` — a "baseline" on offline demo data carries no PIT /
   ann_date / tradability meaning and must not masquerade as a real validation.
-- **Holdings are reconstructed read-only** (universe → scores → `constructor.build`,
-  the same chain the driver runs); the reporting never sees forward returns at the
-  factor stage and never re-derives returns.
+- **Holdings are the driver's ACHIEVED book** (`BacktestDriver.holdings_log()`,
+  post execution-feasibility) — the actual positions held each period, NOT the
+  constructor's desired target (a blocked sell shows the carried name, a blocked
+  buy is absent). The reporting never sees forward returns at the factor stage.
 - **No secret leak.** The report echoes only non-sensitive config (window, universe,
   factor); the token / secret file path is never written into it.
 
@@ -203,11 +204,19 @@ Implemented in P1 (real path):
 - **ann_date financial alignment** — figures used only after disclosure date.
 - **Industry + size neutralization** — per-date OLS residual.
 
+Resolved in P2-2 (was deferred):
+
+- **Direction-aware limits/suspension** — now in the execution layer (up-limit
+  blocks buys, down-limit blocks sells, suspended/missing blocks both; blocked
+  trades carry forward, executed-only turnover). No longer a crude both-direction
+  selection drop.
+- **min_listing_days** — enforced on the real path (`stock_basic.list_date`) as a
+  buy/selection filter; demo stays a disclosed no-op.
+
 Still downgraded / deferred (disclosed):
 
 - **Demo path** uses offline `DemoFeed` — NOT real data (no PIT/financial meaning).
 - **Static universe** option remains a PIT downgrade (use `type: index` for real).
 - **Industry tag is current** (`stock_basic`), not point-in-time — mild downgrade.
-- **min_listing_days** configured but not enforced (no-op).
-- **Daily bars only**; **simple IC/perf** (not alphalens/quantstats);
-  limit filter is not yet trade-direction-aware (P2).
+- **Daily bars only**; **simple IC / performance** (numpy/pandas, not
+  alphalens-reloaded / quantstats).

@@ -299,6 +299,13 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
 
     lines.append("\n## Universe / PIT membership\n")
     lines.append(_universe_block(result.universe_summary))
+    if result.list_date_total:
+        missing = result.list_date_total - result.list_date_known
+        lines.append(
+            f"- min_listing_days `list_date` coverage (this run): "
+            f"**{result.list_date_known}/{result.list_date_total}** known, "
+            f"**{missing}** missing (kept as a disclosed data gap, never excluded)\n"
+        )
 
     lines.append("\n## Financial ann_date coverage\n")
     lines.append(
@@ -334,8 +341,10 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
 
     lines.append("\n## Holdings per period\n")
     lines.append(
-        "_Holdings are listed for the settled rebalance dates only, so they match "
-        "the NAV/turnover table 1:1 (no phantom terminal period)._\n\n"
+        "_ACHIEVED holdings (the actual book held after execution feasibility), NOT "
+        "the constructor's desired target: a name whose sell was blocked appears "
+        "carried here, a name whose buy was blocked is absent. Settled dates only, "
+        "so they match the NAV/turnover table 1:1._\n\n"
     )
     lines.append(_holdings_block(result.holdings))
 

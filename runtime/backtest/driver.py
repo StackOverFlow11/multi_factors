@@ -85,6 +85,7 @@ class BacktestDriver:
         self._initial_nav = float(initial_nav)
         self._cash_return = float(cash_return)
         self._feasibility_log: list[dict] = []
+        self._holdings_log: list[dict] = []
 
     # -- calendar --------------------------------------------------------- #
     def _calendar(self) -> pd.DatetimeIndex:
@@ -145,6 +146,7 @@ class BacktestDriver:
         rows: list[dict] = []
         nav = self._initial_nav
         self._feasibility_log = []  # re-entrant: fresh per run
+        self._holdings_log = []
         for i, date in enumerate(reb):
             end = reb[i + 1] if i + 1 < len(reb) else cal[-1]
             # A rebalance on the final trading day has no forward holding window
@@ -206,6 +208,7 @@ class BacktestDriver:
         cost = self._execution.last_cost
         gross = net + cost
         self._record_feasibility(date, achieved)
+        self._record_holdings(date, achieved)
         return (turnover, cost, gross, net)
 
     # -- execution feasibility ------------------------------------------- #
@@ -253,3 +256,29 @@ class BacktestDriver:
         if not self._feasibility_log:
             return pd.DataFrame(columns=cols, index=pd.Index([], name="date"))
         return pd.DataFrame(self._feasibility_log).set_index("date")
+
+    def _record_holdings(self, date: pd.Timestamp, achieved: pd.Series) -> None:
+        """Record the ACHIEVED book (post-feasibility) held for this period."""
+        for sym, weight in achieved.items():
+            self._holdings_log.append(
+                {"date": date, "symbol": str(sym), "weight": float(weight)}
+            )
+
+    def holdings_log(self) -> pd.DataFrame:
+        """Per-settled-rebalance ACHIEVED holdings (long-form date,symbol,weight,rank).
+
+        These are the ACTUAL positions held after execution feasibility — a name
+        whose sell was blocked appears here carried at its old weight, and a name
+        whose buy was blocked is absent. This is the auditable book, NOT the
+        constructor's desired target (which can differ once a trade is blocked).
+        Ranked by weight desc then symbol for determinism; aligns with the NAV /
+        feasibility log's settled dates.
+        """
+        cols = ["date", "symbol", "weight", "rank"]
+        if not self._holdings_log:
+            return pd.DataFrame(columns=cols)
+        df = pd.DataFrame(self._holdings_log).sort_values(
+            ["date", "weight", "symbol"], ascending=[True, False, True]
+        )
+        df["rank"] = df.groupby("date").cumcount() + 1
+        return df.reset_index(drop=True)[cols]
