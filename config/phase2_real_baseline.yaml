@@ -56,6 +56,7 @@ processing:
     enabled: true
     industry_col: industry
     size_col: market_cap
+    industry_level: L1   # PIT SW level (L1/L2/L3); L1 = 31 broad sectors (standard, DOF-safe)
 
 alpha:
   model: equal_weight

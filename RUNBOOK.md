@@ -204,19 +204,28 @@ Implemented in P1 (real path):
 - **ann_date financial alignment** — figures used only after disclosure date.
 - **Industry + size neutralization** — per-date OLS residual.
 
-Resolved in P2-2 (was deferred):
+Resolved in P2-2 / P2-3 (was deferred):
 
-- **Direction-aware limits/suspension** — now in the execution layer (up-limit
+- **Direction-aware limits/suspension** (P2-2) — now in the execution layer (up-limit
   blocks buys, down-limit blocks sells, suspended/missing blocks both; blocked
   trades carry forward, executed-only turnover). No longer a crude both-direction
   selection drop.
-- **min_listing_days** — enforced on the real path (`stock_basic.list_date`) as a
+- **min_listing_days** (P2-2) — enforced on the real path (`stock_basic.list_date`) as a
   buy/selection filter; demo stays a disclosed no-op.
+- **PIT industry** (P2-3) — the neutralization industry covariate is now point-in-time
+  SW (as-of trade date via `index_member_all` in/out dates, `data/clean/pit_industry.py`),
+  not the current `stock_basic.industry` tag. The SW level is configurable
+  (`processing.neutralize.industry_level`, L1/L2/L3, **default L1** = 31 broad sectors, the
+  standard for neutralization and DOF-safe on small cross-sections). Real runs: old tag
+  annual −17.6%, SW-L1 −10.2%, SW-L2 −9.3% — L1 ≈ L2, so the −17.6→−10 jump is the
+  tushare→SW taxonomy switch (inherent to going PIT: only SW carries in/out-date history),
+  NOT granularity. Names with no SW history get NaN (a disclosed coverage gap the
+  neutralizer drops) — never a silent current-tag fallback; the actual level + PIT coverage
+  are reported in `phase2_real_baseline.md`.
 
 Still downgraded / deferred (disclosed):
 
 - **Demo path** uses offline `DemoFeed` — NOT real data (no PIT/financial meaning).
 - **Static universe** option remains a PIT downgrade (use `type: index` for real).
-- **Industry tag is current** (`stock_basic`), not point-in-time — mild downgrade.
 - **Daily bars only**; **simple IC / performance** (numpy/pandas, not
   alphalens-reloaded / quantstats).

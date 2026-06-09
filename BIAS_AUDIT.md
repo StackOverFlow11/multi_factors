@@ -57,4 +57,6 @@
 - 状态: **行业 + 市值中性化已实现(P1)**。
 - `factors.process.neutralize.neutralize_by_date`:每个 date 截面把因子对 `[log(market_cap), one-hot(industry)]` 做 OLS,取残差,移除规模与行业暴露。缺行业 / 市值,或**残差自由度 ≤ 0**(名称数 ≤ 1+行业数,饱和拟合会给出无意义的伪 0 残差)时返回 **NaN**,绝不静默乱算;`processing.neutralize` 开启但协变量缺失(如 demo 路径)直接报可读错误。
 - 实证:12 只票横跨 4 行业(2024-09-30),corr(原始 momentum, log市值) = -0.617 → 中性化后 -0.000,各行业残差均值 ≈ 0,确认规模/行业暴露被移除。
-- **降级**:行业来自 `stock_basic.industry` 的**当前**行业标签,非按历史时点,故行业中性化带有轻微成分前视(市值 `daily_basic.total_mv` 为逐日真值)。PIT 行业历史是后续项,此降级在此显式披露(INV-007)。
+- **行业 PIT(UNI-010,P2-3,已实现)**:行业协变量从 `stock_basic.industry` 的**当前**标签,升级为按 trade_date **as-of** 的历史申万行业。`data.feed.tushare_covariates.pit_sw_intervals(symbols, level)` 读 `index_member_all` 拿每股 SW 行业的 `in_date`/`out_date` 区间;`data.clean.pit_industry.asof_industry` 按`[in_date, out_date)` 覆盖该日的区间取行业(改分类日**新行业**生效,PIT-safe,绝不用未来行业)。起始日前已有的成分能 carry forward 到窗口开始。
+- **SW 层级可配置**:`processing.neutralize.industry_level`(L1/L2/L3,**默认 L1**=31 宽板块,行业中性化业界标准,小截面自由度更稳)。**实测**:旧 tag 年化 −17.6%、SW-L1 −10.2%、SW-L2 −9.3% —— L1≈L2,−17.6→−10 的大跳是 **tushare→SW 分类切换**(补 PIT 的必然代价:只有 SW 有 in/out 历史可 PIT 化,旧 tag 无法),**与粒度无关**;报告披露实际 level 与覆盖率。
+- **缺失处理(不静默退回 current)**:无 SW 历史的票 → 行业 **NaN**,被 neutralize 按截面丢弃;每次运行的 **PIT 行业覆盖率**在 `phase2_real_baseline.md` 披露。市值 `daily_basic.total_mv` 为逐日真值。
