@@ -29,6 +29,7 @@ from typing import Protocol
 import pandas as pd
 
 from runtime.execution import BacktestExecution
+from runtime.fills import feasibility_from_cross
 
 
 class ScoresSource(Protocol):
@@ -83,6 +84,8 @@ class BacktestDriver:
         self._fee_rate = float(fee_rate)
         self._initial_nav = float(initial_nav)
         self._cash_return = float(cash_return)
+        self._feasibility_log: list[dict] = []
+        self._holdings_log: list[dict] = []
 
     # -- calendar --------------------------------------------------------- #
     def _calendar(self) -> pd.DatetimeIndex:
@@ -142,6 +145,8 @@ class BacktestDriver:
         cal = self._calendar()
         rows: list[dict] = []
         nav = self._initial_nav
+        self._feasibility_log = []  # re-entrant: fresh per run
+        self._holdings_log = []
         for i, date in enumerate(reb):
             end = reb[i + 1] if i + 1 < len(reb) else cal[-1]
             # A rebalance on the final trading day has no forward holding window
@@ -167,27 +172,113 @@ class BacktestDriver:
     def _step(
         self, date: pd.Timestamp, end: pd.Timestamp
     ) -> tuple[float, float, float, float]:
-        """One rebalance: universe -> scores -> build -> rebalance -> settle.
+        """One rebalance: universe -> scores -> build -> feasible fill -> settle.
+
+        Selection (``universe.tradable``) decides what the strategy WANTS; the
+        execution-feasibility flags (limits / suspension / missing, read from the
+        date's cross-section) decide what it can actually trade. Blocked trades
+        carry forward and turnover/cost count only executed trades (no forced
+        impossible trades). An empty tradable universe still routes through the
+        fill so held names that turned untradeable are carried, not force-sold.
 
         Returns ``(turnover, cost, gross_return, net_return)`` for the period
         held from ``date`` (exclusive) to ``end`` (inclusive).
         """
-        tradable = list(self._universe.tradable(date, self._prices))
-        if not tradable:
-            # Cash book: no trade, no turnover/cost, earns cash_return (BT-007).
-            # The driver owns cash semantics so cash_return is honoured even when
-            # the execution adapter's own cash_return differs.
-            self._execution.rebalance_to(pd.Series(dtype=float), date)
-            cost = self._execution.last_cost
-            gross = self._cash_return
-            return (self._execution.last_turnover, cost, gross, gross - cost)
-        scores = self._scores.get(date, tradable)
         current = self._execution.positions()
-        target = self._constructor.build(scores, current)
-        self._execution.rebalance_to(target, date)
-        holding = self._holding_returns(date, end, list(target.index))
-        net = self._execution.settle(holding)
+        tradable = list(self._universe.tradable(date, self._prices))
+        if tradable:
+            scores = self._scores.get(date, tradable)
+            target = self._constructor.build(scores, current)
+        else:
+            target = pd.Series(dtype=float)  # nothing to hold -> exit what we can
+
+        symbols = sorted(set(current.index) | set(target.index))
+        can_buy, can_sell = self._feasibility(date, symbols)
+        self._execution.rebalance_to(target, date, can_buy=can_buy, can_sell=can_sell)
+
+        achieved = self._execution.positions()
+        holding = self._holding_returns(date, end, list(achieved.index))
+        invested_net = self._execution.settle(holding)
+        # The driver owns cash semantics (BT-007): the uninvested fraction —
+        # nonzero when blocked/cash-starved buys left cash idle — earns the
+        # driver's cash_return, even if the execution adapter's differs.
+        idle = 1.0 - float(achieved.sum())
+        net = invested_net + idle * self._cash_return
         turnover = self._execution.last_turnover
         cost = self._execution.last_cost
         gross = net + cost
+        self._record_feasibility(date, achieved)
+        self._record_holdings(date, achieved)
         return (turnover, cost, gross, net)
+
+    # -- execution feasibility ------------------------------------------- #
+    def _feasibility(
+        self, date: pd.Timestamp, symbols: list[str]
+    ) -> tuple[dict, dict]:
+        """Per-symbol (can_buy, can_sell) from the date's cross-section."""
+        if not symbols:
+            return {}, {}
+        try:
+            cross = self._prices.xs(pd.Timestamp(date).normalize(), level="date")
+        except KeyError:
+            cross = self._prices.iloc[0:0]
+        return feasibility_from_cross(cross, symbols)
+
+    def _record_feasibility(self, date: pd.Timestamp, achieved: pd.Series) -> None:
+        """Append the most recent fill's feasibility diagnostics to the log."""
+        fill = getattr(self._execution, "last_fill", None)
+        if fill is None:
+            return
+        self._feasibility_log.append(
+            {
+                "date": date,
+                "blocked_buys": len(fill.blocked_buys),
+                "blocked_sells": len(fill.blocked_sells),
+                "cash_constrained_buys": len(fill.cash_constrained_buys),
+                "carried": len(fill.carried),
+                "executed_turnover": float(fill.executed_turnover),
+                "invested": float(achieved.sum()),
+            }
+        )
+
+    def feasibility_log(self) -> pd.DataFrame:
+        """Per-settled-rebalance execution-feasibility diagnostics (date-indexed).
+
+        Columns: ``blocked_buys``, ``blocked_sells``, ``cash_constrained_buys``,
+        ``carried`` (counts), ``executed_turnover``, ``invested`` (sum of achieved
+        weights; ``1 - invested`` is idle cash). Aligns 1:1 with the NAV table's
+        settled rebalance dates.
+        """
+        cols = [
+            "blocked_buys", "blocked_sells", "cash_constrained_buys",
+            "carried", "executed_turnover", "invested",
+        ]
+        if not self._feasibility_log:
+            return pd.DataFrame(columns=cols, index=pd.Index([], name="date"))
+        return pd.DataFrame(self._feasibility_log).set_index("date")
+
+    def _record_holdings(self, date: pd.Timestamp, achieved: pd.Series) -> None:
+        """Record the ACHIEVED book (post-feasibility) held for this period."""
+        for sym, weight in achieved.items():
+            self._holdings_log.append(
+                {"date": date, "symbol": str(sym), "weight": float(weight)}
+            )
+
+    def holdings_log(self) -> pd.DataFrame:
+        """Per-settled-rebalance ACHIEVED holdings (long-form date,symbol,weight,rank).
+
+        These are the ACTUAL positions held after execution feasibility — a name
+        whose sell was blocked appears here carried at its old weight, and a name
+        whose buy was blocked is absent. This is the auditable book, NOT the
+        constructor's desired target (which can differ once a trade is blocked).
+        Ranked by weight desc then symbol for determinism; aligns with the NAV /
+        feasibility log's settled dates.
+        """
+        cols = ["date", "symbol", "weight", "rank"]
+        if not self._holdings_log:
+            return pd.DataFrame(columns=cols)
+        df = pd.DataFrame(self._holdings_log).sort_values(
+            ["date", "weight", "symbol"], ascending=[True, False, True]
+        )
+        df["rank"] = df.groupby("date").cumcount() + 1
+        return df.reset_index(drop=True)[cols]

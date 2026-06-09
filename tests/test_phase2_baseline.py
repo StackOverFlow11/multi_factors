@@ -17,7 +17,6 @@ from qt.config import load_config
 from qt.phase2_baseline import (
     Phase2Result,
     financial_coverage_at_dates,
-    reconstruct_holdings,
     summarize_universe,
     tradability_hit_stats,
 )
@@ -184,33 +183,8 @@ def test_tradability_hit_stats_missing_close_counted():
 
 
 # --------------------------------------------------------------------------- #
-# reconstruct_holdings
+# driver achieved holdings (the source the report uses)
 # --------------------------------------------------------------------------- #
-def test_reconstruct_holdings_mirrors_topn_build():
-    date = pd.Timestamp("2024-01-31")
-    syms = ["000001.SZ", "000002.SZ", "000003.SZ"]
-    panel = pd.DataFrame(
-        {"close": [1.0, 1.0, 1.0]},
-        index=pd.MultiIndex.from_product([[date], syms], names=["date", "symbol"]),
-    )
-    score_panel = pd.Series(
-        [0.3, 0.1, 0.2],
-        index=pd.MultiIndex.from_product([[date], syms], names=["date", "symbol"]),
-        name="score",
-    )
-    uni = StaticUniverse(syms, {})
-    holdings = reconstruct_holdings(
-        _FrameScores(score_panel), uni, panel, TopNEqualWeight(2), [date]
-    )
-    assert len(holdings) == 2  # top_n=2
-    held = set(holdings["symbol"])
-    assert held == {"000001.SZ", "000003.SZ"}  # two highest scores
-    assert holdings["weight"].tolist() == [0.5, 0.5]
-    # rank 1 is the highest score (000001.SZ @ 0.3)
-    top = holdings.sort_values("rank").iloc[0]
-    assert top["symbol"] == "000001.SZ"
-
-
 def test_holdings_dates_equal_settled_nav_index_not_candidates():
     # Regression for the HIGH finding: the driver SKIPS a terminal rebalance with
     # no forward holding period, so the diagnostics must key off nav_table.index
@@ -243,7 +217,7 @@ def test_holdings_dates_equal_settled_nav_index_not_candidates():
     nav = driver.run()
 
     assert len(nav) == len(candidate_dates) - 1  # terminal date skipped (BT-003)
-    holdings = reconstruct_holdings(scores, uni, panel, constructor, list(nav.index))
+    holdings = driver.holdings_log()  # the ACHIEVED book the report uses
     assert set(holdings["date"]) == set(nav.index)
     assert candidate_dates[-1] not in set(holdings["date"])  # no phantom terminal
 
@@ -291,6 +265,11 @@ def _synthetic_result() -> Phase2Result:
     cov = pd.DataFrame(
         {"date": [date], "n_members": [2], "n_covered": [1], "coverage": [0.5]}
     )
+    feas = pd.DataFrame(
+        {"blocked_buys": [1], "blocked_sells": [0], "cash_constrained_buys": [0],
+         "carried": [1], "executed_turnover": [1.0], "invested": [0.5]},
+        index=pd.Index([date], name="date"),
+    )
     qret = pd.DataFrame({1: [0.01], 2: [0.02]}, index=[date])
     return Phase2Result(
         config=cfg,
@@ -301,10 +280,13 @@ def _synthetic_result() -> Phase2Result:
         panel_rows=2,
         panel_symbols=2,
         universe_summary=summarize_universe(_pit_universe(), "index", "2024-01-01", "2024-03-01"),
+        list_date_known=67,
+        list_date_total=68,
         financial_field="roe",
         financial_coverage_overall=0.5,
         financial_coverage_by_rebalance=cov,
         tradability_hits=hits,
+        feasibility_log=feas,
         rebalance_dates=(date,),
         candidate_rebalance_dates=(date, pd.Timestamp("2024-02-29")),
         skipped_terminal_dates=(pd.Timestamp("2024-02-29"),),
@@ -343,3 +325,9 @@ def test_render_reports_holdings_and_rebalance_dates():
     md = render_phase2_baseline(_synthetic_result())
     assert "000001.SZ" in md and "000002.SZ" in md  # holdings listed
     assert "2024-01-31" in md  # rebalance date listed
+
+
+def test_render_discloses_list_date_coverage_this_run():
+    md = render_phase2_baseline(_synthetic_result())
+    assert "67/68" in md          # known/total for THIS run
+    assert "missing" in md.lower()  # the data gap is disclosed, not just generic

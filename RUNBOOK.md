@@ -146,11 +146,42 @@ Guards (correctness / honesty):
 - **Demo source is refused.** `run-phase2-baseline` raises a readable error on
   `data.source != 'tushare'` — a "baseline" on offline demo data carries no PIT /
   ann_date / tradability meaning and must not masquerade as a real validation.
-- **Holdings are reconstructed read-only** (universe → scores → `constructor.build`,
-  the same chain the driver runs); the reporting never sees forward returns at the
-  factor stage and never re-derives returns.
+- **Holdings are the driver's ACHIEVED book** (`BacktestDriver.holdings_log()`,
+  post execution-feasibility) — the actual positions held each period, NOT the
+  constructor's desired target (a blocked sell shows the carried name, a blocked
+  buy is absent). The reporting never sees forward returns at the factor stage.
 - **No secret leak.** The report echoes only non-sensitive config (window, universe,
   factor); the token / secret file path is never written into it.
+
+## Phase 2-2 — execution realism (direction-aware fills + min_listing_days)
+
+P2-2 closes execution/tradability gaps in the backtest. No new factor, no parameter
+tuning — it changes how the driver *fills* a target and how selection eligibility is
+computed, and it applies to every real-path run (`run-phase0` and
+`run-phase2-baseline`).
+
+**Selection vs execution feasibility (split):**
+
+- *Selection* (`universe.tradable` / `apply_tradable_filters`): missing_close /
+  suspended / ST / limit toggles, plus **`min_listing_days`** (UNI-008) — a
+  buy/selection filter that drops names younger than `min_listing_days` as of each
+  date. Real path enriches `list_date` from `stock_basic`; a missing list_date is a
+  disclosed data gap (kept, never silently dropped); demo has no listing dates → a
+  disclosed no-op.
+- *Execution feasibility* (`runtime.fills.simulate_fills`): read off the panel flags,
+  independent of the selection toggles — `at_up_limit` blocks **buys**, `at_down_limit`
+  blocks **sells**, `suspended`/missing-close blocks **both**.
+
+**Cash-coherent fill model:** sells execute first (freeing cash), buys are funded from
+available cash and scaled down proportionally if blocked sells starved them (the book
+never sums to > 1 — no leverage). Blocked trades carry the current position forward;
+turnover/cost count only executed trades; idle cash earns the driver's `cash_return`
+(BT-007). The demo panel carries no flags, so every trade is feasible and P0/P1
+numbers are unchanged.
+
+The phase2 baseline report (`artifacts/reports/phase2_real_baseline.md`) gains an
+**Execution feasibility** section: per-rebalance blocked buys / blocked sells / carried
+positions / executed turnover / invested fraction, from `BacktestDriver.feasibility_log()`.
 
 ## Quality gate
 
@@ -173,11 +204,19 @@ Implemented in P1 (real path):
 - **ann_date financial alignment** — figures used only after disclosure date.
 - **Industry + size neutralization** — per-date OLS residual.
 
+Resolved in P2-2 (was deferred):
+
+- **Direction-aware limits/suspension** — now in the execution layer (up-limit
+  blocks buys, down-limit blocks sells, suspended/missing blocks both; blocked
+  trades carry forward, executed-only turnover). No longer a crude both-direction
+  selection drop.
+- **min_listing_days** — enforced on the real path (`stock_basic.list_date`) as a
+  buy/selection filter; demo stays a disclosed no-op.
+
 Still downgraded / deferred (disclosed):
 
 - **Demo path** uses offline `DemoFeed` — NOT real data (no PIT/financial meaning).
 - **Static universe** option remains a PIT downgrade (use `type: index` for real).
 - **Industry tag is current** (`stock_basic`), not point-in-time — mild downgrade.
-- **min_listing_days** configured but not enforced (no-op).
-- **Daily bars only**; **simple IC/perf** (not alphalens/quantstats);
-  limit filter is not yet trade-direction-aware (P2).
+- **Daily bars only**; **simple IC / performance** (numpy/pandas, not
+  alphalens-reloaded / quantstats).

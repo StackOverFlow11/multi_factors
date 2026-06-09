@@ -45,13 +45,22 @@ def test_bias_audit_records_known_phase0_limitations(tmp_path):
     assert "analytics" in text
 
 
-def test_bias_audit_discloses_min_listing_days_noop():
-    """min_listing_days is disclosed as a configured-but-unenforced no-op (LOW)."""
+def test_bias_audit_discloses_min_listing_days_enforced_real_noop_demo():
+    """min_listing_days is enforced on the real path; the demo no-op is disclosed (P2-2)."""
     text = render_bias_audit()
     assert "min_listing_days" in text
-    # Explicitly flagged as a no-op / downgrade, not silently ignored (INV-007).
-    assert "no-op" in text or "no op" in text.lower()
-    assert "降级" in text
+    # Real path enforces it via list_date; demo stays a disclosed no-op.
+    assert "list_date" in text
+    assert "已执行" in text  # real path
+    assert "no-op" in text and "降级" in text  # demo fallback, still disclosed
+
+
+def test_bias_audit_discloses_direction_aware_execution():
+    """Direction-aware execution feasibility (limits/suspension) is disclosed (P2-2)."""
+    text = render_bias_audit()
+    assert "方向感知" in text
+    assert "at_up_limit" in text and "at_down_limit" in text
+    assert "carry forward" in text or "carry" in text
 
 
 def test_bias_audit_discloses_missing_settlement_price_convention():
