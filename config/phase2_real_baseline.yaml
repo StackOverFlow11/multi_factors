@@ -1,0 +1,96 @@
+# Phase 2-1 — small-scale REAL-data (tushare) reproducibility baseline.
+#
+# Purpose: run the EXISTING P0/P1 spine end-to-end on the real tushare path over a
+# SMALL universe + SHORT window so it finishes in ~10-30 min and produces a rich
+# diagnostic report (artifacts/reports/phase2_real_baseline.md). It is NOT a new
+# strategy: same momentum_20 factor, same equal-weight alpha, same TopN portfolio.
+# No new factor, no parameter search, no live trading.
+#
+# Universe: 上证50 / SSE50 (000016.SH) — 50 names, the small end of A-share indices,
+# enough to exercise PIT membership + churn without a 300-name pull.
+#
+# Run:  python -m qt.cli run-phase2-baseline --config config/phase2_real_baseline.yaml
+# (needs the tushare token in the external .config.json; hits the network; heavy.)
+
+project:
+  name: quantitative_trading_phase2_real_baseline
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2023-07-01"
+  end: "2024-06-30"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: phase2_daily
+
+universe:
+  type: index
+  index_code: "000016.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+factors:
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+
+alpha:
+  model: equal_weight
+  params: {}
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 20
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+analytics:
+  forward_return_periods:
+    - 1
+    - 5
+    - 20
+  quantiles: 5
+  benchmark: null
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true

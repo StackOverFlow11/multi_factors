@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。main 已有骨架；`data` 分支已含 P0+P1（PR #1 `data→main`，OPEN）。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）已 merge 到 `main`**；当前在 `p2-real-baseline` 分支推进 P2-1。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -72,7 +72,8 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - 财务 `ann_date` 披露日 as-of（绝不按 end_date；500 天 lookback carry forward）
   - 行业 + 市值中性化（按 date 截面 OLS 残差；欠定/无自由度截面 → NaN）
   - 路径感知降级披露（demo/static vs tushare/index/ann_date，绝不把 demo 当真实验证）
-- ✅ 质量门：`pytest` **168 passed**；`ruff` clean；`validate-config`（demo + `config/example_tushare.yaml`）+ `run-phase0`（demo）均 OK。
 - ✅ 真数据实证（tushare，非 CI）：复权除权日 raw−5.74%→qfq+0.99% / CSI300 全年 24 快照 328 名换手 / ann_date Q1 延后至 04-20 / 中性化 corr −0.617→0。详见 `BIAS_AUDIT.md`、`artifacts/reports/phase1_summary.md`。
+- ✅ **Phase 2-1 真实数据可复现基准**（`p2-real-baseline` 分支，未 PR）：新 run mode `run-phase2-baseline` + `config/phase2_real_baseline.yaml`（上证50 `000016.SH`，2023-07~2024-06）。**复用 P0/P1 全套机器，不扩因子、不调参**。一次真实跑 ~648s（68 成分/25 快照/12 调仓），输出 `artifacts/reports/phase2_real_baseline.md`（gitignored）：数据窗口/PIT 成分摘要/ann_date 覆盖率(100%)/可交易过滤命中(首命中互斥)/每期持仓/换手成本/IC(≈0.008)/绩效(年化−17.6%，**亏损动量基准，非业绩声明**)/全部 P2 降级。诊断只读、demo 源拒绝、token 不入报告。
+- ✅ 质量门：`pytest` **180 passed**（P0=93 / P1=75 / P2=12）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`）+ `run-phase0`（demo）均 OK。
 - ⚠️ 剩余 P2（已显式披露）：行业标签用**当前值**非 PIT、涨跌停未方向感知、`min_listing_days` no-op、日线 only、简版 IC/绩效未走 alphalens/quantstats、demo 路径非真数据。
 - 路线图下一步：财务因子组合 / 历史 PIT 行业 / 更细交易约束（architecture.html §11）。
