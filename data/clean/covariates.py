@@ -39,6 +39,22 @@ def enrich_covariates(
     return out
 
 
+def enrich_pit_industry(
+    panel: pd.DataFrame, industry: pd.Series
+) -> pd.DataFrame:
+    """Return a NEW panel with a POINT-IN-TIME ``industry`` column (UNI-010).
+
+    ``industry`` is a ``(date, symbol)``-indexed Series of as-of SW-L1 industry
+    names (from :func:`data.clean.pit_industry.asof_industry`) — it varies by date,
+    unlike the current-tag broadcast. Rows with no as-of industry stay ``NaN`` (a
+    disclosed gap the neutralizer drops). Pure: never mutates the input panel.
+    """
+    validate_panel(panel)
+    out = panel.copy()
+    out["industry"] = industry.reindex(out.index)
+    return out
+
+
 def enrich_listing(
     panel: pd.DataFrame, listing_dates: dict[str, pd.Timestamp]
 ) -> pd.DataFrame:

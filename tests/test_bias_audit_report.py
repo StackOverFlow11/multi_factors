@@ -55,6 +55,14 @@ def test_bias_audit_discloses_min_listing_days_enforced_real_noop_demo():
     assert "no-op" in text and "降级" in text  # demo fallback, still disclosed
 
 
+def test_bias_audit_discloses_pit_industry():
+    """Industry neutralization covariate is disclosed as point-in-time, not current (P2-3)."""
+    text = render_bias_audit()
+    assert "UNI-010" in text
+    assert "as-of" in text and "index_member_all" in text
+    assert "PIT 行业覆盖率" in text or "PIT" in text  # coverage disclosure named
+
+
 def test_bias_audit_discloses_direction_aware_execution():
     """Direction-aware execution feasibility (limits/suspension) is disclosed (P2-2)."""
     text = render_bias_audit()

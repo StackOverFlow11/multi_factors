@@ -1,4 +1,4 @@
-# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 (bias-boundary → execution realism)
+# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 (bias-boundary → execution realism → PIT industry)
 
 ## Commands
 
@@ -17,14 +17,14 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **204 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **217 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 204).
+Counts below are the actual per-file `pytest` numbers (sum = 217).
 
-## Per-file breakdown — Phase 0 core (94)
+## Per-file breakdown — Phase 0 core (95)
 
 | Test file | Tests | Area |
 |---|---|---|
@@ -43,9 +43,9 @@ Counts below are the actual per-file `pytest` numbers (sum = 204).
 | `test_analytics_factor.py` | 5 | IC / quantile |
 | `test_analytics_performance.py` | 3 | performance metrics |
 | `test_phase0_pipeline.py` | 8 | end-to-end pipeline |
-| `test_bias_audit_report.py` | 5 | bias audit doc (+1: P2-2 disclosures) |
+| `test_bias_audit_report.py` | 6 | bias audit doc (+2: P2-2 + P2-3 disclosures) |
 
-## Per-file breakdown — Phase 1 bias-boundary (75)
+## Per-file breakdown — Phase 1 bias-boundary (77)
 
 | Test file | Tests | Red-line / feature |
 |---|---|---|
@@ -65,23 +65,29 @@ Counts below are the actual per-file `pytest` numbers (sum = 204).
 | `test_neutralize.py` | 5 | industry+size residual orthogonality |
 | `test_processing_neutralize.py` | 2 | neutralize wiring (covariates required) |
 | `test_covariates_enrich.py` | 3 | industry + market_cap enrichment |
-| `test_tushare_covariates.py` | 2 | stock_basic + daily_basic feed |
-| `test_real_path_config.py` | 3 | demo vs real-path downgrade disclosure |
+| `test_tushare_covariates.py` | 3 | stock_basic + daily_basic + index_member_all (SW-L1) feed |
+| `test_real_path_config.py` | 4 | demo vs real-path downgrade disclosure (+ PIT industry) |
 
-## Per-file breakdown — Phase 2-1 real-data baseline (14)
+## Per-file breakdown — Phase 2-1 real-data baseline (15)
 
 | Test file | Tests | Feature |
 |---|---|---|
-| `test_phase2_baseline.py` | 14 | collectors, demo/real guard, report-field contract, no-secret-leak, settled-vs-candidate dates, loaded-vs-in-window membership |
+| `test_phase2_baseline.py` | 15 | collectors, demo/real guard, report-field contract, no-secret-leak, settled-vs-candidate dates, loaded-vs-in-window membership, list_date + PIT-industry coverage |
 
-## Per-file breakdown — Phase 2-2 execution realism (21)
+## Per-file breakdown — Phase 2-2 execution realism (22)
 
 | Test file | Tests | Red-line / feature |
 |---|---|---|
 | `test_fills.py` | 10 | direction-aware fill sim (`simulate_fills`) + panel→feasibility adapter; cash-coherent sell-then-buy, no leverage, executed-only turnover |
-| `test_driver_feasibility.py` | 5 | end-to-end: down-limit carries, up-limit blocks buy, suspended no-trade, feasibility log == nav index |
+| `test_driver_feasibility.py` | 6 | end-to-end: down-limit carries, up-limit blocks buy, suspended no-trade, **holdings == achieved (not desired)**, feasibility log == nav index |
 | `test_min_listing_days.py` | 6 | `min_listing_days` buy-eligibility boundaries (age <, ==, >; missing list_date kept; no-op cases) |
-| **Total (P0 + P1 + P2-1 + P2-2)** | **204** | |
+
+## Per-file breakdown — Phase 2-3 PIT industry (8)
+
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_pit_industry.py` | 8 | SW-L1 **as-of** industry (switch at reclassification, carry-forward pre-start, missing → NaN, latest-in_date on overlap) + `enrich_pit_industry` + pipeline wiring (per-date industry, no current-tag fallback) |
+| **Total (P0 + P1 + P2-1 + P2-2 + P2-3)** | **217** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -103,5 +109,12 @@ Counts below are the actual per-file `pytest` numbers (sum = 204).
 - `universe.min_listing_days` is enforced on the real path (list_date from
   `stock_basic`) as a buy/selection filter; a missing list_date is kept and disclosed;
   the demo path stays a disclosed no-op.
+- **P2-3 PIT industry (locked by tests):** the neutralization industry covariate is
+  point-in-time SW-L1 (as-of trade date via `index_member_all` in/out dates), not the
+  current `stock_basic.industry` tag. Names with no SW history get NaN (the neutralizer
+  drops them) — never a silent current-tag fallback; PIT coverage is disclosed in the
+  phase2 report. The neutralize math is unchanged (it already drops NaN-industry rows).
 - A duplicate test-function name across two files was found and renamed during P2-2
-  (it had been silently shadowing one test in the full-suite run).
+  (it had been silently shadowing one test in the full-suite run). A second, harmless
+  duplicate (`test_enrich_does_not_mutate_input` in two files) was verified NOT to drop
+  a test (per-file sum == full-run total = 217).

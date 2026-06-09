@@ -37,7 +37,8 @@ from alpha.equal_weight import EqualWeightAlpha
 from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
 from analytics.performance import performance_summary
 from data.clean.adjust import front_adjust
-from data.clean.covariates import enrich_covariates, enrich_listing
+from data.clean.covariates import enrich_covariates, enrich_listing, enrich_pit_industry
+from data.clean.pit_industry import asof_industry
 from data.clean.pit_financials import asof_financials
 from data.clean.tradability import enrich_tradability
 from data.feed.base import DataFeed
@@ -224,11 +225,18 @@ def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
         )
 
     # neutralization
-    if cfg.processing.neutralize.enabled:
+    if cfg.processing.neutralize.enabled and real:
         neutral = (
-            "Factor is industry + market-cap neutralized; the industry tag is the "
-            "CURRENT one (stock_basic), a mild PIT downgrade (historical industry is "
-            "a later item)."
+            "Factor is industry + market-cap neutralized; industry is **point-in-time** "
+            "SW-L1 (UNI-010): as-of the trade date via index_member_all in/out dates, NOT "
+            "the current stock_basic tag. Names with no SW history get NaN (a disclosed "
+            "coverage gap the neutralizer drops) — never a silent current-tag fallback. "
+            "Market cap is per-date (daily_basic.total_mv)."
+        )
+    elif cfg.processing.neutralize.enabled:
+        neutral = (
+            "Factor is industry + market-cap neutralized (real path only; this is not a "
+            "tushare run, so the covariates are unavailable)."
         )
     else:
         neutral = "No neutralization in this run (raw cross-sectional factor)."
@@ -639,12 +647,20 @@ def _maybe_enrich_covariates(
     feed = TushareCovariatesFeed(
         cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
     )
-    industry = feed.industry(symbols)
     market_cap = feed.market_cap(symbols, cfg.data.start, cfg.data.end)
-    panel = enrich_covariates(panel, industry=industry, market_cap=market_cap)
+    panel = enrich_covariates(panel, market_cap=market_cap)
+    # PIT (as-of) SW-L1 industry replaces the current-tag broadcast (UNI-010): each
+    # name's industry varies by trade_date via index_member_all in/out dates; a name
+    # with no SW history gets NaN — a disclosed gap the neutralizer drops — never a
+    # silent fallback to the current stock_basic tag.
+    intervals = feed.pit_sw_l1_intervals(symbols)
+    industry_series = asof_industry(panel.index, intervals)
+    panel = enrich_pit_industry(panel, industry_series)
+    coverage = float(industry_series.notna().mean()) if len(industry_series) else 0.0
     logger.info(
-        "covariates: industry(%d symbols) + market_cap(%d rows) for neutralization",
-        len(industry), len(market_cap),
+        "covariates: PIT SW-L1 industry (coverage %.1f%%, %d/%d symbols with history) "
+        "+ market_cap(%d rows) for neutralization",
+        coverage * 100.0, len(intervals), len(symbols), len(market_cap),
     )
     return panel
 

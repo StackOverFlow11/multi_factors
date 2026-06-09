@@ -282,6 +282,7 @@ def _synthetic_result() -> Phase2Result:
         universe_summary=summarize_universe(_pit_universe(), "index", "2024-01-01", "2024-03-01"),
         list_date_known=67,
         list_date_total=68,
+        industry_pit_coverage=0.985,
         financial_field="roe",
         financial_coverage_overall=0.5,
         financial_coverage_by_rebalance=cov,
@@ -331,3 +332,10 @@ def test_render_discloses_list_date_coverage_this_run():
     md = render_phase2_baseline(_synthetic_result())
     assert "67/68" in md          # known/total for THIS run
     assert "missing" in md.lower()  # the data gap is disclosed, not just generic
+
+
+def test_render_discloses_pit_industry_coverage():
+    md = render_phase2_baseline(_synthetic_result())
+    assert "point-in-time SW-L1" in md
+    assert "98.50%" in md  # industry_pit_coverage=0.985 rendered as a pct
+    assert "current-tag fallback" in md  # explicitly no silent fallback

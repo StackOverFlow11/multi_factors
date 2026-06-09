@@ -306,6 +306,13 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
             f"**{result.list_date_known}/{result.list_date_total}** known, "
             f"**{missing}** missing (kept as a disclosed data gap, never excluded)\n"
         )
+    if math.isfinite(result.industry_pit_coverage):
+        lines.append(
+            f"- neutralization industry is **point-in-time SW-L1** (as-of trade date); "
+            f"PIT coverage this run: **{_fmt(result.industry_pit_coverage, pct=True)}** of "
+            f"(date, symbol) rows. Names with no SW history get NaN (dropped by the "
+            f"neutralizer) — never a current-tag fallback.\n"
+        )
 
     lines.append("\n## Financial ann_date coverage\n")
     lines.append(
@@ -505,9 +512,17 @@ def render_bias_audit() -> str:
         "缺失(如 demo 路径)直接报可读错误。\n"
         "- 实证:12 只票横跨 4 行业(2024-09-30),corr(原始 momentum, log市值) "
         "= -0.617 → 中性化后 -0.000,各行业残差均值 ≈ 0,确认规模/行业暴露被移除。\n"
-        "- **降级**:行业来自 `stock_basic.industry` 的**当前**行业标签,非按历史时点,"
-        "故行业中性化带有轻微成分前视(市值 `daily_basic.total_mv` 为逐日真值)。"
-        "PIT 行业历史是后续项,此降级在此显式披露(INV-007)。\n"
+        "- **行业 PIT(UNI-010,P2-3,已实现)**:行业协变量从 `stock_basic.industry` 的"
+        "**当前**标签,升级为按 trade_date **as-of** 的历史申万一级(SW-L1)。`data.feed."
+        "tushare_covariates.pit_sw_l1_intervals` 读 `index_member_all` 拿每股 SW-L1 的 "
+        "`in_date`/`out_date` 区间;`data.clean.pit_industry.asof_industry` 按"
+        "`[in_date, out_date)` 覆盖该日的区间取行业(改分类日**新行业**生效,PIT-safe,绝不用"
+        "未来行业)。起始日前已有的成分能 carry forward 到窗口开始。\n"
+        "- **缺失处理(不静默退回 current)**:无 SW 历史的票 → 行业 **NaN**,被 neutralize "
+        "按截面丢弃;每次运行的 **PIT 行业覆盖率**在 `phase2_real_baseline.md` 披露。市值 "
+        "`daily_basic.total_mv` 为逐日真值。\n"
+        "- **残留**:SW-L1 历史采用当前 SW2021 分类体系的 in/out 记录;对稳定大盘股,as-of "
+        "行业与当前标签通常一致(行为中性),但**边界已 PIT-safe**(改分类的票各按其时代归属)。\n"
     )
 
 

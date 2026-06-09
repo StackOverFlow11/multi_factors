@@ -80,6 +80,10 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `universe.min_listing_days` **真实路径已执行**（`stock_basic.list_date` 富化,买入资格过滤,边界 age==min 放行,缺 list_date 保留并披露）;demo 无上市日 → 披露 no-op。
   - 回测 `feasibility_log()`：每调仓期 blocked buys/sells/carried/executed turnover/invested;phase2 报告新增 **Execution feasibility** 小节。
   - **保不变量**:demo 无 flag → 全可成交 → P0/P1 数字不变;无未来函数、PIT/ann_date/real-demo 分离不变。
-- ✅ 质量门：`pytest` **204 passed**（P0=94 / P1=75 / P2-1=14 / P2-2=21）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`）+ `run-phase0`（demo）均 OK。
-- ⚠️ 剩余 P2（已显式披露）：行业标签用**当前值**非 PIT、日线 only、简版 IC/绩效未走 alphalens/quantstats、demo 路径非真数据。
-- 路线图下一步：财务因子组合 / 历史 PIT 行业 / 分钟级 / alphalens·quantstats 接入（architecture.html §11）。
+- ✅ **Phase 2-3 历史 PIT 行业**（`p2-pit-industry` 分支,未 PR）：把行业中性化协变量从 `stock_basic.industry` **当前**标签升级为按 trade_date **as-of** 的历史申万一级(SW-L1)。
+  - `tushare_covariates.pit_sw_l1_intervals` 读 `index_member_all` 取每股 SW-L1 的 `in_date`/`out_date` 区间;`data/clean/pit_industry.py::asof_industry` 按 `[in_date,out_date)` 覆盖该日取行业(改分类日新行业生效,PIT-safe;起始日前成分 carry forward 到窗口开始)。
+  - **不静默退回 current**:无 SW 历史的票 → 行业 NaN,被 neutralize 按截面丢弃(neutralize 数学不变,本就丢 NaN 行);每次运行 **PIT 行业覆盖率**进 phase2 报告。
+  - **只补 PIT 边界,不加因子**:对稳定大盘股 as-of 行业≈当前(行为中性),但边界已 PIT-safe。
+- ✅ 质量门：`pytest` **217 passed**（P0=95 / P1=77 / P2-1=15 / P2-2=22 / P2-3=8）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`）+ `run-phase0`（demo）均 OK。
+- ⚠️ 剩余 P2（已显式披露）：日线 only、简版 IC/绩效未走 alphalens/quantstats、demo 路径非真数据。
+- 路线图下一步：财务因子组合 / 分钟级 / alphalens·quantstats 接入（architecture.html §11）。

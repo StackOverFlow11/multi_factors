@@ -80,6 +80,8 @@ class Phase2Result:
     # min_listing_days list_date coverage (known vs disclosed data gap, this run)
     list_date_known: int
     list_date_total: int
+    # PIT SW-L1 industry coverage for neutralization (NaN if neutralize off)
+    industry_pit_coverage: float
     # ann_date financial coverage (diagnostic)
     financial_field: str
     financial_coverage_overall: float
@@ -405,6 +407,12 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         list_date_known = 0
         list_date_total = 0
 
+    # PIT SW-L1 industry coverage (fraction of panel rows with an as-of industry).
+    if cfg.processing.neutralize.enabled and "industry" in panel.columns:
+        industry_pit_coverage = float(panel["industry"].notna().mean())
+    else:
+        industry_pit_coverage = float("nan")
+
     dates = panel.index.get_level_values("date")
     result = Phase2Result(
         config=cfg,
@@ -419,6 +427,7 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         ),
         list_date_known=list_date_known,
         list_date_total=list_date_total,
+        industry_pit_coverage=industry_pit_coverage,
         financial_field=financial_field,
         financial_coverage_overall=coverage_overall,
         financial_coverage_by_rebalance=coverage_by_rebalance,
