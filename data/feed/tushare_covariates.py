@@ -59,6 +59,26 @@ class TushareCovariatesFeed:
         df = df[df["ts_code"].astype(str).isin(wanted)]
         return {str(r.ts_code): r.industry for r in df.itertuples()}
 
+    def listing_dates(self, symbols: list[str]) -> dict[str, pd.Timestamp]:
+        """Return {symbol: list_date} from ``stock_basic.list_date`` (for UNI-008).
+
+        Used by the ``min_listing_days`` selection filter. A symbol absent from
+        ``stock_basic`` simply does not appear in the map (the caller treats an
+        unknown listing date as a disclosed data gap, never as a young name).
+        """
+        pro = self._client()
+        df = self._call(pro.stock_basic, fields="ts_code,list_date")
+        if df is None or len(df) == 0:
+            return {}
+        wanted = set(map(str, symbols))
+        df = df[df["ts_code"].astype(str).isin(wanted)]
+        out: dict[str, pd.Timestamp] = {}
+        for r in df.itertuples():
+            out[str(r.ts_code)] = pd.to_datetime(
+                str(r.list_date), format="%Y%m%d", errors="coerce"
+            )
+        return out
+
     def market_cap(self, symbols: list[str], start: str, end: str) -> pd.DataFrame:
         """Return DataFrame[date, symbol, market_cap] from daily_basic.total_mv."""
         pro = self._client()

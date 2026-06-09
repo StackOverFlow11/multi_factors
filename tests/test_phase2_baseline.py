@@ -291,6 +291,11 @@ def _synthetic_result() -> Phase2Result:
     cov = pd.DataFrame(
         {"date": [date], "n_members": [2], "n_covered": [1], "coverage": [0.5]}
     )
+    feas = pd.DataFrame(
+        {"blocked_buys": [1], "blocked_sells": [0], "cash_constrained_buys": [0],
+         "carried": [1], "executed_turnover": [1.0], "invested": [0.5]},
+        index=pd.Index([date], name="date"),
+    )
     qret = pd.DataFrame({1: [0.01], 2: [0.02]}, index=[date])
     return Phase2Result(
         config=cfg,
@@ -305,6 +310,7 @@ def _synthetic_result() -> Phase2Result:
         financial_coverage_overall=0.5,
         financial_coverage_by_rebalance=cov,
         tradability_hits=hits,
+        feasibility_log=feas,
         rebalance_dates=(date,),
         candidate_rebalance_dates=(date, pd.Timestamp("2024-02-29")),
         skipped_terminal_dates=(pd.Timestamp("2024-02-29"),),

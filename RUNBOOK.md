@@ -152,6 +152,36 @@ Guards (correctness / honesty):
 - **No secret leak.** The report echoes only non-sensitive config (window, universe,
   factor); the token / secret file path is never written into it.
 
+## Phase 2-2 — execution realism (direction-aware fills + min_listing_days)
+
+P2-2 closes execution/tradability gaps in the backtest. No new factor, no parameter
+tuning — it changes how the driver *fills* a target and how selection eligibility is
+computed, and it applies to every real-path run (`run-phase0` and
+`run-phase2-baseline`).
+
+**Selection vs execution feasibility (split):**
+
+- *Selection* (`universe.tradable` / `apply_tradable_filters`): missing_close /
+  suspended / ST / limit toggles, plus **`min_listing_days`** (UNI-008) — a
+  buy/selection filter that drops names younger than `min_listing_days` as of each
+  date. Real path enriches `list_date` from `stock_basic`; a missing list_date is a
+  disclosed data gap (kept, never silently dropped); demo has no listing dates → a
+  disclosed no-op.
+- *Execution feasibility* (`runtime.fills.simulate_fills`): read off the panel flags,
+  independent of the selection toggles — `at_up_limit` blocks **buys**, `at_down_limit`
+  blocks **sells**, `suspended`/missing-close blocks **both**.
+
+**Cash-coherent fill model:** sells execute first (freeing cash), buys are funded from
+available cash and scaled down proportionally if blocked sells starved them (the book
+never sums to > 1 — no leverage). Blocked trades carry the current position forward;
+turnover/cost count only executed trades; idle cash earns the driver's `cash_return`
+(BT-007). The demo panel carries no flags, so every trade is feasible and P0/P1
+numbers are unchanged.
+
+The phase2 baseline report (`artifacts/reports/phase2_real_baseline.md`) gains an
+**Execution feasibility** section: per-rebalance blocked buys / blocked sells / carried
+positions / executed turnover / invested fraction, from `BacktestDriver.feasibility_log()`.
+
 ## Quality gate
 
 ```bash

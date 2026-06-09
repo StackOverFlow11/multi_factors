@@ -37,3 +37,19 @@ def enrich_covariates(
         out["market_cap"] = mc["market_cap"].reindex(out.index)
 
     return out
+
+
+def enrich_listing(
+    panel: pd.DataFrame, listing_dates: dict[str, pd.Timestamp]
+) -> pd.DataFrame:
+    """Return a NEW panel with a per-symbol ``list_date`` column (for UNI-008).
+
+    Broadcasts each symbol's listing date to every date. A symbol absent from
+    ``listing_dates`` gets ``NaT`` (a disclosed data gap, never treated as young).
+    Pure: never mutates the input panel.
+    """
+    validate_panel(panel)
+    out = panel.copy()
+    symbols = out.index.get_level_values("symbol")
+    out["list_date"] = [listing_dates.get(str(s), pd.NaT) for s in symbols]
+    return out

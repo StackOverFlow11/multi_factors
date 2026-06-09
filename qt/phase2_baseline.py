@@ -46,6 +46,7 @@ from qt.pipeline import (
     _make_logger,
     _maybe_enrich_covariates,
     _maybe_enrich_financials,
+    _maybe_enrich_listing,
     _periods_per_year,
     _process_factors,
 )
@@ -80,6 +81,8 @@ class Phase2Result:
     financial_coverage_by_rebalance: pd.DataFrame
     # tradability filter hits
     tradability_hits: pd.DataFrame
+    # execution feasibility (direction-aware fills)
+    feasibility_log: pd.DataFrame
     # rebalance + holdings (rebalance_dates are the SETTLED dates == nav_table.index)
     rebalance_dates: tuple[pd.Timestamp, ...]
     candidate_rebalance_dates: tuple[pd.Timestamp, ...]
@@ -347,13 +350,14 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     factor = _build_factor(cfg)
     panel = _maybe_enrich_financials(cfg, panel, symbols, factor, logger)
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
+    panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factor, logger)
     processed = _process_factors(cfg, factor_panel, panel)
     score_panel = _build_scores(processed, EqualWeightAlpha())
     scores = _FrameScores(score_panel)
 
     constructor = TopNEqualWeight(cfg.portfolio.top_n, long_only=cfg.portfolio.long_only)
-    execution = SimExecution(fee_rate=cfg.cost.fee_rate, cash_return=cfg.backtest.cash_return)
+    execution = SimExecution(fee_rate=cfg.cost.fee_rate)
     driver = BacktestDriver(
         universe=universe,
         scores=scores,
@@ -367,6 +371,7 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     )
     candidate_dates = driver.rebalance_dates()
     nav_table = driver.run()
+    feasibility_log = driver.feasibility_log()
     # The diagnostics (coverage / filter hits / holdings) MUST key off the dates
     # that were actually held + settled — i.e. nav_table.index — NOT the candidate
     # rebalance dates. The driver skips a terminal rebalance with no forward
@@ -429,6 +434,7 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         financial_coverage_overall=coverage_overall,
         financial_coverage_by_rebalance=coverage_by_rebalance,
         tradability_hits=hits,
+        feasibility_log=feasibility_log,
         rebalance_dates=tuple(settled_dates),
         candidate_rebalance_dates=tuple(candidate_dates),
         skipped_terminal_dates=tuple(skipped_dates),

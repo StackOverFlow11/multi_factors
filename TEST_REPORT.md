@@ -1,4 +1,4 @@
-# TEST_REPORT — Phase 1 (bias-boundary)
+# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 (bias-boundary → execution realism)
 
 ## Commands
 
@@ -8,6 +8,8 @@ Run from the repo root with the project python (env `quant_mf`):
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m pytest -q
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m ruff check .
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/example.yaml
+/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/example_tushare.yaml
+/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase2_real_baseline.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli run-phase0 --config config/example.yaml
 ```
 
@@ -15,14 +17,14 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **168 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **204 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
-| Config validation | `validate-config` (demo + `example_tushare.yaml`) | exit `0`, prints `OK` |
+| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual `pytest --collect-only` numbers (sum = 168).
+Counts below are the actual per-file `pytest` numbers (sum = 204).
 
-## Per-file breakdown — Phase 0 core (93)
+## Per-file breakdown — Phase 0 core (94)
 
 | Test file | Tests | Area |
 |---|---|---|
@@ -41,7 +43,7 @@ Counts below are the actual `pytest --collect-only` numbers (sum = 168).
 | `test_analytics_factor.py` | 5 | IC / quantile |
 | `test_analytics_performance.py` | 3 | performance metrics |
 | `test_phase0_pipeline.py` | 8 | end-to-end pipeline |
-| `test_bias_audit_report.py` | 4 | bias audit doc |
+| `test_bias_audit_report.py` | 5 | bias audit doc (+1: P2-2 disclosures) |
 
 ## Per-file breakdown — Phase 1 bias-boundary (75)
 
@@ -65,38 +67,41 @@ Counts below are the actual `pytest --collect-only` numbers (sum = 168).
 | `test_covariates_enrich.py` | 3 | industry + market_cap enrichment |
 | `test_tushare_covariates.py` | 2 | stock_basic + daily_basic feed |
 | `test_real_path_config.py` | 3 | demo vs real-path downgrade disclosure |
-| **Total (P0 + P1)** | **168** | |
+
+## Per-file breakdown — Phase 2-1 real-data baseline (14)
+
+| Test file | Tests | Feature |
+|---|---|---|
+| `test_phase2_baseline.py` | 14 | collectors, demo/real guard, report-field contract, no-secret-leak, settled-vs-candidate dates, loaded-vs-in-window membership |
+
+## Per-file breakdown — Phase 2-2 execution realism (21)
+
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_fills.py` | 10 | direction-aware fill sim (`simulate_fills`) + panel→feasibility adapter; cash-coherent sell-then-buy, no leverage, executed-only turnover |
+| `test_driver_feasibility.py` | 5 | end-to-end: down-limit carries, up-limit blocks buy, suspended no-trade, feasibility log == nav index |
+| `test_min_listing_days.py` | 6 | `min_listing_days` buy-eligibility boundaries (age <, ==, >; missing list_date kept; no-op cases) |
+| **Total (P0 + P1 + P2-1 + P2-2)** | **204** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
-Verified directly against tushare (results recorded in `BIAS_AUDIT.md` and
-`artifacts/reports/phase1_summary.md`):
-
-- **front-adjust**: 平安银行 2024-06-14 ex-dividend — raw −5.74% vs qfq +0.99%;
-  momentum_20 shifts up to 6.77pp.
-- **PIT index**: CSI300 2024 — 24 snapshots, 328 distinct names (28 in / 28 out);
-  `members(2024-06-15)` uses the 2024-06-03 snapshot; a dropped name stays in its era.
-- **ann_date**: 平安银行 Q1 (end 2024-03-31, ann 2024-04-20) — as-of roe stays the
-  prior annual (10.24) until 04-19, switches to Q1 (3.12) on 04-22; no leak.
-- **neutralization**: 12 names / 4 industries — corr(momentum, log_mcap)
-  −0.617 → −0.000; per-industry residual means ≈ 0.
+- **P1** (front-adjust / PIT / ann_date / neutralization): see `BIAS_AUDIT.md` and
+  `artifacts/reports/phase1_summary.md`.
+- **P2-1** baseline (SSE50, ~11 min): `artifacts/reports/phase2_real_baseline.md` —
+  settled-date diagnostics, ann_date coverage, tradability funnel.
 
 ## Notes
 
 - No test hits the network or reads the tushare token (TEST-002, INV-004): the whole
   suite runs on `DemoFeed` / fixtures / monkeypatched SDKs.
-- Financial factors, the PIT index universe, tradability filters and neutralization
-  all require the real tushare path; on demo they raise a readable error rather than
-  fabricate (verified by `test_financial_pipeline.py`, `_build_universe`, the
-  neutralize guard).
-- The demo portfolio's annualized return is intentionally extreme (demo price paths
-  include a 3x jump); P0/P1 do not optimize for realistic returns — pipeline
-  correctness (event order, costs, no-lookahead) is what is under test.
-- P1 acceptance hardening (locked by tests): price-limit flags compare the RAW
-  (unadjusted) close to the raw `stk_limit`, enriched BEFORE front-adjust
-  (`test_tradability_enrich::test_limit_flag_uses_raw_close_and_survives_front_adjust`);
-  financials are fetched ~16 months before `start` so the prior disclosed report
-  carries forward (`test_pit_financials::test_asof_carries_forward_report_disclosed_before_window`,
-  `test_financial_pipeline::test_financial_fetch_uses_lookback_before_start`);
-  neutralization returns NaN on a saturated cross-section instead of fabricated ~0
-  residuals (`test_neutralize::test_saturated_cross_section_returns_nan_not_zeros`).
+- **P2-2 execution realism (locked by tests):** selection eligibility and execution
+  feasibility are split. `runtime.fills.simulate_fills` is the cash-coherent
+  sell-then-buy model — at-up-limit blocks buys, at-down-limit blocks sells,
+  suspended/missing blocks both; blocked trades carry forward, turnover/cost count
+  only executed trades, and idle cash earns the driver's `cash_return` (BT-007). The
+  demo path has no flags, so every trade is feasible and P0/P1 numbers are unchanged.
+- `universe.min_listing_days` is enforced on the real path (list_date from
+  `stock_basic`) as a buy/selection filter; a missing list_date is kept and disclosed;
+  the demo path stays a disclosed no-op.
+- A duplicate test-function name across two files was found and renamed during P2-2
+  (it had been silently shadowing one test in the full-suite run).

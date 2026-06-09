@@ -36,6 +36,9 @@ def apply_tradable_filters(
     except KeyError:
         return []  # no market data for that date -> nothing tradable
 
+    min_days = int(flt.get("min_listing_days") or 0)
+    has_list_date = "list_date" in cross.columns
+
     out: list[str] = []
     for symbol in members:
         if symbol not in cross.index:
@@ -51,5 +54,12 @@ def apply_tradable_filters(
             bool(row.get("at_up_limit", False)) or bool(row.get("at_down_limit", False))
         ):
             continue
+        # min_listing_days (UNI-008): exclude names younger than min_days as of
+        # this date. A missing/NaT list_date is a DATA GAP, not a young name, so
+        # the name is kept (never silently dropped); callers disclose the gap.
+        if min_days > 0 and has_list_date:
+            ld = row.get("list_date")
+            if pd.notna(ld) and (target - pd.Timestamp(ld)).days < min_days:
+                continue
         out.append(symbol)
     return out

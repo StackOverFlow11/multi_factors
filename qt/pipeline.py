@@ -37,7 +37,7 @@ from alpha.equal_weight import EqualWeightAlpha
 from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
 from analytics.performance import performance_summary
 from data.clean.adjust import front_adjust
-from data.clean.covariates import enrich_covariates
+from data.clean.covariates import enrich_covariates, enrich_listing
 from data.clean.pit_financials import asof_financials
 from data.clean.tradability import enrich_tradability
 from data.feed.base import DataFeed
@@ -233,18 +233,38 @@ def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
     else:
         neutral = "No neutralization in this run (raw cross-sectional factor)."
 
+    if real and cfg.universe.min_listing_days > 0:
+        listing = (
+            f"universe.min_listing_days={cfg.universe.min_listing_days} is ENFORCED "
+            "(real path): names younger than that as of each date are excluded from "
+            "selection (UNI-008); a missing list_date is a disclosed data gap (kept, "
+            "never silently dropped)."
+        )
+    else:
+        listing = (
+            f"universe.min_listing_days={cfg.universe.min_listing_days} is NOT enforced "
+            "on this path (no listing dates on the demo source); disclosed no-op (UNI-008)."
+        )
+    execution = (
+        "Execution feasibility is direction-aware (UNI-007 / P2-2): at-up-limit blocks "
+        "buys, at-down-limit blocks sells, suspended/missing-close blocks both; blocked "
+        "trades carry forward and turnover/cost count only executed trades (no forced "
+        "impossible trades; idle cash from blocked buys earns cash_return). The demo "
+        "panel carries no flags, so every trade is feasible there (P0/P1 unchanged)."
+    )
+
     items = [
         path,
         membership,
         financials,
         neutral,
+        execution,
         f"Daily ({cfg.data.freq}) bars only; minute-level link is deferred.",
         "IC / quantile returns use a simple numpy/pandas implementation, NOT "
         "alphalens-reloaded (simple-vs-alphalens fallback, INV-007).",
         "Performance metrics use a simple numpy/pandas implementation, NOT "
         "quantstats (simple-vs-quantstats fallback, INV-007).",
-        f"universe.min_listing_days is configured ({cfg.universe.min_listing_days}) "
-        "but NOT enforced (no-op); newly listed names are not excluded (INV-007).",
+        listing,
     ]
     return tuple(items)
 
@@ -267,6 +287,7 @@ def run_phase0(config_path: str) -> Phase0Result:
     factor = _build_factor(cfg)
     panel = _maybe_enrich_financials(cfg, panel, symbols, factor, logger)
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
+    panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factor, logger)
 
     processed = _process_factors(cfg, factor_panel, panel)
@@ -361,6 +382,10 @@ def _build_universe(
     backtest can settle names that later left the index (no survivorship bias).
     """
     filters = cfg.universe.filters.model_dump()
+    # min_listing_days is a buy/selection-eligibility filter (UNI-008); thread it
+    # into the shared filter dict so both static and index universes enforce it
+    # when a list_date column is present (real path) and no-op otherwise (demo).
+    filters["min_listing_days"] = int(cfg.universe.min_listing_days or 0)
     if cfg.universe.type == "static":
         symbols = list(cfg.universe.symbols)
         if not symbols:
@@ -527,6 +552,33 @@ def _maybe_enrich_financials(
     return enriched
 
 
+def _maybe_enrich_listing(
+    cfg: RootConfig, panel: pd.DataFrame, symbols: list[str], logger: logging.Logger
+) -> pd.DataFrame:
+    """Attach a per-symbol ``list_date`` column when min_listing_days is enforced.
+
+    Real (tushare) path only: a demo run has no listing dates, so the
+    ``min_listing_days`` selection filter stays a DISCLOSED no-op there rather
+    than fabricating ages. A missing list_date is carried as NaT (data gap; the
+    filter keeps such names and the report discloses the count).
+    """
+    if int(cfg.universe.min_listing_days or 0) <= 0:
+        return panel
+    if cfg.data.source != "tushare":
+        return panel  # demo: no listing dates -> filter is a disclosed no-op
+    feed = TushareCovariatesFeed(
+        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+    )
+    listing = feed.listing_dates(symbols)
+    panel = enrich_listing(panel, listing)
+    n_known = sum(1 for v in listing.values() if pd.notna(v))
+    logger.info(
+        "listing: list_date enriched (%d/%d known) for min_listing_days=%d",
+        n_known, len(symbols), cfg.universe.min_listing_days,
+    )
+    return panel
+
+
 def _compute_factor_panel(
     cfg: RootConfig,
     panel: pd.DataFrame,
@@ -607,7 +659,7 @@ def _run_backtest(
 ) -> pd.DataFrame:
     """Wire the universe + scores + constructor + execution into the driver."""
     constructor = TopNEqualWeight(cfg.portfolio.top_n, long_only=cfg.portfolio.long_only)
-    execution = SimExecution(fee_rate=cfg.cost.fee_rate, cash_return=cfg.backtest.cash_return)
+    execution = SimExecution(fee_rate=cfg.cost.fee_rate)
     driver = BacktestDriver(
         universe=universe,
         scores=_FrameScores(scores),

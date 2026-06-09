@@ -17,7 +17,14 @@ class Execution(ABC):
     """Abstract execution port (backtest sim or live broker)."""
 
     @abstractmethod
-    def rebalance_to(self, target_weights: pd.Series, date: pd.Timestamp) -> None:
+    def rebalance_to(
+        self,
+        target_weights: pd.Series,
+        date: pd.Timestamp,
+        *,
+        can_buy=None,
+        can_sell=None,
+    ) -> None:
         """Move the book toward ``target_weights`` as of ``date``.
 
         Args:
@@ -25,6 +32,12 @@ class Execution(ABC):
             date: the rebalance date. Per the fixed event order, this is the
                 close of ``date``; the new position is held from the next trading
                 day.
+            can_buy / can_sell: optional per-symbol execution-feasibility maps
+                (mapping/set/Series). When supplied, a backtest adapter simulates
+                only the feasible fills (blocked trades carry forward) instead of
+                assuming every trade executes; ``None`` -> all feasible (the
+                offline/demo path is unchanged). A live adapter may use them as
+                pre-trade checks or ignore them.
 
         A backtest adapter records turnover and trading cost here; a live adapter
         would emit orders. Returns None.

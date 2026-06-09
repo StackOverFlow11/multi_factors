@@ -24,10 +24,11 @@
 - `missing_close`(总是开):截面日 `close` 为 NaN 的标的不可交易(UNI-004)。
 - 统一在 `universe.filters.apply_tradable_filters` 按 `UniverseFilters` 开关执行;flag 由 `data.clean.tradability.enrich_tradability` 从 tushare `suspend_d` / `namechange` / `stk_limit` 富化到 panel(StaticUniverse 与 PITIndexUniverse 共用)。demo 无 flag 数据时各过滤自动 no-op。
 - **ST(UNI-006)**:`namechange` 名称区间含 'ST'/'*ST' 即标记,按 date 取生效名称(实证:`000005.SZ` 2024 全程 ST,正确剔除)。
-- **涨跌停(UNI-007)**:用**未复权 raw close** 与当日 raw `up_limit`/`down_limit` 比较,标记 `at_up_limit`/`at_down_limit`(qfq 复权价仅用于因子/回测收益;flag 富化在 front_adjust **之前**完成,故比较的是同口径 raw 价)。实证:`000005.SZ` 2024-02-01 触跌停。当前选股层对两个方向都剔除;**方向感知**(买入只看涨停、持有跌停不强卖)属执行层,后续细化。
+- **涨跌停(UNI-007)**:用**未复权 raw close** 与当日 raw `up_limit`/`down_limit` 比较,标记 `at_up_limit`/`at_down_limit`(qfq 复权价仅用于因子/回测收益;flag 富化在 front_adjust **之前**完成,故比较的是同口径 raw 价)。实证:`000005.SZ` 2024-02-01 触跌停。
+- **方向感知执行(UNI-007 / P2-2,已实现)**:选股层(`apply_tradable_filters`)与执行层(`runtime.fills.simulate_fills`)**拆分**。执行可行性按 panel flag 实时判定、与选股 toggle 无关:`at_up_limit` 挡**买入/加仓**,`at_down_limit` 挡**卖出/减仓**,`suspended`/缺收盘价双向挡。被挡的交易 **carry forward**(绝不强行成交不可能的单),现金一致 sell-then-buy(卖在前释放现金、买在后,现金不足按比例部分成交,**无杠杆**),换手/成本只算**实际成交**,闲置现金按 `cash_return` 计息。demo 无 flag → 全可成交 → P0/P1 数字不变。每个调仓期的 blocked buys/sells/carried/executed turnover 记入回测 feasibility log,phase2 报告有专门小节。
 - **停牌(UNI-005)**:`suspend_d` 标记停牌日。**实测发现**:tushare 全天停牌当日**无 bar** → 已被 `missing_close` 剔除,故显式 suspended flag 与之重叠;其价值在盘中停牌(`suspend_timing`)或会给停牌日 bar 的数据源,属防御性。
 - 退市 / 无数据标的(如 `000003.SZ`)同样表现为不在 panel 而被剔除。PIT 历史成分见上节。
-- `universe.min_listing_days` 已在配置中(默认 60),但仍 **未执行**(no-op,降级):新上市标的不会被剔除。显式披露(INV-007),后续接上市日期后强制。
+- **`universe.min_listing_days`(UNI-008,P2-2)**:作为**买入/选股资格**过滤。**真实路径已执行**——从 tushare `stock_basic.list_date` 富化每只票上市日,某调仓日`age < min_listing_days` 的新上市标的剔除(边界 `age == min` 放行);**缺 list_date 视为数据缺口,保留并披露**,绝不静默剔除。**demo 路径无上市日 → 仍 no-op(显式披露的降级)**,不伪造上市日。
 
 ## ann_date 财务对齐
 

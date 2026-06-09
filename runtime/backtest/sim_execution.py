@@ -20,6 +20,7 @@ from __future__ import annotations
 import pandas as pd
 
 from runtime.execution import BacktestExecution
+from runtime.fills import FillResult, simulate_fills
 
 
 class SimExecution(BacktestExecution):
@@ -33,24 +34,23 @@ class SimExecution(BacktestExecution):
     replaces the book.
     """
 
-    def __init__(self, fee_rate: float = 0.0, cash_return: float = 0.0) -> None:
+    def __init__(self, fee_rate: float = 0.0) -> None:
+        # NOTE (P2-2): idle-cash return is owned by the backtest driver (BT-007),
+        # not this adapter, so SimExecution no longer takes a cash_return — settle()
+        # returns the invested book's return only and the driver adds idle*cash.
         if fee_rate < 0:
             raise ValueError(f"fee_rate must be >= 0, got {fee_rate!r}")
         self._fee_rate = float(fee_rate)
-        self._cash_return = float(cash_return)
         self._positions: pd.Series = pd.Series(dtype=float)
         self._last_turnover: float = 0.0
         self._last_cost: float = 0.0
         self._last_return: float = 0.0
+        self._last_fill: FillResult | None = None
 
     # -- properties ------------------------------------------------------- #
     @property
     def fee_rate(self) -> float:
         return self._fee_rate
-
-    @property
-    def cash_return(self) -> float:
-        return self._cash_return
 
     @property
     def last_turnover(self) -> float:
@@ -62,28 +62,38 @@ class SimExecution(BacktestExecution):
         """Trading cost (turnover * fee_rate) of the most recent rebalance."""
         return self._last_cost
 
+    @property
+    def last_fill(self) -> FillResult | None:
+        """Feasibility diagnostics of the most recent rebalance (or None)."""
+        return self._last_fill
+
     # -- Execution port --------------------------------------------------- #
-    def rebalance_to(self, target_weights: pd.Series, date: pd.Timestamp) -> None:
+    def rebalance_to(
+        self,
+        target_weights: pd.Series,
+        date: pd.Timestamp,
+        *,
+        can_buy=None,
+        can_sell=None,
+    ) -> None:
         """Move the book toward ``target_weights`` as of the close of ``date``.
 
-        Computes full-L1 turnover against the current book over the union of
-        symbols, stores the resulting cost, and replaces the current positions
-        with a clean copy of the target. Does not mutate the input. The new book
-        is held from the next trading day (fixed event order).
+        Simulates only the FEASIBLE fills via :func:`runtime.fills.simulate_fills`
+        (cash-coherent sell-then-buy): blocked trades carry forward and turnover/
+        cost count only what actually executed. With ``can_buy``/``can_sell`` both
+        ``None`` every trade is feasible, so the achieved book equals the target
+        and the L1 turnover is identical to a naive rebalance (offline/demo path
+        unchanged). Does not mutate the input; the new book is held from the next
+        trading day (fixed event order).
         """
         target = self._clean_weights(target_weights)
-        current = self._positions
-        union = current.index.union(target.index)
-        aligned_target = target.reindex(union, fill_value=0.0)
-        aligned_current = current.reindex(union, fill_value=0.0)
-        turnover = float((aligned_target - aligned_current).abs().sum())
-        self._last_turnover = turnover
-        self._last_cost = turnover * self._fee_rate
-        # Settle to the (gross) cost-only return for this rebalance until the
-        # holding period is settled; keeps last_return defined right after a
-        # rebalance with no holding info yet.
+        fill = simulate_fills(self._positions, target, can_buy, can_sell)
+        self._last_fill = fill
+        self._last_turnover = fill.executed_turnover
+        self._last_cost = fill.executed_turnover * self._fee_rate
+        # last_return is the cost-only return until the holding period settles.
         self._last_return = -self._last_cost
-        self._positions = target.copy()
+        self._positions = fill.achieved.copy()
 
     def positions(self) -> pd.Series:
         """Return current symbol-indexed weights (after the last rebalance)."""
@@ -103,13 +113,16 @@ class SimExecution(BacktestExecution):
                 the gross return is ``cash_return``.
 
         Returns:
-            Net return = gross portfolio return - cost of forming this book.
-            Symbols in the book but missing from ``holding_returns`` contribute
-            zero (treated as flat). Stored as ``last_return``.
+            Net return of the INVESTED book = sum(book * returns) - cost. Symbols
+            in the book but missing from ``holding_returns`` contribute zero (flat),
+            and an empty book contributes zero invested return. The idle-cash
+            return on the uninvested fraction ``1 - sum(book)`` is owned by the
+            backtest driver (which honours its own ``cash_return``, BT-007), not by
+            this adapter. Stored as ``last_return``.
         """
         book = self._positions
         if book.empty:
-            gross = self._cash_return
+            gross = 0.0
         else:
             if holding_returns is None:
                 rets = pd.Series(dtype=float)
