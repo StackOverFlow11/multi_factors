@@ -212,3 +212,32 @@ def test_phase0_tushare_source_routes_to_tushare_feed(
     from data.feed.demo_feed import DemoFeed
 
     assert isinstance(_build_feed(demo_cfg), DemoFeed)
+
+
+def test_phase0_standard_analytics_is_additive_not_replacing(tmp_path, example_config_path):
+    """P2-4: alphalens/quantstats are report-only — they never replace the simple
+    authoritative metrics or change the trading result."""
+    cfg_path = _write_tmp_config(tmp_path, example_config_path)
+    result = run_phase0(str(cfg_path))
+
+    # standard-analytics backends are recorded (whatever actually ran).
+    assert result.std_performance["backend"] in (
+        "quantstats", "error", "unavailable", "skipped",
+    )
+    assert result.std_factor["backend"] in ("alphalens", "error", "unavailable")
+    # the AUTHORITATIVE simple perf is untouched and SEPARATE from the std dict.
+    assert "annual_return" in result.performance   # simple perf keys
+    assert "cagr" not in result.performance         # cagr lives only in std_performance
+    # the report shows the cross-check section and flags the simple metrics authoritative.
+    text = result.report_path.read_text(encoding="utf-8")
+    assert "## Standard analytics" in text
+    assert "authoritative" in text.lower()
+
+
+def test_phase0_standard_analytics_no_secret_leak(tmp_path, example_config_path):
+    """The standard-analytics section must not leak the tushare token (only the
+    exception TYPE is ever recorded, never a message)."""
+    cfg_path = _write_tmp_config(tmp_path, example_config_path)
+    result = run_phase0(str(cfg_path))
+    text = result.report_path.read_text(encoding="utf-8")
+    assert "token" not in text.lower()

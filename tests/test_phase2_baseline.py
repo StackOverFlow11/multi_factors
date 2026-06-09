@@ -301,6 +301,11 @@ def _synthetic_result() -> Phase2Result:
         quantile_returns=qret,
         performance={"annual_return": 0.1, "max_drawdown": -0.05,
                      "volatility": 0.2, "sharpe": 0.5},
+        std_performance={"backend": "quantstats", "cagr": 0.11, "sharpe": 0.52,
+                         "max_drawdown": -0.06, "volatility": 0.21},
+        std_factor={"backend": "alphalens", "ic_mean": 0.05, "ic_ir": 0.4,
+                    "quantile_mean": {1: -0.01, 2: 0.0, 3: 0.01, 4: 0.02, 5: 0.03},
+                    "n_dates": 11},
         downgrades=("DATA PATH = REAL tushare: ...", "small-scale baseline"),
         report_path=Path("artifacts/reports/phase2_real_baseline.md"),
         log_path=Path("artifacts/logs/run_phase2_baseline.log"),
@@ -320,6 +325,13 @@ def test_render_does_not_leak_secret_file_or_token():
     assert result.config.data.external_secret_file not in md
     assert result.config.data.tushare_token_key not in md
     assert "token" not in md.lower()
+
+
+def test_render_shows_standard_analytics_cross_check():
+    md = render_phase2_baseline(_synthetic_result())
+    assert "## Standard analytics" in md
+    assert "quantstats" in md and "alphalens" in md  # backends named
+    assert "authoritative" in md.lower()  # simple metrics flagged authoritative
 
 
 def test_render_reports_holdings_and_rebalance_dates():

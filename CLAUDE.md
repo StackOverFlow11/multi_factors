@@ -84,6 +84,10 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `tushare_covariates.pit_sw_intervals(symbols, level)` 读 `index_member_all` 取每股 SW 行业 `in_date`/`out_date` 区间;`data/clean/pit_industry.py::asof_industry` 按 `[in_date,out_date)` 覆盖该日取行业(改分类日新行业生效,PIT-safe;起始日前成分 carry forward 到窗口开始)。
   - **SW 层级可配置** `processing.neutralize.industry_level`(L1/L2/L3,**默认 L1**=31 宽板块,中性化标准 + 小截面自由度更稳)。**关键实证**:旧 tag 年化 −17.6% / SW-L1 −10.2% / SW-L2 −9.3% → **L1≈L2**,大跳的主因是 **tushare→SW 分类切换**(补 PIT 的必然:只有 SW 有 in/out 历史可 PIT 化,旧 tag 无法),**与粒度无关**。(注:曾误以为是粒度、默认 L2,经 L2 实测推翻,改默认 L1。)
   - **不静默退回 current**:无 SW 历史的票 → 行业 NaN,被 neutralize 按截面丢弃(neutralize 数学不变,本就丢 NaN 行);每次运行 **实际 level + PIT 覆盖率**进 phase2 报告。
-- ✅ 质量门：`pytest` **223 passed**（P0=95 / P1=77 / P2-1=15 / P2-2=22 / P2-3=14）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`）+ `run-phase0`（demo）均 OK。
-- ⚠️ 剩余 P2（已显式披露）：日线 only、简版 IC/绩效未走 alphalens/quantstats、demo 路径非真数据。
-- 路线图下一步：财务因子组合 / 分钟级 / alphalens·quantstats 接入（architecture.html §11）。
+- ✅ **Phase 2-4 标准分析集成**（`p2-standard-analytics` 分支,未 PR）：alphalens-reloaded + quantstats 接入报告(**report-only cross-check**)。
+  - `analytics/alphalens_adapter.py`(IC mean/IR + 分位均值)+ `analytics/quantstats_adapter.py`(CAGR/Sharpe/maxDD/vol)薄 adapter,各带 `backend` 字段。
+  - **简版 numpy/pandas 仍权威**(驱动回测 + cross-check);依赖不可用/报错 → 报告显式披露 backend(unavailable/error,只记异常**类型**不记消息),**绝不静默假装用了标准库**。
+  - **不改 alpha/portfolio/runtime/fills/universe**:P0/P2 交易数字不变(demo ic 0.96/annual 0.84 不变;实测 alphalens IC=简版 IC 完全吻合),只新增 **Standard analytics** 报告段。
+- ✅ 质量门：`pytest` **234 passed**（P0=97 / P1=77 / P2-1=16 / P2-2=22 / P2-3=14 / P2-4=8）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`）+ `run-phase0`（demo）均 OK。
+- ⚠️ 剩余 P2（已显式披露）：日线 only、demo 路径非真数据。
+- 路线图下一步：财务因子组合 / 分钟级（architecture.html §11）。
