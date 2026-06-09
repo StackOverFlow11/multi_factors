@@ -27,6 +27,8 @@ from qt.reports import (
     render_phase2_baseline,
 )
 from portfolio.construct import TopNEqualWeight
+from runtime.backtest.driver import BacktestDriver
+from runtime.backtest.sim_execution import SimExecution
 from universe.index_universe import PITIndexUniverse
 from universe.static import StaticUniverse
 
@@ -73,19 +75,49 @@ def _pit_universe() -> PITIndexUniverse:
 
 
 def test_summarize_universe_pit_counts_churn():
-    summ = summarize_universe(_pit_universe(), "index")
+    summ = summarize_universe(_pit_universe(), "index", "2024-01-01", "2024-03-01")
     assert summ["pit"] is True
-    assert summ["n_snapshots"] == 2
-    assert summ["distinct_names"] == 4  # 001,002,003,004
+    assert summ["n_loaded_snapshots"] == 2
+    assert summ["n_window_snapshots"] == 2
+    assert summ["distinct_names_in_window"] == 4  # 001,002,003,004
     assert summ["min_size"] == 3 and summ["max_size"] == 3
     assert summ["avg_churn_in"] == 1.0 and summ["avg_churn_out"] == 1.0
 
 
+def test_summarize_universe_excludes_prestart_lookback():
+    # 2022-06-30 carries a name 'Y' that is superseded before the window; the
+    # as-of anchor at start (2023-07-01) is 2022-12-31. 'Y' must NOT count toward
+    # the in-window distinct names, and the pre-start snapshots must NOT count as
+    # in-window snapshots (the MEDIUM finding).
+    rows = [
+        {"date": "2022-06-30", "symbol": "A"},
+        {"date": "2022-06-30", "symbol": "B"},
+        {"date": "2022-06-30", "symbol": "Y"},  # only here -> superseded pre-window
+        {"date": "2022-12-31", "symbol": "A"},
+        {"date": "2022-12-31", "symbol": "B"},
+        {"date": "2022-12-31", "symbol": "X"},  # anchor membership at start
+        {"date": "2024-01-31", "symbol": "A"},
+        {"date": "2024-01-31", "symbol": "B"},
+        {"date": "2024-01-31", "symbol": "C"},
+        {"date": "2024-02-29", "symbol": "A"},
+        {"date": "2024-02-29", "symbol": "B"},
+        {"date": "2024-02-29", "symbol": "D"},
+    ]
+    uni = PITIndexUniverse(pd.DataFrame(rows), filters={})
+    summ = summarize_universe(uni, "index", "2023-07-01", "2024-03-01")
+    assert summ["n_loaded_snapshots"] == 4
+    assert pd.Timestamp(summ["loaded_first"]) == pd.Timestamp("2022-06-30")
+    assert summ["n_window_snapshots"] == 2  # only the two 2024 snapshots
+    assert pd.Timestamp(summ["anchor_snapshot"]) == pd.Timestamp("2022-12-31")
+    # A,B,X (anchor),C,D — but NOT Y (superseded before the window)
+    assert summ["distinct_names_in_window"] == 5
+
+
 def test_summarize_universe_static_marks_non_pit():
     uni = StaticUniverse(["000001.SZ", "000002.SZ"], {})
-    summ = summarize_universe(uni, "static")
+    summ = summarize_universe(uni, "static", "2024-01-01", "2024-12-31")
     assert summ["pit"] is False
-    assert summ["distinct_names"] == 2
+    assert summ["distinct_names_in_window"] == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -179,6 +211,43 @@ def test_reconstruct_holdings_mirrors_topn_build():
     assert top["symbol"] == "000001.SZ"
 
 
+def test_holdings_dates_equal_settled_nav_index_not_candidates():
+    # Regression for the HIGH finding: the driver SKIPS a terminal rebalance with
+    # no forward holding period, so the diagnostics must key off nav_table.index
+    # (settled dates), NOT driver.rebalance_dates() (candidate dates). Holdings
+    # listed for the skipped terminal date would be a phantom period.
+    symbols = ["000001.SZ", "000002.SZ", "000003.SZ"]
+    cal = pd.bdate_range("2024-01-01", "2024-03-29")  # spans 3 month-ends
+    idx = pd.MultiIndex.from_product([cal, symbols], names=["date", "symbol"])
+    close = [100.0 + i + j for i in range(len(cal)) for j in range(len(symbols))]
+    panel = pd.DataFrame({"close": close}, index=idx)
+
+    uni = StaticUniverse(symbols, {})
+    constructor = TopNEqualWeight(2)
+    probe = BacktestDriver(
+        universe=uni, scores=_FrameScores(pd.Series(dtype=float)),
+        constructor=constructor, execution=SimExecution(), prices=panel,
+    )
+    candidate_dates = probe.rebalance_dates()  # 3 (Jan/Feb/Mar month-ends)
+    # scores at every candidate date so each settled period holds names.
+    score_idx = pd.MultiIndex.from_product([candidate_dates, symbols], names=["date", "symbol"])
+    score_panel = pd.Series(
+        [0.3 - j * 0.1 for _ in candidate_dates for j in range(len(symbols))],
+        index=score_idx, name="score",
+    )
+    scores = _FrameScores(score_panel)
+    driver = BacktestDriver(
+        universe=uni, scores=scores, constructor=constructor,
+        execution=SimExecution(), prices=panel,
+    )
+    nav = driver.run()
+
+    assert len(nav) == len(candidate_dates) - 1  # terminal date skipped (BT-003)
+    holdings = reconstruct_holdings(scores, uni, panel, constructor, list(nav.index))
+    assert set(holdings["date"]) == set(nav.index)
+    assert candidate_dates[-1] not in set(holdings["date"])  # no phantom terminal
+
+
 # --------------------------------------------------------------------------- #
 # financial_coverage_at_dates
 # --------------------------------------------------------------------------- #
@@ -231,12 +300,14 @@ def _synthetic_result() -> Phase2Result:
         trade_days=1,
         panel_rows=2,
         panel_symbols=2,
-        universe_summary=summarize_universe(_pit_universe(), "index"),
+        universe_summary=summarize_universe(_pit_universe(), "index", "2024-01-01", "2024-03-01"),
         financial_field="roe",
         financial_coverage_overall=0.5,
         financial_coverage_by_rebalance=cov,
         tradability_hits=hits,
         rebalance_dates=(date,),
+        candidate_rebalance_dates=(date, pd.Timestamp("2024-02-29")),
+        skipped_terminal_dates=(pd.Timestamp("2024-02-29"),),
         holdings=holdings,
         factor_name="momentum_20",
         nav_table=nav,

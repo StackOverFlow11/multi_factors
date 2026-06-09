@@ -80,8 +80,10 @@ class Phase2Result:
     financial_coverage_by_rebalance: pd.DataFrame
     # tradability filter hits
     tradability_hits: pd.DataFrame
-    # rebalance + holdings
+    # rebalance + holdings (rebalance_dates are the SETTLED dates == nav_table.index)
     rebalance_dates: tuple[pd.Timestamp, ...]
+    candidate_rebalance_dates: tuple[pd.Timestamp, ...]
+    skipped_terminal_dates: tuple[pd.Timestamp, ...]
     holdings: pd.DataFrame
     # turnover / cost / performance
     factor_name: str
@@ -102,33 +104,53 @@ class Phase2Result:
 # --------------------------------------------------------------------------- #
 # Pure collectors (network-free; unit-tested with synthetic inputs).
 # --------------------------------------------------------------------------- #
-def summarize_universe(universe, universe_type: str) -> dict:
+def summarize_universe(universe, universe_type: str, start, end) -> dict:
     """Summarize the (PIT or static) universe for the report.
 
-    For a :class:`PITIndexUniverse` this walks the membership snapshots to report
-    snapshot count, distinct names over the whole window, per-snapshot size, and
-    average churn (names entering / leaving between consecutive snapshots). For a
-    static universe there is no point-in-time membership, so the summary records
-    that explicitly (it stays an honest downgrade).
+    For a :class:`PITIndexUniverse` the feed deliberately loads snapshots from
+    BEFORE ``start`` (a ~370-day pre-start lookback) so the as-of membership at the
+    window start resolves correctly. This summary therefore separates two things:
+
+      * LOADED snapshots — everything fetched, incl. the pre-start lookback (so the
+        reader sees exactly what was pulled);
+      * IN-WINDOW membership — the snapshots dated within ``[start, end]`` plus the
+        as-of anchor active at ``start`` (the lookback snapshot the early dates
+        resolve to). ``distinct_names_in_window`` / size / churn are reported over
+        this in-window view, so "distinct names over window" means what the
+        backtest actually saw, not names that only existed before the window.
+
+    Static universes carry no point-in-time membership, recorded explicitly.
     """
     if isinstance(universe, PITIndexUniverse):
         snaps = universe.membership_snapshots()
-        dates = sorted(snaps)
-        sizes = [len(snaps[d]) for d in dates]
-        distinct = sorted({s for syms in snaps.values() for s in syms})
+        loaded = sorted(snaps)
+        start_ts = pd.Timestamp(start).normalize()
+        end_ts = pd.Timestamp(end).normalize()
+        in_window = [d for d in loaded if start_ts <= d <= end_ts]
+        prior = [d for d in loaded if d <= start_ts]
+        anchor = max(prior) if prior else None
+        # names seen during the window = anchor membership (held into the window)
+        # ∪ every in-window snapshot's membership.
+        active = ([anchor] if anchor is not None else []) + in_window
+        sizes = [len(snaps[d]) for d in active]
+        distinct = sorted({s for d in active for s in snaps[d]})
         churn_in: list[int] = []
         churn_out: list[int] = []
-        for prev, cur in zip(dates, dates[1:]):
+        # churn is reported over in-window transitions only (membership changes
+        # that actually occur inside the backtest window).
+        for prev, cur in zip(in_window, in_window[1:]):
             prev_set, cur_set = set(snaps[prev]), set(snaps[cur])
             churn_in.append(len(cur_set - prev_set))
             churn_out.append(len(prev_set - cur_set))
         return {
             "pit": True,
             "type": "index",
-            "n_snapshots": len(dates),
-            "first_snapshot": dates[0] if dates else None,
-            "last_snapshot": dates[-1] if dates else None,
-            "distinct_names": len(distinct),
+            "n_loaded_snapshots": len(loaded),
+            "loaded_first": loaded[0] if loaded else None,
+            "loaded_last": loaded[-1] if loaded else None,
+            "n_window_snapshots": len(in_window),
+            "anchor_snapshot": anchor,
+            "distinct_names_in_window": len(distinct),
             "min_size": min(sizes) if sizes else 0,
             "max_size": max(sizes) if sizes else 0,
             "avg_churn_in": (sum(churn_in) / len(churn_in)) if churn_in else 0.0,
@@ -137,8 +159,7 @@ def summarize_universe(universe, universe_type: str) -> dict:
     return {
         "pit": False,
         "type": universe_type,
-        "n_snapshots": 0,
-        "distinct_names": len(getattr(universe, "_symbols", []) or []),
+        "distinct_names_in_window": len(getattr(universe, "_symbols", []) or []),
     }
 
 
@@ -344,10 +365,18 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         initial_nav=cfg.backtest.initial_nav,
         cash_return=cfg.backtest.cash_return,
     )
-    rebalance_dates = driver.rebalance_dates()
+    candidate_dates = driver.rebalance_dates()
     nav_table = driver.run()
-    logger.info("backtest: %d rebalance dates, %d settled rows",
-                len(rebalance_dates), len(nav_table))
+    # The diagnostics (coverage / filter hits / holdings) MUST key off the dates
+    # that were actually held + settled — i.e. nav_table.index — NOT the candidate
+    # rebalance dates. The driver skips a terminal rebalance with no forward
+    # holding period (BT-003), so the last candidate date has no NAV/turnover row;
+    # reporting holdings for it would be a phantom period.
+    settled_dates = list(nav_table.index)
+    settled_set = set(settled_dates)
+    skipped_dates = [d for d in candidate_dates if d not in settled_set]
+    logger.info("backtest: %d candidate rebalance dates, %d settled rows (skipped %d)",
+                len(candidate_dates), len(nav_table), len(skipped_dates))
 
     ic_mean, ic_ir, q_returns = _factor_analytics(cfg, panel, factor_panel, factor.name)
     perf = (
@@ -375,14 +404,14 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         )
         diag_col = diag_panel[financial_field]
     coverage_by_rebalance = financial_coverage_at_dates(
-        diag_col, universe, panel, rebalance_dates
+        diag_col, universe, panel, settled_dates
     )
     coverage_overall = float(diag_col.notna().mean()) if len(diag_col) else float("nan")
 
     hits = tradability_hit_stats(
-        universe, panel, rebalance_dates, cfg.universe.filters.model_dump()
+        universe, panel, settled_dates, cfg.universe.filters.model_dump()
     )
-    holdings = reconstruct_holdings(scores, universe, panel, constructor, rebalance_dates)
+    holdings = reconstruct_holdings(scores, universe, panel, constructor, settled_dates)
 
     dates = panel.index.get_level_values("date")
     result = Phase2Result(
@@ -393,12 +422,16 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         trade_days=int(pd.Series(dates).nunique()),
         panel_rows=len(panel),
         panel_symbols=int(panel.index.get_level_values("symbol").nunique()),
-        universe_summary=summarize_universe(universe, cfg.universe.type),
+        universe_summary=summarize_universe(
+            universe, cfg.universe.type, cfg.data.start, cfg.data.end
+        ),
         financial_field=financial_field,
         financial_coverage_overall=coverage_overall,
         financial_coverage_by_rebalance=coverage_by_rebalance,
         tradability_hits=hits,
-        rebalance_dates=tuple(rebalance_dates),
+        rebalance_dates=tuple(settled_dates),
+        candidate_rebalance_dates=tuple(candidate_dates),
+        skipped_terminal_dates=tuple(skipped_dates),
         holdings=holdings,
         factor_name=factor.name,
         nav_table=nav_table,

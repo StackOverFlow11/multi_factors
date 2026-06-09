@@ -153,21 +153,24 @@ def _date_str(value: object) -> str:
 
 
 def _universe_block(summ: dict) -> str:
-    """Render the universe / PIT membership summary."""
+    """Render the universe / PIT membership summary (loaded vs in-window)."""
     if summ.get("pit"):
         return (
             f"- type: **index** (point-in-time, survivorship-safe)\n"
-            f"- snapshots: **{summ.get('n_snapshots', 0)}** "
-            f"({_date_str(summ.get('first_snapshot'))} → {_date_str(summ.get('last_snapshot'))})\n"
-            f"- distinct names over window: **{summ.get('distinct_names', 0)}**\n"
+            f"- loaded snapshots: **{summ.get('n_loaded_snapshots', 0)}** "
+            f"({_date_str(summ.get('loaded_first'))} → {_date_str(summ.get('loaded_last'))}; "
+            f"includes the ~370-day pre-start lookback for as-of safety)\n"
+            f"- in-window membership updates: **{summ.get('n_window_snapshots', 0)}** "
+            f"(as-of anchor at start: {_date_str(summ.get('anchor_snapshot'))})\n"
+            f"- distinct names in-window: **{summ.get('distinct_names_in_window', 0)}**\n"
             f"- per-snapshot size: {summ.get('min_size', 0)}–{summ.get('max_size', 0)}\n"
-            f"- avg churn per snapshot: **{summ.get('avg_churn_in', 0.0):.1f} in / "
+            f"- avg churn per in-window update: **{summ.get('avg_churn_in', 0.0):.1f} in / "
             f"{summ.get('avg_churn_out', 0.0):.1f} out**\n"
         )
     return (
         f"- type: **{summ.get('type', '?')}** (NOT point-in-time — survivorship/"
         f"look-ahead membership downgrade)\n"
-        f"- symbols: **{summ.get('distinct_names', 0)}**\n"
+        f"- symbols: **{summ.get('distinct_names_in_window', 0)}**\n"
     )
 
 
@@ -281,9 +284,26 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
 
     lines.append("\n## Rebalance dates\n")
     reb = ", ".join(_date_str(d) for d in result.rebalance_dates) or "_(none)_"
-    lines.append(f"- **{len(result.rebalance_dates)}** dates: {reb}\n")
+    lines.append(
+        f"- **{len(result.rebalance_dates)}** settled rebalance dates (held + "
+        f"settled; these drive holdings / filter hits / coverage below): {reb}\n"
+    )
+    lines.append(
+        f"- candidate rebalance dates (last trading day of each month): "
+        f"**{len(result.candidate_rebalance_dates)}**\n"
+    )
+    if result.skipped_terminal_dates:
+        skipped = ", ".join(_date_str(d) for d in result.skipped_terminal_dates)
+        lines.append(
+            f"- skipped (terminal date(s) with no forward holding period, BT-003): "
+            f"{skipped}\n"
+        )
 
     lines.append("\n## Holdings per period\n")
+    lines.append(
+        "_Holdings are listed for the settled rebalance dates only, so they match "
+        "the NAV/turnover table 1:1 (no phantom terminal period)._\n\n"
+    )
     lines.append(_holdings_block(result.holdings))
 
     lines.append("\n## Turnover & cost\n")
