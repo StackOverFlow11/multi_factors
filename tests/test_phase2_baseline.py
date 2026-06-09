@@ -336,6 +336,6 @@ def test_render_discloses_list_date_coverage_this_run():
 
 def test_render_discloses_pit_industry_coverage():
     md = render_phase2_baseline(_synthetic_result())
-    assert "point-in-time SW-L1" in md
+    assert "point-in-time SW-L1" in md  # phase2 config sets industry_level: L1
     assert "98.50%" in md  # industry_pit_coverage=0.985 rendered as a pct
     assert "current-tag fallback" in md  # explicitly no silent fallback

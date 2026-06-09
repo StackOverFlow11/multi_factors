@@ -19,10 +19,12 @@ class _Pro:
         )
 
     def index_member_all(self, ts_code):
-        # one active SW-L1 membership (out_date None) — the common case.
+        # one active SW membership (out_date None) carrying all three levels.
         return pd.DataFrame(
             {
                 "l1_name": ["食品饮料"],
+                "l2_name": ["白酒Ⅱ"],
+                "l3_name": ["白酒Ⅲ"],
                 "in_date": ["20010731"],
                 "out_date": [None],
                 "ts_code": [ts_code],
@@ -47,10 +49,23 @@ def test_market_cap_maps_columns(monkeypatch):
     assert str(out["date"].dtype).startswith("datetime64")
 
 
-def test_pit_sw_l1_intervals_parses_in_out_dates(monkeypatch):
-    out = _feed(monkeypatch).pit_sw_l1_intervals(["600519.SH"])
-    assert "600519.SH" in out
+def test_pit_sw_intervals_default_level_is_l1(monkeypatch):
+    out = _feed(monkeypatch).pit_sw_intervals(["600519.SH"])  # default L1
     name, in_d, out_d = out["600519.SH"][0]
-    assert name == "食品饮料"
+    assert name == "食品饮料"  # L1 broad sector (default)
     assert in_d == pd.Timestamp("2001-07-31")
     assert out_d is None  # active membership
+
+
+def test_pit_sw_intervals_selects_level(monkeypatch):
+    feed = _feed(monkeypatch)
+    assert feed.pit_sw_intervals(["600519.SH"], level="L1")["600519.SH"][0][0] == "食品饮料"
+    assert feed.pit_sw_intervals(["600519.SH"], level="L2")["600519.SH"][0][0] == "白酒Ⅱ"
+    assert feed.pit_sw_intervals(["600519.SH"], level="L3")["600519.SH"][0][0] == "白酒Ⅲ"
+
+
+def test_pit_sw_intervals_bad_level_raises(monkeypatch):
+    import pytest
+
+    with pytest.raises(ValueError, match="industry level"):
+        _feed(monkeypatch).pit_sw_intervals(["600519.SH"], level="L9")

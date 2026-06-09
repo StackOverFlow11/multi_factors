@@ -2,11 +2,12 @@
 
 Provides the cross-sectional inputs the pipeline needs:
 
-  * ``pit_sw_l1_intervals(symbols)`` -> {symbol: [(l1_name, in_date, out_date), ...]}
-        (tushare ``index_member_all``): the POINT-IN-TIME SW-L1 industry membership
-        history. This is the industry source the neutralizer uses (P2-3): aligned
-        as-of the trade date in :func:`data.clean.pit_industry.asof_industry`, so a
-        reclassification is respected and no future industry leaks into the past.
+  * ``pit_sw_intervals(symbols, level)`` -> {symbol: [(industry_name, in_date, out_date)]}
+        (tushare ``index_member_all``): the POINT-IN-TIME SW industry membership history
+        at ``level`` (L1/L2/L3; default L2). This is the industry source the neutralizer
+        uses (P2-3): aligned as-of the trade date in
+        :func:`data.clean.pit_industry.asof_industry`, so a reclassification is
+        respected and no future industry leaks into the past.
   * ``market_cap(symbols, s, e)`` -> DataFrame[date, symbol, market_cap]
         (tushare ``daily_basic.total_mv``, in 10k CNY; only the log is used, so
         units do not matter). Genuinely per-date.
@@ -86,21 +87,32 @@ class TushareCovariatesFeed:
             )
         return out
 
-    def pit_sw_l1_intervals(self, symbols: list[str]) -> dict[str, list[tuple]]:
-        """Return SW-L1 membership history per symbol (for PIT industry, UNI-010).
+    _SW_LEVEL_COLUMN = {"L1": "l1_name", "L2": "l2_name", "L3": "l3_name"}
 
-        ``{symbol: [(l1_name, in_date, out_date), ...]}`` from tushare
-        ``index_member_all`` (SW2021). ``in_date``/``out_date`` are Timestamps;
-        ``out_date`` is ``None`` for an active membership. A symbol with no SW
-        membership row simply does not appear in the map (the caller treats an
+    def pit_sw_intervals(
+        self, symbols: list[str], level: str = "L1"
+    ) -> dict[str, list[tuple]]:
+        """Return SW membership history per symbol at ``level`` (for PIT industry, UNI-010).
+
+        ``{symbol: [(industry_name, in_date, out_date), ...]}`` from tushare
+        ``index_member_all`` (SW2021), where ``industry_name`` is the L1 / L2 / L3
+        name per ``level`` (default ``L1`` — the 31 broad SW sectors, standard for
+        industry neutralization and DOF-safe on small cross-sections). ``in_date``/
+        ``out_date`` are Timestamps; ``out_date`` is ``None`` for an active membership.
+        A symbol with no SW membership row is simply absent (the caller treats an
         absent symbol as a disclosed industry data gap → NaN, never the current tag).
         One call per symbol; the payload is a handful of intervals each.
         """
+        col = self._SW_LEVEL_COLUMN.get(str(level).upper())
+        if col is None:
+            raise ValueError(
+                f"industry level must be one of {list(self._SW_LEVEL_COLUMN)}; got {level!r}."
+            )
         pro = self._client()
         out: dict[str, list[tuple]] = {}
         for sym in symbols:
             df = self._call(pro.index_member_all, ts_code=sym)
-            if df is None or len(df) == 0 or "l1_name" not in df.columns:
+            if df is None or len(df) == 0 or col not in df.columns:
                 continue
             rows: list[tuple] = []
             for r in df.itertuples():
@@ -111,7 +123,7 @@ class TushareCovariatesFeed:
                     if out_raw is not None and str(out_raw) not in ("", "None", "nan")
                     else None
                 )
-                rows.append((r.l1_name, in_d, out_d))
+                rows.append((getattr(r, col), in_d, out_d))
             if rows:
                 out[str(sym)] = rows
         return out

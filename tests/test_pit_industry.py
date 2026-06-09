@@ -9,9 +9,57 @@ CURRENT tag that was broadcast to every date.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
+import pytest
 
 from data.clean.pit_industry import asof_industry
+from qt.config import ConfigError, RootConfig, load_config
+
+
+# --------------------------------------------------------------------------- #
+# config: processing.neutralize.industry_level (L1/L2/L3, default L2)
+# --------------------------------------------------------------------------- #
+def _min_cfg(level=None):
+    base = {
+        "data": {"source": "demo", "start": "2024-01-01", "end": "2024-03-01"},
+        "universe": {"type": "static", "symbols": ["000001.SZ"]},
+        "factors": [{"name": "momentum_20"}],
+        "alpha": {"model": "equal_weight"},
+        "portfolio": {"top_n": 1},
+        "backtest": {},
+        "cost": {},
+        "output": {},
+    }
+    if level is not None:
+        base["processing"] = {"neutralize": {"enabled": True, "industry_level": level}}
+    return base
+
+
+def test_industry_level_defaults_to_l1():
+    cfg = RootConfig(**_min_cfg())
+    assert cfg.processing.neutralize.industry_level == "L1"
+
+
+def test_industry_level_accepts_l1_l2_l3():
+    for lvl in ("L1", "L2", "L3"):
+        cfg = RootConfig(**_min_cfg(lvl))
+        assert cfg.processing.neutralize.industry_level == lvl
+
+
+def test_industry_level_rejects_invalid(tmp_path):
+    import yaml
+
+    p = tmp_path / "bad.yaml"
+    p.write_text(yaml.safe_dump(_min_cfg("L9")), encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(str(p))
+
+
+def test_phase2_config_sets_l1():
+    cfg = load_config(str(Path(__file__).resolve().parents[1] / "config" / "phase2_real_baseline.yaml"))
+    assert cfg.processing.neutralize.industry_level == "L1"
 
 
 def _index(dates, symbols):
@@ -113,6 +161,8 @@ def test_pipeline_covariates_uses_pit_industry_varying_by_date(monkeypatch, demo
     symbols = list(demo_panel.index.get_level_values("symbol").unique())
     switch = pd.Timestamp("2024-01-20")
 
+    seen = {}
+
     class _FakeCov:
         def __init__(self, *a, **k):
             pass
@@ -122,7 +172,8 @@ def test_pipeline_covariates_uses_pit_industry_varying_by_date(monkeypatch, demo
                 {"date": [], "symbol": [], "market_cap": []}
             )  # industry-only test
 
-        def pit_sw_l1_intervals(self, syms):
+        def pit_sw_intervals(self, syms, level="L2"):
+            seen["level"] = level  # the pipeline must pass the configured SW level
             return {
                 symbols[0]: [("IndA", pd.Timestamp("2020-01-01"), switch),
                              ("IndB", switch, None)],          # switches mid-window
@@ -132,6 +183,7 @@ def test_pipeline_covariates_uses_pit_industry_varying_by_date(monkeypatch, demo
 
     monkeypatch.setattr(P, "TushareCovariatesFeed", _FakeCov)
     out = P._maybe_enrich_covariates(cfg, demo_panel, symbols, logging.getLogger("t"))
+    assert seen["level"] == cfg.processing.neutralize.industry_level  # default L2
 
     ind = out["industry"]
     before = ind.loc[(pd.Timestamp("2024-01-19"), symbols[0])]

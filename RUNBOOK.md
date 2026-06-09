@@ -213,10 +213,15 @@ Resolved in P2-2 / P2-3 (was deferred):
 - **min_listing_days** (P2-2) — enforced on the real path (`stock_basic.list_date`) as a
   buy/selection filter; demo stays a disclosed no-op.
 - **PIT industry** (P2-3) — the neutralization industry covariate is now point-in-time
-  SW-L1 (as-of trade date via `index_member_all` in/out dates, `data/clean/pit_industry.py`),
-  not the current `stock_basic.industry` tag. Names with no SW history get NaN (a disclosed
-  coverage gap the neutralizer drops) — never a silent current-tag fallback; PIT coverage
-  is reported in `phase2_real_baseline.md`.
+  SW (as-of trade date via `index_member_all` in/out dates, `data/clean/pit_industry.py`),
+  not the current `stock_basic.industry` tag. The SW level is configurable
+  (`processing.neutralize.industry_level`, L1/L2/L3, **default L1** = 31 broad sectors, the
+  standard for neutralization and DOF-safe on small cross-sections). Real runs: old tag
+  annual −17.6%, SW-L1 −10.2%, SW-L2 −9.3% — L1 ≈ L2, so the −17.6→−10 jump is the
+  tushare→SW taxonomy switch (inherent to going PIT: only SW carries in/out-date history),
+  NOT granularity. Names with no SW history get NaN (a disclosed coverage gap the
+  neutralizer drops) — never a silent current-tag fallback; the actual level + PIT coverage
+  are reported in `phase2_real_baseline.md`.
 
 Still downgraded / deferred (disclosed):
 

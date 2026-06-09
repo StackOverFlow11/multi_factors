@@ -226,12 +226,17 @@ def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
 
     # neutralization
     if cfg.processing.neutralize.enabled and real:
+        level = cfg.processing.neutralize.industry_level
         neutral = (
-            "Factor is industry + market-cap neutralized; industry is **point-in-time** "
-            "SW-L1 (UNI-010): as-of the trade date via index_member_all in/out dates, NOT "
-            "the current stock_basic tag. Names with no SW history get NaN (a disclosed "
-            "coverage gap the neutralizer drops) — never a silent current-tag fallback. "
-            "Market cap is per-date (daily_basic.total_mv)."
+            f"Factor is industry + market-cap neutralized; industry is **point-in-time** "
+            f"SW-{level} (UNI-010): as-of the trade date via index_member_all in/out dates, "
+            f"NOT the current stock_basic tag. The SW level is configurable "
+            f"(processing.neutralize.industry_level, default L1 = 31 broad sectors, the "
+            f"standard for neutralization). Going PIT switches the taxonomy from the old "
+            f"(non-PIT-able) stock_basic.industry tag to SW, so the result changes vs the "
+            f"old tag regardless of level (L1 ≈ L2 in tests). Names with no SW history get "
+            f"NaN (a disclosed coverage gap the neutralizer drops) — never a silent "
+            f"current-tag fallback. Market cap is per-date (daily_basic.total_mv)."
         )
     elif cfg.processing.neutralize.enabled:
         neutral = (
@@ -649,18 +654,19 @@ def _maybe_enrich_covariates(
     )
     market_cap = feed.market_cap(symbols, cfg.data.start, cfg.data.end)
     panel = enrich_covariates(panel, market_cap=market_cap)
-    # PIT (as-of) SW-L1 industry replaces the current-tag broadcast (UNI-010): each
-    # name's industry varies by trade_date via index_member_all in/out dates; a name
-    # with no SW history gets NaN — a disclosed gap the neutralizer drops — never a
-    # silent fallback to the current stock_basic tag.
-    intervals = feed.pit_sw_l1_intervals(symbols)
+    # PIT (as-of) SW industry replaces the current-tag broadcast (UNI-010): each
+    # name's industry varies by trade_date via index_member_all in/out dates at the
+    # configured SW level; a name with no SW history gets NaN — a disclosed gap the
+    # neutralizer drops — never a silent fallback to the current stock_basic tag.
+    level = cfg.processing.neutralize.industry_level
+    intervals = feed.pit_sw_intervals(symbols, level=level)
     industry_series = asof_industry(panel.index, intervals)
     panel = enrich_pit_industry(panel, industry_series)
     coverage = float(industry_series.notna().mean()) if len(industry_series) else 0.0
     logger.info(
-        "covariates: PIT SW-L1 industry (coverage %.1f%%, %d/%d symbols with history) "
+        "covariates: PIT SW-%s industry (coverage %.1f%%, %d/%d symbols with history) "
         "+ market_cap(%d rows) for neutralization",
-        coverage * 100.0, len(intervals), len(symbols), len(market_cap),
+        level, coverage * 100.0, len(intervals), len(symbols), len(market_cap),
     )
     return panel
 

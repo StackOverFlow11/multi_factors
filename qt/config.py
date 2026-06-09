@@ -114,6 +114,13 @@ class NeutralizeCfg(_Strict):
     enabled: bool = False
     industry_col: str = "industry"
     size_col: str = "market_cap"
+    # SW industry level for the PIT industry covariate (P2-3). Default L1 = the 31
+    # broad SW sectors, the standard granularity for industry neutralization and the
+    # safest on small cross-sections (more residual DOF than ~130 L2 sub-industries).
+    # NOTE: going PIT necessarily switches the taxonomy from the old (non-PIT-able)
+    # stock_basic.industry tag to SW — only SW carries in/out-date history — so the
+    # backtest result changes vs the old tag regardless of level (L1 ≈ L2 in tests).
+    industry_level: Literal["L1", "L2", "L3"] = "L1"
 
 
 class ProcessingCfg(_Strict):
