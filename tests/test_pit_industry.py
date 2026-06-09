@@ -1,7 +1,8 @@
 """Point-in-time SW industry as-of alignment (P2-3, pure + network-free).
 
-`asof_industry` turns per-symbol SW-L1 membership intervals (industry, in_date,
-out_date) into a (date, symbol) industry Series where each row carries the
+`asof_industry` turns per-symbol SW membership intervals at the configured level
+(L1/L2/L3) (industry, in_date, out_date) into a (date, symbol) industry Series
+where each row carries the
 industry the symbol belonged to AS OF that trade_date — never a future
 reclassification. This is the PIT replacement for the `stock_basic.industry`
 CURRENT tag that was broadcast to every date.
