@@ -4,7 +4,7 @@ Provides the cross-sectional inputs the pipeline needs:
 
   * ``pit_sw_intervals(symbols, level)`` -> {symbol: [(industry_name, in_date, out_date)]}
         (tushare ``index_member_all``): the POINT-IN-TIME SW industry membership history
-        at ``level`` (L1/L2/L3; default L2). This is the industry source the neutralizer
+        at ``level`` (L1/L2/L3; default L1). This is the industry source the neutralizer
         uses (P2-3): aligned as-of the trade date in
         :func:`data.clean.pit_industry.asof_industry`, so a reclassification is
         respected and no future industry leaks into the past.

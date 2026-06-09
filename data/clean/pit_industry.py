@@ -6,9 +6,9 @@ gives only the current label; broadcasting it to historical dates leaks a future
 reclassification into the past (a mild membership look-ahead in the neutralization
 covariate).
 
-`asof_industry` consumes per-symbol SW-L1 membership intervals
-``{symbol: [(industry_name, in_date, out_date), ...]}`` (from
-:meth:`data.feed.tushare_covariates.TushareCovariatesFeed.pit_sw_l1_intervals`,
+`asof_industry` consumes per-symbol SW membership intervals (at the configured SW
+level — L1/L2/L3, default L1) ``{symbol: [(industry_name, in_date, out_date), ...]}``
+(from :meth:`data.feed.tushare_covariates.TushareCovariatesFeed.pit_sw_intervals`,
 which reads tushare ``index_member_all``) and returns, for each ``(trade_date,
 symbol)``, the industry whose interval ``[in_date, out_date)`` covers that date —
 the most recent ``in_date`` on the (rare) overlap. ``out_date`` ``None``/``NaT`` is

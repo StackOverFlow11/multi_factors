@@ -19,7 +19,7 @@ from qt.config import ConfigError, RootConfig, load_config
 
 
 # --------------------------------------------------------------------------- #
-# config: processing.neutralize.industry_level (L1/L2/L3, default L2)
+# config: processing.neutralize.industry_level (L1/L2/L3, default L1)
 # --------------------------------------------------------------------------- #
 def _min_cfg(level=None):
     base = {
@@ -183,7 +183,7 @@ def test_pipeline_covariates_uses_pit_industry_varying_by_date(monkeypatch, demo
 
     monkeypatch.setattr(P, "TushareCovariatesFeed", _FakeCov)
     out = P._maybe_enrich_covariates(cfg, demo_panel, symbols, logging.getLogger("t"))
-    assert seen["level"] == cfg.processing.neutralize.industry_level  # default L2
+    assert seen["level"] == cfg.processing.neutralize.industry_level  # default L1
 
     ind = out["industry"]
     before = ind.loc[(pd.Timestamp("2024-01-19"), symbols[0])]
