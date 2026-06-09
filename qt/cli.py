@@ -1,11 +1,12 @@
 """Command-line entry point for the Phase 0 framework.
 
 Subcommands:
-    validate-config  --config PATH   Load + validate a YAML config.
-    run-phase0       --config PATH   Run the full end-to-end pipeline + report.
-    fetch-data       --config PATH   Stage helper (runs the pipeline; see note).
-    compute-factors  --config PATH   Stage helper (runs the pipeline; see note).
-    run-backtest     --config PATH   Stage helper (runs the pipeline; see note).
+    validate-config      --config PATH  Load + validate a YAML config.
+    run-phase0           --config PATH  Run the full end-to-end pipeline + report.
+    run-phase2-baseline  --config PATH  Run the small-scale REAL (tushare) baseline.
+    fetch-data           --config PATH  Stage helper (runs the pipeline; see note).
+    compute-factors      --config PATH  Stage helper (runs the pipeline; see note).
+    run-backtest         --config PATH  Stage helper (runs the pipeline; see note).
 
 The CLI is intentionally thin: orchestration lives in :mod:`qt.pipeline`. Errors
 are reported as readable one-line messages (CLI-003), never raw tracebacks. Run
@@ -69,6 +70,27 @@ def _cmd_run_phase0(args: argparse.Namespace) -> int:
     return _run_pipeline_cmd(args.config, "run-phase0")
 
 
+def _cmd_run_phase2_baseline(args: argparse.Namespace) -> int:
+    """Run the small-scale REAL-data (tushare) reproducibility baseline + report."""
+    # Imported lazily so validate-config / demo runs never import the heavy
+    # real-data baseline module.
+    from qt.phase2_baseline import run_phase2_baseline
+
+    try:
+        result = run_phase2_baseline(args.config)
+    except (ConfigError, ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"OK run-phase2-baseline: symbols={result.panel_symbols}, "
+        f"rebalances={len(result.rebalance_dates)}, ic_mean={result.ic_mean:.4f}, "
+        f"annual_return={result.performance.get('annual_return', float('nan')):.4f} "
+        f"({result.elapsed_seconds:.1f}s)\n"
+        f"report: {result.report_path}"
+    )
+    return 0
+
+
 def _cmd_fetch_data(args: argparse.Namespace) -> int:
     """Stage helper: run the spine and report the data-fetch stage."""
     return _run_pipeline_cmd(args.config, "fetch-data")
@@ -99,6 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run-phase0", help="Run the end-to-end Phase 0 pipeline.")
     p_run.add_argument("--config", required=True, help="Path to the YAML config.")
     p_run.set_defaults(func=_cmd_run_phase0)
+
+    p_p2 = sub.add_parser(
+        "run-phase2-baseline",
+        help="Run the small-scale REAL-data (tushare) reproducibility baseline.",
+    )
+    p_p2.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_p2.set_defaults(func=_cmd_run_phase2_baseline)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),

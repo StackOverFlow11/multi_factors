@@ -127,10 +127,10 @@ class _FrameScores:
         return cross.reindex(list(symbols))
 
 
-def _make_logger(log_path: Path) -> logging.Logger:
+def _make_logger(log_path: Path, name: str = _LOGGER_NAME) -> logging.Logger:
     """A run-scoped logger that writes to ``log_path`` (and never logs secrets)."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger(_LOGGER_NAME)
+    logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     # Re-entrant: drop handlers from a previous run so we don't double-write.
     for handler in list(logger.handlers):

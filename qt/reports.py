@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 if TYPE_CHECKING:  # avoid a circular import at runtime (pipeline imports reports)
+    from qt.phase2_baseline import Phase2Result
     from qt.pipeline import Phase0Result
 
 
@@ -115,6 +116,234 @@ def write_phase0_summary(result: "Phase0Result") -> Path:
     target = result.report_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(render_phase0_summary(result), encoding="utf-8")
+    return target
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2-1 real-data baseline report (qt.phase2_baseline).
+# --------------------------------------------------------------------------- #
+_PHASE2_REQUIRED_SECTIONS = (
+    "## Data window",
+    "## Universe / PIT membership",
+    "## Financial ann_date coverage",
+    "## Tradability filter hits",
+    "## Rebalance dates",
+    "## Holdings per period",
+    "## Turnover & cost",
+    "## Factor IC",
+    "## Quantile returns",
+    "## Portfolio performance",
+    "## DOWNGRADES",
+)
+
+
+def phase2_baseline_required_sections() -> tuple[str, ...]:
+    """Section headers the phase2 baseline report MUST contain (single source)."""
+    return _PHASE2_REQUIRED_SECTIONS
+
+
+def _date_str(value: object) -> str:
+    """Format a timestamp-ish value as YYYY-MM-DD (or 'n/a')."""
+    if value is None or (isinstance(value, float) and not math.isfinite(value)):
+        return "n/a"
+    try:
+        return pd.Timestamp(value).strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def _universe_block(summ: dict) -> str:
+    """Render the universe / PIT membership summary (loaded vs in-window)."""
+    if summ.get("pit"):
+        return (
+            f"- type: **index** (point-in-time, survivorship-safe)\n"
+            f"- loaded snapshots: **{summ.get('n_loaded_snapshots', 0)}** "
+            f"({_date_str(summ.get('loaded_first'))} → {_date_str(summ.get('loaded_last'))}; "
+            f"includes the ~370-day pre-start lookback for as-of safety)\n"
+            f"- in-window membership updates: **{summ.get('n_window_snapshots', 0)}** "
+            f"(as-of anchor at start: {_date_str(summ.get('anchor_snapshot'))})\n"
+            f"- distinct names in-window: **{summ.get('distinct_names_in_window', 0)}**\n"
+            f"- per-snapshot size: {summ.get('min_size', 0)}–{summ.get('max_size', 0)}\n"
+            f"- avg churn per in-window update: **{summ.get('avg_churn_in', 0.0):.1f} in / "
+            f"{summ.get('avg_churn_out', 0.0):.1f} out**\n"
+        )
+    return (
+        f"- type: **{summ.get('type', '?')}** (NOT point-in-time — survivorship/"
+        f"look-ahead membership downgrade)\n"
+        f"- symbols: **{summ.get('distinct_names_in_window', 0)}**\n"
+    )
+
+
+def _coverage_block(overall: float, by_reb: pd.DataFrame) -> str:
+    """Render the ann_date as-of financial coverage diagnostic."""
+    head = f"- overall as-of coverage (non-NaN rows): **{_fmt(overall, pct=True)}**\n\n"
+    if by_reb is None or by_reb.empty:
+        return head + "_(no rebalance cross-sections)_\n"
+    table = "| Rebalance date | members | covered | coverage |\n|---|---|---|---|\n"
+    for _, r in by_reb.iterrows():
+        table += (
+            f"| {_date_str(r['date'])} | {int(r['n_members'])} | "
+            f"{int(r['n_covered'])} | {_fmt(float(r['coverage']), pct=True)} |\n"
+        )
+    return head + table
+
+
+def _tradability_block(hits: pd.DataFrame) -> str:
+    """Render the tradability filter-hit funnel."""
+    candidates = hits.attrs.get("candidates", 0)
+    tradable = hits.attrs.get("tradable", 0)
+    head = (
+        f"- member-days evaluated (over rebalance dates): **{candidates}**\n"
+        f"- tradable after filters: **{tradable}**\n\n"
+    )
+    table = "| Filter reason | hits (member-days dropped) |\n|---|---|\n"
+    for reason, row in hits.iterrows():
+        table += f"| {reason} | {int(row['hits'])} |\n"
+    return head + table
+
+
+def _holdings_block(holdings: pd.DataFrame) -> str:
+    """Render per-period holdings (complete; one line per rebalance date)."""
+    if holdings is None or holdings.empty:
+        return "_(no holdings — universe was empty every rebalance)_\n"
+    lines: list[str] = []
+    for date, block in holdings.groupby("date", sort=True):
+        syms = list(block.sort_values("rank")["symbol"])
+        k = len(syms)
+        w = block["weight"].iloc[0] if k else float("nan")
+        lines.append(f"- **{_date_str(date)}** ({k} names, w≈{_fmt(float(w))}): {', '.join(syms)}\n")
+    return "".join(lines)
+
+
+def _per_period_table(nav: pd.DataFrame) -> str:
+    """Render per-rebalance turnover / cost / net return."""
+    if nav is None or nav.empty:
+        return "_(no settled periods)_\n"
+    table = "| Rebalance date | turnover | cost | net return | nav |\n|---|---|---|---|---|\n"
+    for date, r in nav.iterrows():
+        table += (
+            f"| {_date_str(date)} | {_fmt(float(r['turnover']))} | "
+            f"{_fmt(float(r['cost']), pct=True)} | {_fmt(float(r['net_return']), pct=True)} | "
+            f"{_fmt(float(r['nav']))} |\n"
+        )
+    return table
+
+
+def render_phase2_baseline(result: "Phase2Result") -> str:
+    """Build the phase2 real-baseline markdown (pure; no I/O, no secrets).
+
+    The tushare token / secret file is never echoed; only non-sensitive config
+    (window, universe type, factor) and computed diagnostics are written.
+    """
+    cfg = result.config
+    perf = result.performance
+    lines: list[str] = []
+    lines.append("# Phase 2-1 — Real-data Reproducibility Baseline\n")
+    lines.append(
+        f"Project: **{cfg.project.name}** · source: **{cfg.data.source}** · "
+        f"ran in **{result.elapsed_seconds:.1f}s**\n"
+    )
+    lines.append(
+        "\n> Small-scale REAL (tushare) baseline that runs the existing P0/P1 spine "
+        "end-to-end. No new factor, no parameter search, not a performance claim — "
+        "it validates the real-data plumbing and is fully reproducible from the "
+        "config below.\n"
+    )
+
+    lines.append("\n## Config echo\n")
+    lines.append(
+        f"- universe: type=`{cfg.universe.type}`, index_code=`{cfg.universe.index_code}`, "
+        f"top_n=`{cfg.portfolio.top_n}`\n"
+        f"- factor: `{result.factor_name}` · neutralize=`{cfg.processing.neutralize.enabled}`\n"
+        f"- filters: `{cfg.universe.filters.model_dump()}`\n"
+        f"- backtest: rebalance=`{cfg.backtest.rebalance}`, fee_rate=`{cfg.cost.fee_rate}`\n"
+    )
+
+    lines.append("\n## Data window\n")
+    lines.append(
+        f"- configured: `[{cfg.data.start}, {cfg.data.end}]`\n"
+        f"- panel calendar: {_date_str(result.first_trade_date)} → "
+        f"{_date_str(result.last_trade_date)} (**{result.trade_days}** trading days)\n"
+        f"- panel rows: **{result.panel_rows}**, symbols: **{result.panel_symbols}**\n"
+    )
+
+    lines.append("\n## Universe / PIT membership\n")
+    lines.append(_universe_block(result.universe_summary))
+
+    lines.append("\n## Financial ann_date coverage\n")
+    lines.append(
+        f"_Diagnostic on `{result.financial_field}` (ann_date as-of); NOT the alpha "
+        f"factor._\n\n"
+    )
+    lines.append(
+        _coverage_block(result.financial_coverage_overall, result.financial_coverage_by_rebalance)
+    )
+
+    lines.append("\n## Tradability filter hits\n")
+    lines.append(_tradability_block(result.tradability_hits))
+
+    lines.append("\n## Rebalance dates\n")
+    reb = ", ".join(_date_str(d) for d in result.rebalance_dates) or "_(none)_"
+    lines.append(
+        f"- **{len(result.rebalance_dates)}** settled rebalance dates (held + "
+        f"settled; these drive holdings / filter hits / coverage below): {reb}\n"
+    )
+    lines.append(
+        f"- candidate rebalance dates (last trading day of each month): "
+        f"**{len(result.candidate_rebalance_dates)}**\n"
+    )
+    if result.skipped_terminal_dates:
+        skipped = ", ".join(_date_str(d) for d in result.skipped_terminal_dates)
+        lines.append(
+            f"- skipped (terminal date(s) with no forward holding period, BT-003): "
+            f"{skipped}\n"
+        )
+
+    lines.append("\n## Holdings per period\n")
+    lines.append(
+        "_Holdings are listed for the settled rebalance dates only, so they match "
+        "the NAV/turnover table 1:1 (no phantom terminal period)._\n\n"
+    )
+    lines.append(_holdings_block(result.holdings))
+
+    lines.append("\n## Turnover & cost\n")
+    lines.append(
+        f"- average turnover (per rebalance): **{_fmt(result.avg_turnover)}**\n"
+        f"- total cost drag: **{_fmt(result.cost_drag, pct=True)}**\n\n"
+    )
+    lines.append(_per_period_table(result.nav_table))
+
+    lines.append("\n## Factor IC\n")
+    lines.append(
+        f"- IC mean: **{_fmt(result.ic_mean)}**\n"
+        f"- IC_IR (mean/std): **{_fmt(result.ic_ir)}**\n"
+    )
+
+    lines.append("\n## Quantile returns\n")
+    lines.append(_quantile_table(result.quantile_returns) + "\n")
+
+    lines.append("\n## Portfolio performance\n")
+    lines.append(
+        f"- annual return: **{_fmt(perf.get('annual_return', float('nan')), pct=True)}**\n"
+        f"- max drawdown: **{_fmt(perf.get('max_drawdown', float('nan')), pct=True)}**\n"
+        f"- volatility: **{_fmt(perf.get('volatility', float('nan')), pct=True)}**\n"
+        f"- sharpe: **{_fmt(perf.get('sharpe', float('nan')))}**\n"
+    )
+
+    lines.append("\n## DOWNGRADES (INV-007 — must be disclosed)\n")
+    for item in result.downgrades:
+        lines.append(f"- {item}\n")
+
+    lines.append("\n## Artifacts\n")
+    lines.append(f"- report: `{result.report_path}`\n- log: `{result.log_path}`\n")
+    return "".join(lines)
+
+
+def write_phase2_baseline_summary(result: "Phase2Result") -> Path:
+    """Render and write the phase2 baseline report; return the path (SEC-003)."""
+    target = result.report_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_phase2_baseline(result), encoding="utf-8")
     return target
 
 

@@ -1,0 +1,454 @@
+"""Phase 2-1: a small-scale REAL-data (tushare) reproducibility baseline.
+
+This is NOT a new strategy and adds NO new factor or parameter search. It runs
+the *existing* P0/P1 spine on the real tushare path end-to-end over a small
+universe + short window (designed to finish in ~10-30 min) and emits a richer
+diagnostic report (``artifacts/reports/phase2_real_baseline.md``) so the real
+path can be eyeballed and reproduced:
+
+    data window · PIT membership summary · ann_date as-of coverage ·
+    tradability filter hits · rebalance dates · per-period holdings ·
+    turnover / cost · IC / quantile returns · performance · P2 downgrades.
+
+It reuses :mod:`qt.pipeline`'s step helpers verbatim (same universe / panel /
+factor / neutralization / backtest), so "baseline == the real pipeline". The
+extra reporting (holdings, filter hits, coverage) is **read-only**: it never
+changes the strategy and never sees forward returns at the factor stage.
+
+Guard: the baseline REQUIRES ``data.source='tushare'``. Running it on the demo
+source is a category error (no PIT / ann_date / tradability meaning) and raises
+a readable error rather than silently producing a meaningless "real" report.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import pandas as pd
+
+from alpha.equal_weight import EqualWeightAlpha
+from analytics.performance import performance_summary
+from factors.compute.financial import SUPPORTED_FIELDS as SUPPORTED_FINANCIAL_FIELDS
+from factors.compute.financial import FinancialFactor
+from portfolio.construct import TopNEqualWeight
+from qt.config import RootConfig, load_config
+from qt.pipeline import (
+    _FrameScores,
+    _build_factor,
+    _build_scores,
+    _build_universe,
+    _collect_downgrades,
+    _compute_factor_panel,
+    _factor_analytics,
+    _load_panel,
+    _make_logger,
+    _maybe_enrich_covariates,
+    _maybe_enrich_financials,
+    _periods_per_year,
+    _process_factors,
+)
+from qt.reports import write_phase2_baseline_summary
+from runtime.backtest.driver import BacktestDriver
+from runtime.backtest.sim_execution import SimExecution
+from universe.index_universe import PITIndexUniverse
+
+_LOGGER_NAME = "qt.run_phase2_baseline"
+
+# Tradability reasons reported (mirrors universe.filters.apply_tradable_filters).
+_FILTER_REASONS = ("missing_close", "suspended", "is_st", "at_up_limit", "at_down_limit")
+
+
+@dataclass(frozen=True)
+class Phase2Result:
+    """Immutable summary of one phase2 real-baseline run (what the report consumes)."""
+
+    config: RootConfig
+    elapsed_seconds: float
+    # data window
+    first_trade_date: pd.Timestamp | None
+    last_trade_date: pd.Timestamp | None
+    trade_days: int
+    panel_rows: int
+    panel_symbols: int
+    # universe / PIT membership
+    universe_summary: dict
+    # ann_date financial coverage (diagnostic)
+    financial_field: str
+    financial_coverage_overall: float
+    financial_coverage_by_rebalance: pd.DataFrame
+    # tradability filter hits
+    tradability_hits: pd.DataFrame
+    # rebalance + holdings (rebalance_dates are the SETTLED dates == nav_table.index)
+    rebalance_dates: tuple[pd.Timestamp, ...]
+    candidate_rebalance_dates: tuple[pd.Timestamp, ...]
+    skipped_terminal_dates: tuple[pd.Timestamp, ...]
+    holdings: pd.DataFrame
+    # turnover / cost / performance
+    factor_name: str
+    nav_table: pd.DataFrame
+    avg_turnover: float
+    cost_drag: float
+    ic_mean: float
+    ic_ir: float
+    quantile_returns: pd.DataFrame
+    performance: dict
+    # disclosure
+    downgrades: tuple[str, ...]
+    # paths
+    report_path: Path
+    log_path: Path
+
+
+# --------------------------------------------------------------------------- #
+# Pure collectors (network-free; unit-tested with synthetic inputs).
+# --------------------------------------------------------------------------- #
+def summarize_universe(universe, universe_type: str, start, end) -> dict:
+    """Summarize the (PIT or static) universe for the report.
+
+    For a :class:`PITIndexUniverse` the feed deliberately loads snapshots from
+    BEFORE ``start`` (a ~370-day pre-start lookback) so the as-of membership at the
+    window start resolves correctly. This summary therefore separates two things:
+
+      * LOADED snapshots — everything fetched, incl. the pre-start lookback (so the
+        reader sees exactly what was pulled);
+      * IN-WINDOW membership — the snapshots dated within ``[start, end]`` plus the
+        as-of anchor active at ``start`` (the lookback snapshot the early dates
+        resolve to). ``distinct_names_in_window`` / size / churn are reported over
+        this in-window view, so "distinct names over window" means what the
+        backtest actually saw, not names that only existed before the window.
+
+    Static universes carry no point-in-time membership, recorded explicitly.
+    """
+    if isinstance(universe, PITIndexUniverse):
+        snaps = universe.membership_snapshots()
+        loaded = sorted(snaps)
+        start_ts = pd.Timestamp(start).normalize()
+        end_ts = pd.Timestamp(end).normalize()
+        in_window = [d for d in loaded if start_ts <= d <= end_ts]
+        prior = [d for d in loaded if d <= start_ts]
+        anchor = max(prior) if prior else None
+        # names seen during the window = anchor membership (held into the window)
+        # ∪ every in-window snapshot's membership.
+        active = ([anchor] if anchor is not None else []) + in_window
+        sizes = [len(snaps[d]) for d in active]
+        distinct = sorted({s for d in active for s in snaps[d]})
+        churn_in: list[int] = []
+        churn_out: list[int] = []
+        # churn is reported over in-window transitions only (membership changes
+        # that actually occur inside the backtest window).
+        for prev, cur in zip(in_window, in_window[1:]):
+            prev_set, cur_set = set(snaps[prev]), set(snaps[cur])
+            churn_in.append(len(cur_set - prev_set))
+            churn_out.append(len(prev_set - cur_set))
+        return {
+            "pit": True,
+            "type": "index",
+            "n_loaded_snapshots": len(loaded),
+            "loaded_first": loaded[0] if loaded else None,
+            "loaded_last": loaded[-1] if loaded else None,
+            "n_window_snapshots": len(in_window),
+            "anchor_snapshot": anchor,
+            "distinct_names_in_window": len(distinct),
+            "min_size": min(sizes) if sizes else 0,
+            "max_size": max(sizes) if sizes else 0,
+            "avg_churn_in": (sum(churn_in) / len(churn_in)) if churn_in else 0.0,
+            "avg_churn_out": (sum(churn_out) / len(churn_out)) if churn_out else 0.0,
+        }
+    return {
+        "pit": False,
+        "type": universe_type,
+        "distinct_names_in_window": len(getattr(universe, "_symbols", []) or []),
+    }
+
+
+def tradability_hit_stats(
+    universe,
+    panel: pd.DataFrame,
+    rebalance_dates: list[pd.Timestamp],
+    filters: dict,
+) -> pd.DataFrame:
+    """Count, summed over rebalance dates, how many members each filter knocks out.
+
+    For every rebalance date we take the universe members, look at that day's
+    cross-section, and tally the reason a name is dropped. The reasons are
+    EXCLUSIVE and use the SAME first-match-wins order as
+    :func:`universe.filters.apply_tradable_filters` (missing close always; then
+    suspended; then ST; then at-limit — each gated by its toggle and the flag
+    column being present). A name flagged by several filters is counted once, in
+    the first matching bucket, so ``sum(hits) == candidates - tradable`` exactly
+    and the funnel is auditable. Returns a frame indexed by reason with a ``hits``
+    column plus ``candidates`` / ``tradable`` totals in ``.attrs``.
+    """
+    counts = {r: 0 for r in _FILTER_REASONS}
+    n_candidates = 0
+    n_tradable = 0
+    for date in rebalance_dates:
+        target = pd.Timestamp(date).normalize()
+        members = list(universe.members(target))
+        try:
+            cross = panel.xs(target, level="date")
+        except KeyError:
+            cross = panel.iloc[0:0]
+        for sym in members:
+            n_candidates += 1
+            if sym not in cross.index:
+                counts["missing_close"] += 1
+                continue
+            row = cross.loc[sym]
+            if pd.isna(row["close"]):
+                counts["missing_close"] += 1
+                continue
+            # First-match-wins, mirroring apply_tradable_filters (exclusive buckets).
+            if filters.get("suspended") and bool(row.get("suspended", False)):
+                counts["suspended"] += 1
+                continue
+            if filters.get("st") and bool(row.get("is_st", False)):
+                counts["is_st"] += 1
+                continue
+            if filters.get("limit_up_down") and bool(row.get("at_up_limit", False)):
+                counts["at_up_limit"] += 1
+                continue
+            if filters.get("limit_up_down") and bool(row.get("at_down_limit", False)):
+                counts["at_down_limit"] += 1
+                continue
+            n_tradable += 1
+    frame = pd.DataFrame(
+        {"hits": [counts[r] for r in _FILTER_REASONS]},
+        index=list(_FILTER_REASONS),
+    )
+    frame.index.name = "reason"
+    frame.attrs["candidates"] = n_candidates
+    frame.attrs["tradable"] = n_tradable
+    return frame
+
+
+def reconstruct_holdings(
+    scores: _FrameScores,
+    universe,
+    panel: pd.DataFrame,
+    constructor: TopNEqualWeight,
+    rebalance_dates: list[pd.Timestamp],
+) -> pd.DataFrame:
+    """Rebuild per-period target holdings READ-ONLY (mirrors the driver's step).
+
+    For each rebalance date: tradable members -> scores -> constructor.build, the
+    exact same chain :meth:`BacktestDriver._step` runs. We only read the resulting
+    target weights (the holdings); we never settle or see forward returns, so this
+    is a faithful, side-effect-free view of what the backtest held each period.
+    Returns a long-form frame with columns ``[date, symbol, weight, rank]``.
+    """
+    rows: list[dict] = []
+    for date in rebalance_dates:
+        target_date = pd.Timestamp(date).normalize()
+        tradable = list(universe.tradable(target_date, panel))
+        if not tradable:
+            continue
+        cross_scores = scores.get(target_date, tradable)
+        weights = constructor.build(cross_scores)
+        for rank, (sym, w) in enumerate(weights.items(), start=1):
+            rows.append(
+                {"date": target_date, "symbol": str(sym), "weight": float(w), "rank": rank}
+            )
+    return pd.DataFrame(rows, columns=["date", "symbol", "weight", "rank"])
+
+
+def financial_coverage_at_dates(
+    aligned_col: pd.Series,
+    universe,
+    panel: pd.DataFrame,
+    rebalance_dates: list[pd.Timestamp],
+) -> pd.DataFrame:
+    """Per-rebalance-date as-of financial coverage among that date's members.
+
+    ``aligned_col`` is the ann_date as-of aligned financial series (NaN where no
+    report had been disclosed by that date). The denominator (``n_members``) is the
+    universe members PRESENT IN THE PANEL that date (taken from ``panel`` so the
+    contract is explicit, not implied by the aligned series' index); of those, we
+    count how many carry a non-NaN figure. Returns ``[date, n_members, n_covered,
+    coverage]`` — a data-quality lens on how well the financial path is populated,
+    NOT a strategy signal.
+    """
+    rows: list[dict] = []
+    for date in rebalance_dates:
+        target = pd.Timestamp(date).normalize()
+        members = list(universe.members(target))
+        try:
+            cross_syms = set(panel.xs(target, level="date").index)
+        except KeyError:
+            cross_syms = set()
+        n_members = 0
+        n_covered = 0
+        for sym in members:
+            if str(sym) not in cross_syms:
+                continue  # not present in the panel that day -> not a denominator member
+            n_members += 1
+            val = aligned_col.get((target, str(sym)), float("nan"))
+            if pd.notna(val):
+                n_covered += 1
+        coverage = (n_covered / n_members) if n_members else float("nan")
+        rows.append(
+            {
+                "date": target,
+                "n_members": n_members,
+                "n_covered": n_covered,
+                "coverage": coverage,
+            }
+        )
+    return pd.DataFrame(rows, columns=["date", "n_members", "n_covered", "coverage"])
+
+
+def _phase2_downgrades(cfg: RootConfig, financial_field: str) -> tuple[str, ...]:
+    """Base downgrades + phase2-baseline-specific disclosures."""
+    extra = (
+        f"Financial ann_date coverage is a DATA-QUALITY DIAGNOSTIC on "
+        f"'{financial_field}' (how well disclosed reports populate the universe "
+        "as-of); it is NOT the alpha factor in this baseline (the factor is the "
+        "configured price factor). No financial signal is traded here.",
+        "Per-period holdings are RECONSTRUCTED read-only (universe -> scores -> "
+        "constructor.build), the same chain the backtest driver runs; they are a "
+        "faithful view, not an independent recomputation of returns.",
+        "This is a SMALL-SCALE baseline (a small index over a short window) for "
+        "reproducibility/plumbing validation, NOT a performance claim; numbers are "
+        "not optimized and must not be read as a strategy result.",
+    )
+    return _collect_downgrades(cfg) + extra
+
+
+# --------------------------------------------------------------------------- #
+# Orchestration
+# --------------------------------------------------------------------------- #
+def run_phase2_baseline(config_path: str) -> Phase2Result:
+    """Run the small-scale real-data baseline and write the phase2 report.
+
+    Raises ``ValueError`` (readable) if pointed at the demo source — the baseline
+    is meaningless without real PIT / ann_date / tradability data. All writes land
+    under the configured ``output`` dirs (the report is git-ignored under
+    ``artifacts/``; the tushare token is never read into the report).
+    """
+    cfg = load_config(config_path)
+    if cfg.data.source != "tushare":
+        raise ValueError(
+            "run-phase2-baseline is a REAL-data experiment and requires "
+            "data.source='tushare'. The demo/offline path carries no PIT, "
+            "ann_date, or tradability meaning, so a 'baseline' there would be a "
+            f"category error. Got data.source={cfg.data.source!r}."
+        )
+
+    t0 = time.perf_counter()
+    log_path = Path(cfg.output.log_dir) / "run_phase2_baseline.log"
+    logger = _make_logger(log_path, name=_LOGGER_NAME)
+    logger.info("phase2 baseline start: project=%s", cfg.project.name)
+
+    # --- reuse the exact P0/P1 spine ------------------------------------- #
+    universe, symbols = _build_universe(cfg, logger)
+    panel = _load_panel(cfg, symbols, logger)
+    factor = _build_factor(cfg)
+    panel = _maybe_enrich_financials(cfg, panel, symbols, factor, logger)
+    panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
+    factor_panel = _compute_factor_panel(cfg, panel, factor, logger)
+    processed = _process_factors(cfg, factor_panel, panel)
+    score_panel = _build_scores(processed, EqualWeightAlpha())
+    scores = _FrameScores(score_panel)
+
+    constructor = TopNEqualWeight(cfg.portfolio.top_n, long_only=cfg.portfolio.long_only)
+    execution = SimExecution(fee_rate=cfg.cost.fee_rate, cash_return=cfg.backtest.cash_return)
+    driver = BacktestDriver(
+        universe=universe,
+        scores=scores,
+        constructor=constructor,
+        execution=execution,
+        prices=panel,
+        rebalance=cfg.backtest.rebalance,
+        fee_rate=cfg.cost.fee_rate,
+        initial_nav=cfg.backtest.initial_nav,
+        cash_return=cfg.backtest.cash_return,
+    )
+    candidate_dates = driver.rebalance_dates()
+    nav_table = driver.run()
+    # The diagnostics (coverage / filter hits / holdings) MUST key off the dates
+    # that were actually held + settled — i.e. nav_table.index — NOT the candidate
+    # rebalance dates. The driver skips a terminal rebalance with no forward
+    # holding period (BT-003), so the last candidate date has no NAV/turnover row;
+    # reporting holdings for it would be a phantom period.
+    settled_dates = list(nav_table.index)
+    settled_set = set(settled_dates)
+    skipped_dates = [d for d in candidate_dates if d not in settled_set]
+    logger.info("backtest: %d candidate rebalance dates, %d settled rows (skipped %d)",
+                len(candidate_dates), len(nav_table), len(skipped_dates))
+
+    ic_mean, ic_ir, q_returns = _factor_analytics(cfg, panel, factor_panel, factor.name)
+    perf = (
+        performance_summary(
+            nav_table["nav"], periods_per_year=_periods_per_year(cfg.backtest.rebalance)
+        )
+        if not nav_table.empty
+        else {k: float("nan") for k in ("annual_return", "max_drawdown", "volatility", "sharpe")}
+    )
+
+    # --- diagnostics (read-only) ----------------------------------------- #
+    financial_field = (
+        factor.name if isinstance(factor, FinancialFactor) else SUPPORTED_FINANCIAL_FIELDS[0]
+    )
+    if isinstance(factor, FinancialFactor):
+        diag_col = panel[financial_field]
+    else:
+        logger.info(
+            "diagnostics: fetching '%s' for ann_date coverage report ONLY "
+            "(NOT the active factor; the strategy factor is '%s')",
+            financial_field, factor.name,
+        )
+        diag_panel = _maybe_enrich_financials(
+            cfg, panel, symbols, FinancialFactor(financial_field), logger
+        )
+        diag_col = diag_panel[financial_field]
+    coverage_by_rebalance = financial_coverage_at_dates(
+        diag_col, universe, panel, settled_dates
+    )
+    coverage_overall = float(diag_col.notna().mean()) if len(diag_col) else float("nan")
+
+    hits = tradability_hit_stats(
+        universe, panel, settled_dates, cfg.universe.filters.model_dump()
+    )
+    holdings = reconstruct_holdings(scores, universe, panel, constructor, settled_dates)
+
+    dates = panel.index.get_level_values("date")
+    result = Phase2Result(
+        config=cfg,
+        elapsed_seconds=time.perf_counter() - t0,
+        first_trade_date=dates.min() if len(dates) else None,
+        last_trade_date=dates.max() if len(dates) else None,
+        trade_days=int(pd.Series(dates).nunique()),
+        panel_rows=len(panel),
+        panel_symbols=int(panel.index.get_level_values("symbol").nunique()),
+        universe_summary=summarize_universe(
+            universe, cfg.universe.type, cfg.data.start, cfg.data.end
+        ),
+        financial_field=financial_field,
+        financial_coverage_overall=coverage_overall,
+        financial_coverage_by_rebalance=coverage_by_rebalance,
+        tradability_hits=hits,
+        rebalance_dates=tuple(settled_dates),
+        candidate_rebalance_dates=tuple(candidate_dates),
+        skipped_terminal_dates=tuple(skipped_dates),
+        holdings=holdings,
+        factor_name=factor.name,
+        nav_table=nav_table,
+        avg_turnover=float(nav_table["turnover"].mean()) if not nav_table.empty else 0.0,
+        cost_drag=float(nav_table["cost"].sum()) if not nav_table.empty else 0.0,
+        ic_mean=ic_mean,
+        ic_ir=ic_ir,
+        quantile_returns=q_returns,
+        performance=perf,
+        downgrades=_phase2_downgrades(cfg, financial_field),
+        report_path=Path(cfg.output.report_dir) / "phase2_real_baseline.md",
+        log_path=log_path,
+    )
+    write_phase2_baseline_summary(result)
+    logger.info(
+        "phase2 baseline done: ic_mean=%.4f annual_return=%.4f report=%s (%.1fs)",
+        ic_mean, perf.get("annual_return", float("nan")), result.report_path,
+        result.elapsed_seconds,
+    )
+    return result

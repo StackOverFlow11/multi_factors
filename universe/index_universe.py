@@ -44,6 +44,15 @@ class PITIndexUniverse(Universe):
         self._snapshots: list[pd.Timestamp] = sorted(self._by_date)
         self._filters = dict(filters or {})
 
+    def membership_snapshots(self) -> dict[pd.Timestamp, list[str]]:
+        """Return a copy of ``{snapshot_date: [symbols]}`` (read-only reporting).
+
+        Exposes the raw PIT snapshots so reporting/analytics can summarise the
+        universe (snapshot count, distinct names, churn) WITHOUT reaching into
+        private state. It returns copies, so callers cannot mutate the universe.
+        """
+        return {date: list(symbols) for date, symbols in self._by_date.items()}
+
     def members(self, date: pd.Timestamp) -> list[str]:
         """Constituents of the latest snapshot on or before ``date`` (as-of)."""
         target = pd.Timestamp(date).normalize()
