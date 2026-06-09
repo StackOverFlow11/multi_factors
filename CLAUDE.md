@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、PR #2（P2-1）已 merge 到 `main`**；当前在 `p2-execution-realism` 分支推进 P2-2。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -73,8 +73,8 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - 行业 + 市值中性化（按 date 截面 OLS 残差；欠定/无自由度截面 → NaN）
   - 路径感知降级披露（demo/static vs tushare/index/ann_date，绝不把 demo 当真实验证）
 - ✅ 真数据实证（tushare，非 CI）：复权除权日 raw−5.74%→qfq+0.99% / CSI300 全年 24 快照 328 名换手 / ann_date Q1 延后至 04-20 / 中性化 corr −0.617→0。详见 `BIAS_AUDIT.md`、`artifacts/reports/phase1_summary.md`。
-- ✅ **Phase 2-1 真实数据可复现基准**（`p2-real-baseline` 分支，**PR #2 OPEN**）：新 run mode `run-phase2-baseline` + `config/phase2_real_baseline.yaml`（上证50 `000016.SH`，2023-07~2024-06）。**复用 P0/P1 全套机器，不扩因子、不调参**。一次真实跑 ~11min（68 成分 / 25 loaded 快照 / in-window distinct 60 / 11 settled 调仓，候选 12 末日跳过），输出 `artifacts/reports/phase2_real_baseline.md`（gitignored）：数据窗口 / PIT 成分摘要(loaded vs in-window) / ann_date 覆盖率(100%) / 可交易过滤命中(首命中互斥) / 每期持仓 / 换手成本 / IC(≈0.008) / 绩效(年化−17.6%，**亏损动量基准，非业绩声明**) / 全部 P2 降级。诊断只读、demo 源拒绝、token 不入报告。
-- ✅ **Phase 2-2 执行真实性**（`p2-execution-realism` 分支，未 PR）：**拆分 selection（选谁）与 execution feasibility（能否成交）**。
+- ✅ **Phase 2-1 真实数据可复现基准**（**PR #2 已 merge 到 `main`**）：新 run mode `run-phase2-baseline` + `config/phase2_real_baseline.yaml`（上证50 `000016.SH`，2023-07~2024-06）。**复用 P0/P1 全套机器，不扩因子、不调参**。一次真实跑 ~11min（68 成分 / 25 loaded 快照 / in-window distinct 60 / 11 settled 调仓，候选 12 末日跳过），输出 `artifacts/reports/phase2_real_baseline.md`（gitignored）：数据窗口 / PIT 成分摘要(loaded vs in-window) / ann_date 覆盖率(100%) / 可交易过滤命中(首命中互斥) / 每期持仓 / 换手成本 / IC(≈0.008) / 绩效(年化−17.6%，**亏损动量基准，非业绩声明**) / 全部 P2 降级。诊断只读、demo 源拒绝、token 不入报告。
+- ✅ **Phase 2-2 执行真实性**（PR #3 已 merge 到 `main`）：**拆分 selection（选谁）与 execution feasibility（能否成交）**。
   - 方向感知执行 `runtime/fills.py::simulate_fills`：涨停挡买 / 跌停挡卖 / 停牌·缺收盘双向挡;按 panel flag 实时判定,与选股 toggle 无关。
   - **现金一致 sell-then-buy**:卖在前释放现金、买在后,现金不足按比例部分成交 → **无杠杆**;被挡交易 carry forward;换手/成本只算实际成交;闲置现金按 driver 的 `cash_return` 计息（BT-007）。
   - `universe.min_listing_days` **真实路径已执行**（`stock_basic.list_date` 富化,买入资格过滤,边界 age==min 放行,缺 list_date 保留并披露）;demo 无上市日 → 披露 no-op。
