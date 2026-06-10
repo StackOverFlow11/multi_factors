@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -88,7 +88,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `analytics/alphalens_adapter.py`(IC mean/IR + 分位均值)+ `analytics/quantstats_adapter.py`(CAGR/Sharpe/maxDD/vol)薄 adapter,各带 `backend` 字段。
   - **简版 numpy/pandas 仍权威**(驱动回测 + cross-check);依赖不可用/报错 → 报告显式披露 backend(unavailable/error,只记异常**类型**不记消息),**绝不静默假装用了标准库**。
   - **不改 alpha/portfolio/runtime/fills/universe**:P0/P2 交易数字不变(demo ic 0.96/annual 0.84 不变;实测 alphalens IC=简版 IC 完全吻合),只新增 **Standard analytics** 报告段。
-- 🔧 **Phase 3-1 首个真实多因子 baseline**（`p3-multifactor-financial-baseline` 分支,代劳待验收）：pipeline 从"只用第一个 enabled factor"升级为**消费全部 enabled factors**;新增 `config/phase3_real_multifactor.yaml`（momentum_20 + roe + netprofit_yoy,SSE50 同窗口,与 phase2 可比）。**不调参、无 learned weights、非收益承诺**。
+- ✅ **Phase 3-1 首个真实多因子 baseline**（**PR #9 已 merge 到 `main`**）：pipeline 从"只用第一个 enabled factor"升级为**消费全部 enabled factors**;新增 `config/phase3_real_multifactor.yaml`（momentum_20 + roe + netprofit_yoy,SSE50 同窗口,与 phase2 可比）。**不调参、无 learned weights、非收益承诺**。
   - `_build_factors` 全量实例化（配置序;重名报错）;财务字段**一次 fetch + 一次 as-of 对齐**（逐字段独立守 `ann_date <= trade_date`,无每因子重复拉取）;demo+财务因子仍可读报错。
   - 合成仍 `EqualWeightAlpha`（处理后各列等权平均,不看 forward returns）;`drop_missing` 要求该日该票**所有**因子齐备（显式披露）。
   - 报告增强：active factor list / per-factor coverage+IC+分位 / **combo score** 诊断 / 财务 coverage **按字段**披露（TRADED vs diagnostic 角色标注）;`output.baseline_report_name` 使 phase3 报告独立于 phase2。

@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3,默认 SW-L1 可配置）、#6（进度文档）、#7（P2-4）均已 merge 到 `main`。** commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3,默认 SW-L1 可配置）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）均已 merge 到 `main`。** commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -88,7 +88,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `analytics/alphalens_adapter.py`(IC mean/IR + 分位均值)+ `analytics/quantstats_adapter.py`(CAGR/Sharpe/maxDD/vol)薄 adapter,各带 `backend` 字段;`_import_*` 间接层使 import-missing 路径可测;alphalens stdout/warnings 已抑制。
   - **简版仍权威**(驱动回测 + cross-check);依赖不可用/报错 → 报告披露 backend(unavailable/error,只记异常类型),**绝不静默假装**。
   - **不改 alpha/portfolio/runtime/fills/universe**:P0/P2 交易数字不变(demo ic 0.96/annual 0.84 不变;alphalens IC=简版 IC 吻合),只新增 **Standard analytics** 报告段。
-- 🔧 **Phase 3-1 首个真实多因子 baseline**（`p3-multifactor-financial-baseline` 分支,代劳待验收）：pipeline 消费**全部 enabled factors**（曾只用第一个）;`config/phase3_real_multifactor.yaml` = momentum_20 + roe + netprofit_yoy（SSE50 同窗口,与 phase2 可比;不调参、无 learned weights、非收益承诺）。
+- ✅ **Phase 3-1 首个真实多因子 baseline**（**PR #9 已 merge 到 `main`**）：pipeline 消费**全部 enabled factors**（曾只用第一个）;`config/phase3_real_multifactor.yaml` = momentum_20 + roe + netprofit_yoy（SSE50 同窗口,与 phase2 可比;不调参、无 learned weights、非收益承诺）。
   - 财务字段**一次 fetch + 一次 as-of 对齐**;合成仍 EqualWeightAlpha 等权;`drop_missing` 要求全因子齐备（披露）;demo+财务因子仍可读报错;重名因子报错。
   - 报告：active factor list / per-factor coverage+IC+分位 / combo score 诊断 / 财务 coverage 按字段（TRADED vs diagnostic）;`output.baseline_report_name` 分离 phase3 报告。
   - 真实结果:多因子 annual **−9.05%**（单因子 −10.19%）;momentum_20 IC 0.0083（跨 run 一致）/ roe 0.0006 / netprofit_yoy 0.0001 / combo −0.0038;财务 ann_date 覆盖 100%;PIT SW-L1 98.53%。回归不破:phase2 rerun −10.19%/0.0083 不变,demo 0.96/0.84 不变。
