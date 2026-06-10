@@ -1,4 +1,4 @@
-# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor → walk-forward IC alpha)
+# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor → walk-forward IC alpha → OOS stability)
 
 ## Commands
 
@@ -12,6 +12,7 @@ Run from the repo root with the project python (env `quant_mf`):
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase2_real_baseline.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_multifactor.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_ic_weighted.yaml
+/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_oos_stability.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli run-phase0 --config config/example.yaml
 ```
 
@@ -19,12 +20,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **269 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **282 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
-| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml`) | exit `0`, prints `OK` |
+| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 269).
+Counts below are the actual per-file `pytest` numbers (sum = 282).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -109,7 +110,13 @@ Counts below are the actual per-file `pytest` numbers (sum = 269).
 |---|---|---|
 | `test_ic_weight_alpha.py` | 12 | **lookahead red-line**: perturbing unrealized forward returns cannot change weights; exact `t + h <= d` realization cutoff (min_periods boundary); insufficient-history equal-weight fallback (== EqualWeightAlpha row mean); single-factor degeneration to ±1; L1 normalization + sign preservation; degenerate-IC fallback; rolling-vs-expanding window; fit requires forward_returns; dated-cross-section contract; input immutability; weights/fallback log |
 | `test_ic_alpha_pipeline.py` | 6 | alpha dispatch by config (equal_weight / ic_weighted + params / unknown = ConfigError), equal-weight default keeps exact demo numbers (ic 0.96 / annual 0.84) + report line, ic_weighted demo e2e (summary, weights log, early-fallback→late-trained, L1 rows, report disclosure, no secret), ic-weights differ from equal weight on diverging-IC synthetic data |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1 + P3-2)** | **269** | |
+
+## Per-file breakdown — Phase 3-3 OOS stability (13)
+
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_oos_stability.py` | 13 | **split-boundary no-leakage**: perturbing every post-split forward return leaves all train-period weights bit-identical; `subperiod_perf` slices strictly + rebased nav + empty-slice NaN; `ic_period_stats` mean/IR/hit-rate/n; `sign_consistent` nonzero-same-sign; `weight_sign_flips` on trained rows only (fallback rows excluded); fallback-reason aggregation; OOS config validates + split-inside-window ConfigError; runner rejects demo source + missing `oos` section; report renders boundaries / OOS metrics / weight stability / caveat / no secret |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1 + P3-2 + P3-3)** | **282** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -182,6 +189,13 @@ Counts below are the actual per-file `pytest` numbers (sum = 269).
   EqualWeightAlpha combination — and is counted in the report. Weights are
   L1-normalized, sign-preserving. `EqualWeightAlpha` remains the default; its
   demo numbers (ic 0.96 / annual 0.84) are locked unchanged.
+- **P3-3 OOS stability (locked by tests):** `run-phase3-oos` is a REPORT-ONLY
+  validation layer — one shared data load, two backtests (equal_weight vs
+  ic_weighted), every diagnostic split at `oos.split_date` (train strictly
+  before, test on/after; subperiod navs rebased so nothing bleeds across).
+  Evaluation is walk-forward (rolling subperiod): the split-boundary test
+  proves post-split forward returns cannot move any train-period weight.
+  Portfolio / execution / factor math are untouched.
 - A duplicate test-function name across two files was found and renamed during P2-2
   (it had been silently shadowing one test in the full-suite run). A second, harmless
   duplicate (`test_enrich_does_not_mutate_input` in two files) was verified NOT to drop

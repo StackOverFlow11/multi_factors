@@ -101,6 +101,12 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `config/phase3_real_ic_weighted.yaml`：与 phase3_real_multifactor **唯一差异是 alpha.model**（universe/window/因子/中性化全同,直接可比）。
   - **真实结果**（SSE50 2023-07~2024-06,~14min）:annual **−3.57%**（等权 −9.05% / 单因子 −10.19%）,maxDD −12.93%,训练覆盖 **201/221**（20 个 fallback 全在窗口攒满前,90.95%）。⚠️ 优于等权**不是**业绩声明——单年窗口 + 权重逐期翻号（如 momentum_20 从 −0.58 到 +0.36）正是小样本不稳定的体现,照实披露。
   - **回归不破**:phase3 等权真实 rerun annual −9.05% / IC 0.0083 不变;demo equal_weight ic 0.96/annual 0.84 不变（测试锁定）。
-- ✅ 质量门：`pytest` **269 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml`）+ `run-phase0`（demo）均 OK。
-- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据。
-- 路线图下一步：样本外/IC 稳定性检验 / 分钟级（architecture.html §11）。
+- 🔧 **Phase 3-3 OOS 稳定性验证**（`p3-oos-stability-validation` 分支,代劳待验收）：**报告型验证层**,不加新 alpha 复杂度、不改 portfolio/execution/factor math。新 run mode `run-phase3-oos`（`qt/oos_stability.py`）+ `config/phase3_real_oos_stability.yaml`（SSE50 扩到 **2 年** 2022-07~2024-06,split 2023-07-01 → train 1y / test 1y,test 年=旧 baseline 窗口可对照）。
+  - **一次数据加载、同一 processed 因子面板、两次回测**（equal_weight vs ic_weighted）;所有诊断按 split 切段（子段 nav 重新归一,绝不跨段串味）。
+  - **边界语义（测试锁定）**:walk-forward(rolling subperiod)——任何日期的权重只用该日已实现观测(`t+h <= d`);**扰动 split 后全部 forward returns,train 期所有日期权重逐 bit 不变**(split 无泄漏测试);不用 freeze-at-split(那是新 alpha 模式,超范围)。
+  - 报告 `phase3_oos_stability.md`:split 边界/分期绩效(annual/vol/sharpe/maxDD/turnover)/逐序列 IC 分期(mean/IR/hit rate/sign consistency)/权重稳定性(每期权重含 train-test 标注、trained 行 sign flips、fallback 次数+原因)/小样本 caveat。
+  - **真实结果（关键发现,~16min,77 成分/2 年）**:三个原始因子 train→test **IC 全部翻号**(momentum −0.024→+0.006 / roe −0.029→+0.007 / np_yoy −0.010→+0.005,sign consistency 全 NO),hit rate 46~53%≈抛硬币;权重 23 期 sign flips 7/3/4;绩效 eq train −6.81%/test −5.27%,ic train −1.69%/test −2.70%。**结论:ic_weighted 两段都略好但 IC≈0 且翻号——P3-2 单年跑赢不可外推,这正是本验证层要拿到的证据;非收益声明。**
+  - **回归不破**:phase3 equal_weight rerun −9.05%/0.0083、ic_weighted rerun −3.57% 均不变;demo 0.96/0.84 不变;secret scan 报告 0 处 token/config.json。
+- ✅ 质量门：`pytest` **282 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=13）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml`）+ `run-phase0`（demo）均 OK。
+- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、因子 IC 小样本不稳定（P3-3 实证）。
+- 路线图下一步：更长历史/更宽 universe 的稳定性复检,或分钟级（architecture.html §11）。

@@ -91,6 +91,26 @@ def _cmd_run_phase2_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_phase3_oos(args: argparse.Namespace) -> int:
+    """Run the OOS stability validation (equal_weight vs ic_weighted) + report."""
+    from qt.oos_stability import run_phase3_oos
+
+    try:
+        result = run_phase3_oos(args.config)
+    except (ConfigError, ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    eq = result.performance["equal_weight"]["test"].get("annual_return", float("nan"))
+    ic = result.performance["ic_weighted"]["test"].get("annual_return", float("nan"))
+    print(
+        f"OK run-phase3-oos: split={result.split_date.date()}, "
+        f"test annual eq={eq:.4f} ic={ic:.4f}, fallbacks={result.n_fallback} "
+        f"({result.elapsed_seconds:.1f}s)\n"
+        f"report: {result.report_path}"
+    )
+    return 0
+
+
 def _cmd_fetch_data(args: argparse.Namespace) -> int:
     """Stage helper: run the spine and report the data-fetch stage."""
     return _run_pipeline_cmd(args.config, "fetch-data")
@@ -128,6 +148,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_p2.add_argument("--config", required=True, help="Path to the YAML config.")
     p_p2.set_defaults(func=_cmd_run_phase2_baseline)
+
+    p_oos = sub.add_parser(
+        "run-phase3-oos",
+        help="Run the REAL-data OOS stability validation (equal_weight vs ic_weighted).",
+    )
+    p_oos.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_oos.set_defaults(func=_cmd_run_phase3_oos)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),
