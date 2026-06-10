@@ -288,6 +288,34 @@ def _run_backtest_for(cfg: RootConfig, panel, universe, score_panel) -> pd.DataF
     return driver.run()
 
 
+def check_oos_preconditions(cfg: RootConfig, runner: str = "run-phase3-oos") -> None:
+    """Shared guards for the OOS cell computation (single run AND matrix, P3-4).
+
+    Real tushare source only; an ``oos`` section (the split date); and the
+    alpha section MUST be ic_weighted — anything else would silently run
+    equal_weight twice and label one leg ic_weighted (a fake comparison).
+    """
+    if cfg.data.source != "tushare":
+        raise ValueError(
+            f"{runner} is a REAL-data validation and requires "
+            "data.source='tushare'; the demo path carries no PIT/ann_date meaning. "
+            f"Got data.source={cfg.data.source!r}."
+        )
+    if cfg.oos is None:
+        raise ValueError(
+            f"{runner} requires an 'oos' config section with split_date "
+            "(train = [data.start, split), test = [split, data.end])."
+        )
+    if cfg.alpha.model != "ic_weighted":
+        raise ValueError(
+            f"{runner} compares equal_weight vs ic_weighted: the config's "
+            "alpha section must set model='ic_weighted' (it carries the "
+            "ic-weighted leg's params; the equal-weight control is built "
+            f"internally). Got alpha.model={cfg.alpha.model!r} — running that "
+            "would silently label an equal_weight leg as ic_weighted."
+        )
+
+
 def run_phase3_oos(config_path: str) -> OOSResult:
     """Run the OOS stability validation and write the phase3 OOS report.
 
@@ -296,30 +324,33 @@ def run_phase3_oos(config_path: str) -> OOSResult:
     All writes land under the configured output dirs; no secret is echoed.
     """
     cfg = load_config(config_path)
-    if cfg.data.source != "tushare":
-        raise ValueError(
-            "run-phase3-oos is a REAL-data validation and requires "
-            "data.source='tushare'; the demo path carries no PIT/ann_date meaning. "
-            f"Got data.source={cfg.data.source!r}."
-        )
-    if cfg.oos is None:
-        raise ValueError(
-            "run-phase3-oos requires an 'oos' config section with split_date "
-            "(train = [data.start, split), test = [split, data.end])."
-        )
-    if cfg.alpha.model != "ic_weighted":
-        raise ValueError(
-            "run-phase3-oos compares equal_weight vs ic_weighted: the config's "
-            "alpha section must set model='ic_weighted' (it carries the "
-            "ic-weighted leg's params; the equal-weight control is built "
-            f"internally). Got alpha.model={cfg.alpha.model!r} — running that "
-            "would silently label an equal_weight leg as ic_weighted."
-        )
-    split = pd.Timestamp(cfg.oos.split_date)
-
-    t0 = time.perf_counter()
+    check_oos_preconditions(cfg, runner="run-phase3-oos")
     log_path = Path(cfg.output.log_dir) / "run_phase3_oos.log"
     logger = _make_logger(log_path, name=_LOGGER_NAME)
+    result = _run_oos_cell(cfg, logger, log_path)
+    write_oos_stability_summary(result)
+    logger.info(
+        "phase3 oos done: eq test annual=%.4f ic test annual=%.4f report=%s (%.1fs)",
+        result.performance["equal_weight"]["test"].get("annual_return", float("nan")),
+        result.performance["ic_weighted"]["test"].get("annual_return", float("nan")),
+        result.report_path, result.elapsed_seconds,
+    )
+    return result
+
+
+def _run_oos_cell(
+    cfg: RootConfig, logger, log_path: Path
+) -> OOSResult:
+    """Compute ONE OOS cell (the P3-3 core; no report write).
+
+    Shared verbatim by the single run (:func:`run_phase3_oos`) and the P3-4
+    robustness matrix, so every matrix cell gets the same holding-window
+    slicing, realization-date IC slicing and walk-forward semantics. The
+    caller is responsible for guards (:func:`check_oos_preconditions`) and for
+    writing whatever report it owns.
+    """
+    split = pd.Timestamp(cfg.oos.split_date)
+    t0 = time.perf_counter()
     logger.info("phase3 oos start: project=%s split=%s", cfg.project.name, split.date())
 
     # --- ONE shared data load / factor panel (identical inputs for both) ----- #
@@ -418,11 +449,10 @@ def run_phase3_oos(config_path: str) -> OOSResult:
         report_path=Path(cfg.output.report_dir) / "phase3_oos_stability.md",
         log_path=log_path,
     )
-    write_oos_stability_summary(result)
     logger.info(
-        "phase3 oos done: eq test annual=%.4f ic test annual=%.4f report=%s (%.1fs)",
+        "oos cell done: eq test annual=%.4f ic test annual=%.4f (%.1fs)",
         performance["equal_weight"]["test"].get("annual_return", float("nan")),
         performance["ic_weighted"]["test"].get("annual_return", float("nan")),
-        result.report_path, result.elapsed_seconds,
+        result.elapsed_seconds,
     )
     return result

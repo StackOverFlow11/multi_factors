@@ -107,6 +107,15 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - 报告 `phase3_oos_stability.md`:split 边界+跨界行披露/分期绩效(annual/vol/sharpe/maxDD/turnover)/逐序列 IC 分期(mean/IR/hit rate/sign consistency)/权重稳定性(每期权重含 train-test 标注、trained 行 sign flips、fallback 次数+原因)/小样本 caveat。
   - **真实结果（关键发现,~16min,77 成分/2 年,持有窗口切片）**:三个原始因子 train→test **IC 全部翻号**(momentum −0.023→+0.006 / roe −0.029→+0.007 / np_yoy −0.011→+0.005,sign consistency 全 NO),hit rate 46~53%≈抛硬币;权重 23 期 sign flips 7/3/4;绩效 eq train −11.92%/test −5.27%,ic train −8.31%/test −2.70%(跨界行 2023-06-30 排除;修切片前 train 被 test 期收益污染到 −6.81%/−1.69%,修正幅度本身就是边界 bug 的实证)。**结论:ic_weighted 两段都略好但 IC≈0 且翻号——P3-2 单年跑赢不可外推,这正是本验证层要拿到的证据;非收益声明。**
   - **回归不破**:phase3 equal_weight rerun −9.05%/0.0083、ic_weighted rerun −3.57% 均不变;demo 0.96/0.84 不变;secret scan 报告 0 处 token/config.json。
-- ✅ 质量门：`pytest` **285 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml`）+ `run-phase0`（demo）均 OK。
-- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、因子 IC 小样本不稳定（P3-3 实证）。
-- 路线图下一步：更长历史/更宽 universe 的稳定性复检,或分钟级（architecture.html §11）。
+- 🔧 **Phase 3-4 robustness matrix**（`p3-robustness-matrix` 分支,代劳待验收）：把 P3-3 OOS 检验批量跑到 **universe × window 矩阵**上,回答 P3-2/P3-3 结论是否 SSE50 小样本偶然。不加因子/alpha、不改 portfolio/execution/factor math。
+  - 新 run mode `run-phase3-robustness`（`qt/robustness.py`）+ `config/phase3_real_robustness_matrix.yaml`（SSE50+CSI300 × 2020-2022/2022-2024 两 fold;`skip_cells` 显式跳过 CSI300×2020-2022——runtime 预算,报告披露,绝不静默缩覆盖）。
+  - **每个 cell 逐字复用 P3-3 cell 核心**（`_run_oos_cell` 重构抽出,单 run 行为不变;持有窗口切片/实现日 IC 切片/walk-forward/ic_weighted guard 全继承）;cell config 仅替换 universe/窗口/split/output_name（重过全套 pydantic 验证,parquet 不互覆盖）;跨 cell 汇总严格按 cell 归属（测试锁定不串数）。
+  - **真实矩阵结果**（3 cells,总 2h:960s/934s/5301s,CSI300 399 名）:
+    - **P3-3 不漂移 smoke ✓**:SSE50|2022-2024 cell 逐数复现 P3-3 报告（−11.92%/−5.27%/−8.31%,boundary 2023-06-30）。
+    - 原始因子 train→test sign consistency:momentum 1/3 / roe 0/3 / np_yoy 0/3——**IC 翻号跨 cell 普遍,P3-3 结论非偶然**。
+    - `combo_ic_weighted` 是唯一跨 cell 稳定序列（test IC 3/3 正 + 3/3 sign consistent）但量级 ≈0.004~0.008 极小。
+    - **关键负面发现**:ic_weighted 组合绩效不稳健——SSE50 两 cell 略赢 eq,但 **CSI300 cell train +11.07% → test −17.74%**（sharpe +0.59→−1.01,样本外大崩,典型过拟合形态;且 CSI300 换手 1.2~1.6 成本拖累更重）。**P3-2 的"跑赢"不能外推到宽 universe;微弱正 IC ≠ 净值赢。非收益声明。**
+  - secret scan 报告 0 处;demo 0.96/0.84 不变。
+- ✅ 质量门：`pytest` **299 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=14）；`ruff` clean；`validate-config`（旧 6 配置 + `phase3_real_robustness_matrix.yaml`）+ `run-phase0`（demo）均 OK。
+- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、三因子组 IC 跨期翻号且 ic_weighted 宽 universe 样本外崩（P3-3/P3-4 实证——当前因子组不具备可交易信号强度）。
+- 路线图下一步：换/扩因子集（在既有验证框架下迭代）,或分钟级（architecture.html §11）。

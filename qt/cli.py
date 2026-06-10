@@ -111,6 +111,25 @@ def _cmd_run_phase3_oos(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_phase3_robustness(args: argparse.Namespace) -> int:
+    """Run the robustness matrix (universes x windows OOS cells) + report."""
+    from qt.robustness import run_phase3_robustness
+
+    try:
+        result = run_phase3_robustness(args.config)
+    except (ConfigError, ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"OK run-phase3-robustness: cells={result.summary['n_cells']}, "
+        f"skipped={len(result.skipped_cells)}, "
+        f"ic_beats_eq_test={result.summary['ic_beats_eq_test']}/"
+        f"{result.summary['n_cells']} ({result.elapsed_seconds:.1f}s)\n"
+        f"report: {result.report_path}"
+    )
+    return 0
+
+
 def _cmd_fetch_data(args: argparse.Namespace) -> int:
     """Stage helper: run the spine and report the data-fetch stage."""
     return _run_pipeline_cmd(args.config, "fetch-data")
@@ -155,6 +174,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_oos.add_argument("--config", required=True, help="Path to the YAML config.")
     p_oos.set_defaults(func=_cmd_run_phase3_oos)
+
+    p_rob = sub.add_parser(
+        "run-phase3-robustness",
+        help="Run the REAL-data robustness matrix (universes x windows OOS cells).",
+    )
+    p_rob.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_rob.set_defaults(func=_cmd_run_phase3_robustness)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),
