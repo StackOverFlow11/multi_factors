@@ -16,6 +16,10 @@ import pandas as pd
 class AlphaModel(ABC):
     """Abstract multi-factor combination / prediction model."""
 
+    # pipeline hint: True when fit() needs historical forward returns (the
+    # pipeline then computes and passes them to fit — and ONLY to fit).
+    requires_forward_returns: bool = False
+
     @abstractmethod
     def fit(
         self,

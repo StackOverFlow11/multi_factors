@@ -299,6 +299,8 @@ def _synthetic_result() -> Phase2Result:
                             "quantile_returns": qret, "coverage": 0.9}
         },
         combo_analytics={"ic_mean": 0.04, "ic_ir": 0.45, "quantile_returns": qret},
+        alpha_summary={"model": "equal_weight"},
+        alpha_weights=None,
         nav_table=nav,
         avg_turnover=1.0,
         cost_drag=0.001,
@@ -404,3 +406,38 @@ def test_baseline_report_name_is_configurable(tmp_path):
     assert cfg.output.baseline_report_name == "phase3_real_multifactor.md"
     # default stays None -> historical filename preserved.
     assert load_config(_CONFIG).output.baseline_report_name is None
+
+
+# --------------------------------------------------------------------------- #
+# P3-2 — alpha model disclosure in the report
+# --------------------------------------------------------------------------- #
+def test_render_equal_weight_alpha_disclosed_without_weights():
+    md = render_phase2_baseline(_synthetic_result())
+    assert "## Alpha model" in md
+    assert "`equal_weight`" in md
+    assert "no trained weights" in md
+
+
+def test_render_ic_weighted_alpha_shows_weights_and_fallback():
+    import dataclasses
+
+    base = _synthetic_result()
+    date = base.rebalance_dates[0]
+    weights = pd.DataFrame(
+        {"momentum_20": [0.7], "roe": [-0.3], "fallback": [False]},
+        index=pd.Index([date], name="date"),
+    )
+    ic = dataclasses.replace(
+        base,
+        alpha_summary={"model": "ic_weighted", "window": 60, "min_periods": 20,
+                       "horizon": 1, "mode": "rolling", "n_dates": 220,
+                       "n_fallback": 25, "trained_coverage": 195 / 220},
+        alpha_weights=weights,
+    )
+    md = render_phase2_baseline(ic)
+    assert "`ic_weighted`" in md and "walk-forward" in md
+    assert "195/220" in md and "25" in md          # fallback count disclosed
+    assert "0.7000" in md and "-0.3000" in md      # per-rebalance weights table
+    assert "t + horizon <= d" in md                # lookahead boundary stated
+    assert "NOT a tuned-" in md                    # no tuned-performance claim
+    assert "equal-weight baseline" in md.lower()   # comparison pointer present

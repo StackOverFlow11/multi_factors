@@ -8,6 +8,7 @@
 - `momentum_20[t] = close[t] / close[t-window] - 1`,严格只用 t 及之前的收盘价(`groupby(symbol).shift(window)`)。
 - 事件顺序固定:在 t 收盘计算因子,t 收盘后调仓,从 t+1 持有。回测用**下一持有期**的收益结算,绝不使用因子已经看见的当日收益。
 - forward returns 只在 `analytics/` 计算,因子层永远拿不到未来收益(INV-001)。
+- **alpha 层 walk-forward 权重训练(P3-2,`alpha.model: ic_weighted`)**:alpha 层是**唯一**允许看 forward returns 的层,且只用于拟合因子权重——训练严格 walk-forward:对每个打分日 d,(factor[t], fwd_h[t]) 对只有在**已实现**(按交易日序 `t + h <= d`,h 日 forward return 在 t+h 才实现)时才进入 d 的权重;扰动任何未实现的 forward return 不改变 d 的权重(扰动测试锁定)。窗口 rolling(默认,保守)或 expanding;历史不足(任一因子有效已实现 IC < min_periods)→ 该日**退回等权**并计数披露;权重 L1 归一化、保留符号。固定配方、不调参,非收益声明。factors 层边界不变:forward returns 由 pipeline 在 alpha 边界计算、只传 `alpha.fit`,因子计算在其之前完成且永不接触。
 
 ## PIT 成分股
 

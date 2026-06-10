@@ -222,6 +222,46 @@ What P3-1 changes (locked by tests):
   labelled TRADED factor vs diagnostic-only. Standard analytics stays
   report-only (alphalens cross-checks the primary factor).
 
+## Phase 3-2 — walk-forward IC-weighted alpha
+
+P3-2 adds the first LEARNED factor combination while keeping the lookahead
+boundary auditable: `alpha.model: ic_weighted` weights each factor by its mean
+cross-sectional rank IC over a trailing window of **realized** observations
+only. `EqualWeightAlpha` stays the default and the regression baseline.
+Documented by `config/phase3_real_ic_weighted.yaml` (identical universe /
+window / factors / neutralization to `phase3_real_multifactor.yaml` — the ONLY
+change is the alpha model, so the two runs are directly comparable).
+
+```bash
+# validate (no network)
+... -m qt.cli validate-config     --config config/phase3_real_ic_weighted.yaml
+# run the ic-weighted real baseline (network + token; heavy, ~10-30 min)
+... -m qt.cli run-phase2-baseline --config config/phase3_real_ic_weighted.yaml
+```
+
+Lookahead boundary (locked by tests):
+
+- The factor layer NEVER sees forward returns (invariant #1 unchanged); the
+  pipeline computes them at the alpha boundary and hands them ONLY to
+  ``alpha.fit``.
+- Training is **walk-forward**: at each date d, a (factor[t], fwd_h[t]) pair is
+  admissible only once REALIZED — ``t + h <= d`` in trading-day positions (the
+  h-day forward return of factor date t realizes at t+h). Perturbing any
+  not-yet-realized forward return cannot change d's weights (perturbation test).
+- Window modes: ``rolling`` (trailing `window` trading days, the conservative
+  default) or ``expanding`` (all realized history).
+- **Fallback**: if any factor has fewer than ``min_periods`` valid realized ICs
+  in the window (or the ICs are degenerate), that date falls back to the EQUAL
+  WEIGHT mean — identical to `EqualWeightAlpha` — and is counted + disclosed in
+  the report.
+- Weights are L1-normalized and sign-preserving (a negative-IC factor gets a
+  negative weight). Fixed recipe, no parameter search — NOT a tuned-performance
+  claim.
+
+The baseline report gains an **Alpha model** section: active model,
+hyper-params, training coverage (fallback count), and the effective weights at
+every settled rebalance date (fallback rows flagged).
+
 ## Quality gate
 
 ```bash

@@ -1,4 +1,4 @@
-# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3-1 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor)
+# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor → walk-forward IC alpha)
 
 ## Commands
 
@@ -11,6 +11,7 @@ Run from the repo root with the project python (env `quant_mf`):
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/example_tushare.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase2_real_baseline.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_multifactor.yaml
+/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_ic_weighted.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli run-phase0 --config config/example.yaml
 ```
 
@@ -18,12 +19,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **249 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **269 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
-| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml`) | exit `0`, prints `OK` |
+| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 249).
+Counts below are the actual per-file `pytest` numbers (sum = 269).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -73,7 +74,7 @@ Counts below are the actual per-file `pytest` numbers (sum = 249).
 
 | Test file | Tests | Feature |
 |---|---|---|
-| `test_phase2_baseline.py` | 20 | collectors, demo/real guard, report-field contract, no-secret-leak, settled-vs-candidate dates, loaded-vs-in-window membership, list_date + PIT-industry coverage, standard-analytics cross-check, P3-1 factor-list/per-field-role/per-factor-table/report-name |
+| `test_phase2_baseline.py` | 22 | collectors, demo/real guard, report-field contract, no-secret-leak, settled-vs-candidate dates, loaded-vs-in-window membership, list_date + PIT-industry coverage, standard-analytics cross-check, P3-1 factor-list/per-field-role/per-factor-table/report-name, P3-2 alpha-model disclosure (equal-weight line + ic-weighted weights/fallback/no-claim) |
 
 ## Per-file breakdown — Phase 2-2 execution realism (22)
 
@@ -101,7 +102,14 @@ Counts below are the actual per-file `pytest` numbers (sum = 249).
 | Test file | Tests | Red-line / feature |
 |---|---|---|
 | `test_multifactor_pipeline.py` | 10 | all enabled factors built (order / disabled / duplicate / none), financials fetched ONCE for all fields + as-of both columns + input immutability, demo+financial readable error, e2e demo multi-factor panel + per-factor/combo analytics + primary==first, report factor list + combo + no secret, single-factor legacy shape |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1)** | **249** | |
+
+## Per-file breakdown — Phase 3-2 walk-forward IC alpha (18)
+
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_ic_weight_alpha.py` | 12 | **lookahead red-line**: perturbing unrealized forward returns cannot change weights; exact `t + h <= d` realization cutoff (min_periods boundary); insufficient-history equal-weight fallback (== EqualWeightAlpha row mean); single-factor degeneration to ±1; L1 normalization + sign preservation; degenerate-IC fallback; rolling-vs-expanding window; fit requires forward_returns; dated-cross-section contract; input immutability; weights/fallback log |
+| `test_ic_alpha_pipeline.py` | 6 | alpha dispatch by config (equal_weight / ic_weighted + params / unknown = ConfigError), equal-weight default keeps exact demo numbers (ic 0.96 / annual 0.84) + report line, ic_weighted demo e2e (summary, weights log, early-fallback→late-trained, L1 rows, report disclosure, no secret), ic-weights differ from equal weight on diverging-IC synthetic data |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1 + P3-2)** | **269** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -163,6 +171,17 @@ Counts below are the actual per-file `pytest` numbers (sum = 249).
   diagnostics, and per-field ann_date coverage labelled TRADED vs
   diagnostic-only. `output.baseline_report_name` keeps the phase3 report file
   separate from the phase2 one.
+- **P3-2 walk-forward IC alpha (locked by tests):** `alpha.model: ic_weighted`
+  weights factors by mean realized rank IC over a trailing window — a
+  (factor[t], fwd_h[t]) pair enters date d's weights only once REALIZED
+  (`t + h <= d`, trading days); a perturbation test proves unrealized forward
+  returns cannot change any date's weights. Forward returns are computed at the
+  alpha boundary and handed ONLY to `alpha.fit` (the factor layer never sees
+  them, invariant #1). Insufficient realized history (< min_periods valid ICs
+  for any factor) falls back per-date to the EQUAL-WEIGHT mean — bitwise the
+  EqualWeightAlpha combination — and is counted in the report. Weights are
+  L1-normalized, sign-preserving. `EqualWeightAlpha` remains the default; its
+  demo numbers (ic 0.96 / annual 0.84) are locked unchanged.
 - A duplicate test-function name across two files was found and renamed during P2-2
   (it had been silently shadowing one test in the full-suite run). A second, harmless
   duplicate (`test_enrich_does_not_mutate_input` in two files) was verified NOT to drop

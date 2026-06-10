@@ -90,12 +90,80 @@ def standard_analytics_block(std_performance: dict, std_factor: dict) -> str:
     return "".join(lines)
 
 
-def per_factor_ic_table(per_factor: dict, combo: dict) -> str:
+def alpha_model_block(
+    alpha_summary: dict,
+    alpha_weights: pd.DataFrame | None,
+    rebalance_dates: tuple | None = None,
+) -> str:
+    """Render the active alpha model + walk-forward weight disclosure (P3-2).
+
+    equal_weight -> one line (no trained weights to disclose). ic_weighted ->
+    hyper-params, training coverage (fallback count), and the per-rebalance
+    EFFECTIVE weights table (a fallback row shows the equal weights actually
+    used, flagged). Always states this is NOT a tuned-performance claim.
+    """
+    model = (alpha_summary or {}).get("model", "?")
+    if model != "ic_weighted" or alpha_weights is None:
+        return (
+            f"- active alpha model: **`{model}`** — equal-weight mean of the "
+            f"processed factor columns; no future data, no trained weights.\n"
+        )
+    s = alpha_summary
+    n_dates, n_fallback = s.get("n_dates", 0), s.get("n_fallback", 0)
+    lines = [
+        "- active alpha model: **`ic_weighted`** (walk-forward rolling-IC weights)\n",
+        f"- params: window=`{s.get('window')}` trading days · "
+        f"min_periods=`{s.get('min_periods')}` · horizon=`{s.get('horizon')}`d · "
+        f"mode=`{s.get('mode')}`\n",
+        "- lookahead boundary: a (factor[t], fwd[t]) pair enters a date d's "
+        "weights only once REALIZED (t + horizon <= d, trading days); "
+        "insufficient history falls back to equal weight.\n",
+        f"- training coverage: **{n_dates - n_fallback}/{n_dates}** scored dates "
+        f"used trained weights (**{n_fallback}** equal-weight fallback"
+        f"{'s' if n_fallback != 1 else ''}; coverage "
+        f"{_fmt(s.get('trained_coverage', float('nan')), pct=True)})\n",
+        "- _Weights are L1-normalized and sign-preserving (negative-IC factor -> "
+        "negative weight). This is a fixed, disclosed recipe — NOT a tuned-"
+        "performance claim._\n\n",
+    ]
+    show = alpha_weights
+    if rebalance_dates:
+        wanted = [d for d in rebalance_dates if d in alpha_weights.index]
+        show = alpha_weights.loc[wanted] if wanted else alpha_weights.iloc[0:0]
+        lines.append("Effective weights at each SETTLED rebalance date:\n\n")
+    else:
+        lines.append("Effective weights (all scored dates summarized below):\n\n")
+        show = alpha_weights.iloc[0:0]  # phase0 keeps it short: summary only
+    if not show.empty:
+        factor_cols = [c for c in show.columns if c != "fallback"]
+        header = "| Date | " + " | ".join(f"`{c}`" for c in factor_cols) + " | fallback |\n"
+        header += "|" + "---|" * (len(factor_cols) + 2) + "\n"
+        body = ""
+        for date, row in show.iterrows():
+            cells = " | ".join(_fmt(float(row[c])) for c in factor_cols)
+            body += f"| {_date_str(date)} | {cells} | {'YES' if row['fallback'] else 'no'} |\n"
+        lines.append(header + body)
+    return "".join(lines)
+
+
+def _combo_label(alpha_summary: dict) -> str:
+    """Label the combo-score rows by the ACTIVE alpha model (P3-2)."""
+    model = (alpha_summary or {}).get("model", "equal_weight")
+    return (
+        "combo score (ic-weighted, walk-forward)"
+        if model == "ic_weighted"
+        else "combo score (equal-weight)"
+    )
+
+
+def per_factor_ic_table(
+    per_factor: dict, combo: dict, combo_label: str = "combo score (equal-weight)"
+) -> str:
     """Per-factor + combo-score IC table (simple implementation, P3-1).
 
     One row per RAW factor (with its non-NaN coverage) plus the COMBO row — the
-    processed equal-weight score the backtest actually trades. The combo has no
-    raw-coverage notion (it exists only post drop_missing), shown as '—'.
+    processed score the backtest actually trades (label names the active alpha,
+    P3-2). The combo has no raw-coverage notion (post drop_missing), shown '—'.
     """
     header = "| Factor | coverage | IC mean | IC IR |\n|---|---|---|---|\n"
     rows = ""
@@ -107,19 +175,21 @@ def per_factor_ic_table(per_factor: dict, combo: dict) -> str:
         )
     c = combo or {}
     rows += (
-        f"| **combo score (equal-weight)** | — | {_fmt(c.get('ic_mean', float('nan')))} | "
+        f"| **{combo_label}** | — | {_fmt(c.get('ic_mean', float('nan')))} | "
         f"{_fmt(c.get('ic_ir', float('nan')))} |\n"
     )
     return header + rows
 
 
-def per_factor_quantiles_block(per_factor: dict, combo: dict) -> str:
+def per_factor_quantiles_block(
+    per_factor: dict, combo: dict, combo_label: str = "combo score (equal-weight)"
+) -> str:
     """Quantile-return tables per factor plus the combo score (P3-1)."""
     parts: list[str] = []
     for name, m in (per_factor or {}).items():
         parts.append(f"### `{name}`\n\n")
         parts.append(_quantile_table(m.get("quantile_returns")) + "\n")
-    parts.append("### combo score (equal-weight)\n\n")
+    parts.append(f"### {combo_label}\n\n")
     parts.append(_quantile_table((combo or {}).get("quantile_returns")) + "\n")
     return "".join(parts)
 
@@ -147,6 +217,17 @@ def render_phase0_summary(result: "Phase0Result") -> str:
         f"- cost: fee_rate=`{cfg.cost.fee_rate}`, slippage=`{cfg.cost.slippage_rate}`\n"
     )
 
+    lines.append("## Alpha model\n")
+    lines.append(alpha_model_block(result.alpha_summary, result.alpha_weights))
+    if result.alpha_weights is not None and not result.alpha_weights.empty:
+        w = result.alpha_weights
+        factor_cols = [c for c in w.columns if c != "fallback"]
+        means = ", ".join(
+            f"`{c}` {_fmt(float(w.loc[~w['fallback'], c].mean()) if (~w['fallback']).any() else float('nan'))}"
+            for c in factor_cols
+        )
+        lines.append(f"- mean trained weights over scored dates: {means}\n")
+
     lines.append("## Data shape\n")
     lines.append(
         f"- panel rows: **{result.panel_rows}**\n"
@@ -158,13 +239,17 @@ def render_phase0_summary(result: "Phase0Result") -> str:
         f"- IC mean: **{_fmt(result.ic_mean)}** (primary `{result.factor_name}`)\n"
         f"- IC_IR (mean/std): **{_fmt(result.ic_ir)}**\n\n"
     )
-    lines.append(per_factor_ic_table(result.per_factor, result.combo_analytics))
+    lines.append(per_factor_ic_table(
+        result.per_factor, result.combo_analytics, _combo_label(result.alpha_summary)
+    ))
 
     lines.append("## Quantile returns\n")
     lines.append(_quantile_table(result.quantile_returns) + "\n")
     if len(result.factor_names) > 1:
         lines.append("\n")
-        lines.append(per_factor_quantiles_block(result.per_factor, result.combo_analytics))
+        lines.append(per_factor_quantiles_block(
+            result.per_factor, result.combo_analytics, _combo_label(result.alpha_summary)
+        ))
 
     lines.append("## Portfolio performance\n")
     lines.append(
@@ -219,6 +304,7 @@ def write_phase0_summary(result: "Phase0Result") -> Path:
 _PHASE2_REQUIRED_SECTIONS = (
     "## Data window",
     "## Universe / PIT membership",
+    "## Alpha model",
     "## Financial ann_date coverage",
     "## Tradability filter hits",
     "## Execution feasibility",
@@ -439,6 +525,20 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
             f"current-tag fallback.\n"
         )
 
+    lines.append("\n## Alpha model\n")
+    lines.append(
+        alpha_model_block(
+            result.alpha_summary, result.alpha_weights, result.rebalance_dates
+        )
+    )
+    if (result.alpha_summary or {}).get("model") == "ic_weighted":
+        lines.append(
+            "\n_Comparable EQUAL-WEIGHT baseline: the same universe / window / "
+            "factors under `config/phase3_real_multifactor.yaml` "
+            "(alpha.model=equal_weight) — rerun it for a side-by-side; this "
+            "report makes no tuned-performance claim._\n"
+        )
+
     lines.append("\n## Financial ann_date coverage\n")
     lines.append(
         "_Per-field ann_date as-of coverage; each field is labelled TRADED factor "
@@ -490,10 +590,14 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
         f"- IC mean: **{_fmt(result.ic_mean)}** (primary `{result.factor_name}`)\n"
         f"- IC_IR (mean/std): **{_fmt(result.ic_ir)}**\n\n"
     )
-    lines.append(per_factor_ic_table(result.per_factor, result.combo_analytics))
+    lines.append(per_factor_ic_table(
+        result.per_factor, result.combo_analytics, _combo_label(result.alpha_summary)
+    ))
 
     lines.append("\n## Quantile returns\n")
-    lines.append(per_factor_quantiles_block(result.per_factor, result.combo_analytics))
+    lines.append(per_factor_quantiles_block(
+        result.per_factor, result.combo_analytics, _combo_label(result.alpha_summary)
+    ))
 
     lines.append("\n## Portfolio performance\n")
     lines.append(
@@ -554,7 +658,17 @@ def render_bias_audit() -> str:
         "- 事件顺序固定:在 t 收盘计算因子,t 收盘后调仓,从 t+1 持有。回测用"
         "**下一持有期**的收益结算,绝不使用因子已经看见的当日收益。\n"
         "- forward returns 只在 `analytics/` 计算,因子层永远拿不到未来收益"
-        "(INV-001)。\n\n"
+        "(INV-001)。\n"
+        "- **alpha 层 walk-forward 权重训练(P3-2,`alpha.model: ic_weighted`)**:"
+        "alpha 层是**唯一**允许看 forward returns 的层,且只用于拟合因子权重——"
+        "训练严格 walk-forward:对每个打分日 d,(factor[t], fwd_h[t]) 对只有在"
+        "**已实现**(按交易日序 `t + h <= d`,h 日 forward return 在 t+h 才实现)"
+        "时才进入 d 的权重;扰动任何未实现的 forward return 不改变 d 的权重"
+        "(扰动测试锁定)。窗口 rolling(默认,保守)或 expanding;历史不足"
+        "(任一因子有效已实现 IC < min_periods)→ 该日**退回等权**并计数披露;"
+        "权重 L1 归一化、保留符号。固定配方、不调参,非收益声明。factors 层"
+        "边界不变:forward returns 由 pipeline 在 alpha 边界计算、只传 "
+        "`alpha.fit`,因子计算在其之前完成且永不接触。\n\n"
         "## PIT 成分股\n\n"
         "- 状态: **PIT 已实现(P1) / StaticUniverse 为离线降级**。\n"
         "- `PITIndexUniverse`(`universe.type=index`)用 tushare `index_weight` 的"
