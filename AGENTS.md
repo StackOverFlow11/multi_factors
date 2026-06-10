@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）、#13（进度文档）、#14（P3-4）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -107,7 +107,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - 报告 `phase3_oos_stability.md`:split 边界+跨界行披露/分期绩效(annual/vol/sharpe/maxDD/turnover)/逐序列 IC 分期(mean/IR/hit rate/sign consistency)/权重稳定性(每期权重含 train-test 标注、trained 行 sign flips、fallback 次数+原因)/小样本 caveat。
   - **真实结果（关键发现,~16min,77 成分/2 年,持有窗口切片）**:三个原始因子 train→test **IC 全部翻号**(momentum −0.023→+0.006 / roe −0.029→+0.007 / np_yoy −0.011→+0.005,sign consistency 全 NO),hit rate 46~53%≈抛硬币;权重 23 期 sign flips 7/3/4;绩效 eq train −11.92%/test −5.27%,ic train −8.31%/test −2.70%(跨界行 2023-06-30 排除;修切片前 train 被 test 期收益污染到 −6.81%/−1.69%,修正幅度本身就是边界 bug 的实证)。**结论:ic_weighted 两段都略好但 IC≈0 且翻号——P3-2 单年跑赢不可外推,这正是本验证层要拿到的证据;非收益声明。**
   - **回归不破**:phase3 equal_weight rerun −9.05%/0.0083、ic_weighted rerun −3.57% 均不变;demo 0.96/0.84 不变;secret scan 报告 0 处 token/config.json。
-- 🔧 **Phase 3-4 robustness matrix**（`p3-robustness-matrix` 分支,代劳待验收）：把 P3-3 OOS 检验批量跑到 **universe × window 矩阵**上,回答 P3-2/P3-3 结论是否 SSE50 小样本偶然。不加因子/alpha、不改 portfolio/execution/factor math。
+- ✅ **Phase 3-4 robustness matrix**（**PR #14 已 merge 到 `main`**,含 review MEDIUM 修复:矩阵 DOWNGRADES 全 universe 披露）：把 P3-3 OOS 检验批量跑到 **universe × window 矩阵**上,回答 P3-2/P3-3 结论是否 SSE50 小样本偶然。不加因子/alpha、不改 portfolio/execution/factor math。
   - 新 run mode `run-phase3-robustness`（`qt/robustness.py`）+ `config/phase3_real_robustness_matrix.yaml`（SSE50+CSI300 × 2020-2022/2022-2024 两 fold;`skip_cells` 显式跳过 CSI300×2020-2022——runtime 预算,报告披露,绝不静默缩覆盖）。
   - **每个 cell 逐字复用 P3-3 cell 核心**（`_run_oos_cell` 重构抽出,单 run 行为不变;持有窗口切片/实现日 IC 切片/walk-forward/ic_weighted guard 全继承）;cell config 仅替换 universe/窗口/split/output_name（重过全套 pydantic 验证,parquet 不互覆盖）;跨 cell 汇总严格按 cell 归属（测试锁定不串数）。
   - **真实矩阵结果**（3 cells,总 2h:960s/934s/5301s,CSI300 399 名）:
