@@ -184,12 +184,29 @@ class OutputCfg(_Strict):
     baseline_report_name: str | None = None
 
 
+class OOSCfg(_Strict):
+    """P3-3 out-of-sample split: train = [data.start, split_date), test =
+    [split_date, data.end]. Evaluation is walk-forward (rolling subperiod):
+    weights at any date use only observations realized by that date, so no
+    test-period forward return can reach a train-period computation."""
+
+    split_date: str
+
+    @field_validator("split_date", mode="before")
+    @classmethod
+    def _coerce_date_to_str(cls, v: Any) -> Any:
+        if isinstance(v, (_date, datetime)):
+            return v.strftime("%Y-%m-%d")
+        return v
+
+
 class RootConfig(_Strict):
     """Top-level config composing every section.
 
     Required top-level sections (CFG-002): data, universe, factors, alpha,
     portfolio, backtest, cost, output. ``project``, ``processing`` and
     ``analytics`` have sensible defaults but are present in the template.
+    ``oos`` is optional and only consumed by ``run-phase3-oos``.
     """
 
     project: ProjectCfg = Field(default_factory=lambda: ProjectCfg(name="quantitative_trading"))
@@ -203,6 +220,28 @@ class RootConfig(_Strict):
     cost: CostCfg
     analytics: AnalyticsCfg = Field(default_factory=AnalyticsCfg)
     output: OutputCfg
+    oos: OOSCfg | None = None
+
+    @model_validator(mode="after")
+    def _check_oos_split_inside_window(self) -> "RootConfig":
+        if self.oos is None:
+            return self
+        try:
+            split = datetime.strptime(self.oos.split_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(
+                f"oos.split_date must be a 'YYYY-MM-DD' date; got "
+                f"{self.oos.split_date!r} ({exc})."
+            ) from exc
+        start = datetime.strptime(self.data.start, "%Y-%m-%d")
+        end = datetime.strptime(self.data.end, "%Y-%m-%d")
+        if not (start < split < end):
+            raise ValueError(
+                f"oos.split_date ({self.oos.split_date}) must lie STRICTLY inside "
+                f"the data window ({self.data.start}, {self.data.end}) so both the "
+                "train and test subperiods are non-empty."
+            )
+        return self
 
 
 # --------------------------------------------------------------------------- #

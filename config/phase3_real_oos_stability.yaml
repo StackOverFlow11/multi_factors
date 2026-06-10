@@ -1,0 +1,112 @@
+# Phase 3-3 — REAL out-of-sample stability validation (equal_weight vs ic_weighted).
+#
+# Validation layer, NOT a new strategy: same SSE50 universe, same three factors,
+# same neutralization / portfolio / execution rules as the phase3 baselines —
+# the window is EXTENDED to two years and split at oos.split_date:
+#   train = [data.start, split)   test = [split, data.end]
+# Evaluation is walk-forward (rolling subperiod): weights at any date d use only
+# observations REALIZED by d (t + horizon <= d), so no test-period forward
+# return can reach a train-period computation (locked by tests). The alpha
+# section carries the ic_weighted params; the run ALSO evaluates equal_weight
+# on the same data as the control. NOT a return claim — a small-sample
+# stability check.
+#
+# Run:  python -m qt.cli run-phase3-oos --config config/phase3_real_oos_stability.yaml
+# (report: artifacts/reports/phase3_oos_stability.md; needs the tushare token in
+# the external .config.json; hits the network; heavy ~15-25 min.)
+
+project:
+  name: quantitative_trading_phase3_oos_stability
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2022-07-01"
+  end: "2024-06-30"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: phase3oos_daily
+
+universe:
+  type: index
+  index_code: "000016.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+factors:
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+  - name: roe
+    enabled: true
+    params: {}
+  - name: netprofit_yoy
+    enabled: true
+    params: {}
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1   # PIT SW level (L1/L2/L3); L1 = 31 broad sectors (standard, DOF-safe)
+
+alpha:
+  model: ic_weighted          # P3-2 walk-forward rolling-IC weights
+  params:
+    window: 60                # trailing trading days of REALIZED ICs (conservative rolling)
+    min_periods: 20           # < this many valid realized ICs -> equal-weight fallback (disclosed)
+    mode: rolling             # rolling (default) | expanding
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 20
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+analytics:
+  forward_return_periods:
+    - 1
+    - 5
+    - 20
+  quantiles: 5
+  benchmark: null
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+
+oos:
+  split_date: "2023-07-01"   # train = 1y [2022-07-01, split); test = 1y [split, 2024-06-30]

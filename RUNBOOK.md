@@ -262,6 +262,52 @@ The baseline report gains an **Alpha model** section: active model,
 hyper-params, training coverage (fallback count), and the effective weights at
 every settled rebalance date (fallback rows flagged).
 
+## Phase 3-3 — OOS stability validation (equal_weight vs ic_weighted)
+
+A REPORT-ONLY validation layer (no portfolio / execution / factor-math change):
+one shared data load, the SAME processed factor panel, two backtests — one per
+alpha — and every diagnostic split at `oos.split_date`. Documented by
+`config/phase3_real_oos_stability.yaml` (SSE50, two years 2022-07 ~ 2024-06,
+split 2023-07-01 → train 1y / test 1y; the test year equals the phase3
+baselines' window, so numbers line up).
+
+```bash
+# validate (no network)
+... -m qt.cli validate-config  --config config/phase3_real_oos_stability.yaml
+# run the OOS validation (network + token; heavy, ~15-30 min)
+... -m qt.cli run-phase3-oos   --config config/phase3_real_oos_stability.yaml
+```
+
+Split semantics (locked by tests):
+
+- train = `[data.start, split)`, test = `[split, data.end]`; the exact realized
+  dates and day counts are written into the report.
+- Evaluation is **walk-forward (rolling subperiod)**: weights at any date d use
+  only observations REALIZED by d (`t + horizon <= d`) — perturbing every
+  post-split forward return cannot change any train-period date's weights
+  (split-boundary no-leakage test). Freezing weights at the split is NOT used
+  (that would be a new alpha mode; P3-3 adds no alpha complexity).
+- **Performance slicing is HOLDING-WINDOW aware**: a nav row is indexed by its
+  rebalance (signal) date but its return covers [that rebalance, the next one] —
+  so train rows must have their holding END on/before the split, test rows their
+  holding START on/after it, and a straddling rebalance is EXCLUDED from both
+  subperiods and disclosed in the report. IC stats are sliced by the realization
+  date (`t + horizon`) the same way. The test subperiod therefore starts with
+  the first post-split holding period — the same place the 1-year phase3
+  baselines start.
+- The config's `alpha` section carries the ic_weighted params and MUST set
+  `alpha.model: ic_weighted` (guarded: any other model is refused — running
+  equal_weight twice and labelling one leg ic_weighted would be a fake
+  comparison); the `equal_weight` control leg is built internally.
+
+Report (`artifacts/reports/phase3_oos_stability.md`): split boundaries;
+per-subperiod performance for both models (annual / vol / Sharpe / maxDD /
+turnover / rebalances); per-series IC stability (mean / IR / hit rate / n +
+train-vs-test sign consistency) for every raw factor and both combo scores;
+ic_weighted weight stability (per-rebalance weights with train/test labels,
+sign-flip counts on trained rows, fallback count + reasons); and the explicit
+caveat that this is a small-sample stability check, NOT a return claim.
+
 ## Quality gate
 
 ```bash

@@ -632,6 +632,165 @@ def write_phase2_baseline_summary(result: "Phase2Result") -> Path:
 
 
 # --------------------------------------------------------------------------- #
+# Phase 3-3 OOS stability report (qt.oos_stability).
+# --------------------------------------------------------------------------- #
+def _oos_perf_table(performance: dict) -> str:
+    """Both models × both subperiods performance table."""
+    header = (
+        "| Model | Period | annual | vol | sharpe | maxDD | avg turnover | rebalances |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+    )
+    rows = ""
+    for model in ("equal_weight", "ic_weighted"):
+        for period in ("train", "test"):
+            p = (performance.get(model) or {}).get(period) or {}
+            rows += (
+                f"| `{model}` | {period} | "
+                f"{_fmt(p.get('annual_return', float('nan')), pct=True)} | "
+                f"{_fmt(p.get('volatility', float('nan')), pct=True)} | "
+                f"{_fmt(p.get('sharpe', float('nan')))} | "
+                f"{_fmt(p.get('max_drawdown', float('nan')), pct=True)} | "
+                f"{_fmt(p.get('avg_turnover', float('nan')))} | "
+                f"{int(p.get('n_rebalances', 0))} |\n"
+            )
+    return header + rows
+
+
+def _oos_ic_table(ic_stats: dict, sign_consistency: dict) -> str:
+    """Per-series IC stability table (train + test rows, sign-consistency flag)."""
+    header = (
+        "| Series | Period | IC mean | IC IR | hit rate | n | sign consistency |\n"
+        "|---|---|---|---|---|---|---|\n"
+    )
+    rows = ""
+    for series, stats in ic_stats.items():
+        flag = "YES" if sign_consistency.get(series) else "NO"
+        for period in ("train", "test"):
+            p = stats.get(period) or {}
+            rows += (
+                f"| `{series}` | {period} | {_fmt(p.get('ic_mean', float('nan')))} | "
+                f"{_fmt(p.get('ic_ir', float('nan')))} | "
+                f"{_fmt(p.get('hit_rate', float('nan')), pct=True)} | "
+                f"{int(p.get('n', 0))} | "
+                f"{flag if period == 'train' else ''} |\n"
+            )
+    return header + rows
+
+
+def render_oos_stability(result) -> str:
+    """Build the phase3 OOS stability markdown (pure; no I/O, no secrets)."""
+    cfg = result.config
+    lines: list[str] = []
+    lines.append("# Phase 3-3 — OOS Stability Validation (equal_weight vs ic_weighted)\n")
+    lines.append(
+        f"Project: **{cfg.project.name}** · source: **{cfg.data.source}** · "
+        f"ran in **{result.elapsed_seconds:.1f}s**\n"
+    )
+    lines.append(
+        "\n> **This is NOT a return claim.** A small-sample stability check on one "
+        "index over two years: it compares the same three factors under "
+        "equal-weight vs walk-forward IC-weighted combination across a train/test "
+        "split. Subperiod metrics carry wide uncertainty.\n"
+    )
+
+    lines.append("\n## Split boundaries\n")
+    lines.append(
+        f"- split_date: **{_date_str(result.split_date)}** (train = "
+        f"[data.start, split), test = [split, data.end])\n"
+        f"- train: **{_date_str(result.train_start)} → {_date_str(result.train_end)}** "
+        f"({result.n_train_days} trading days)\n"
+        f"- test: **{_date_str(result.test_start)} → {_date_str(result.test_end)}** "
+        f"({result.n_test_days} trading days)\n"
+        f"- semantics: evaluation is WALK-FORWARD (rolling subperiod) — weights at "
+        f"any date d use only observations REALIZED by d (t + horizon <= d), so no "
+        f"test-period forward return reaches a train-period computation (locked by "
+        f"tests). The split is an accounting boundary for the statistics below.\n"
+        f"- performance slicing is HOLDING-WINDOW aware: a rebalance row's return "
+        f"covers [that rebalance, the next one], so train rows must have their "
+        f"holding END on/before the split and test rows their holding START on/"
+        f"after it. IC stats are sliced by the realization date (t + horizon) the "
+        f"same way.\n"
+    )
+    if result.boundary_dates:
+        bd = ", ".join(_date_str(d) for d in result.boundary_dates)
+        lines.append(
+            f"- straddling rebalance(s) excluded from BOTH subperiods (holding "
+            f"window crosses the split): {bd}\n"
+        )
+
+    lines.append("\n## Config echo\n")
+    lines.append(
+        f"- universe: type=`{cfg.universe.type}`, index_code=`{cfg.universe.index_code}`, "
+        f"top_n=`{cfg.portfolio.top_n}`\n"
+        f"- factors: `{list(result.factor_names)}` · "
+        f"neutralize=`{cfg.processing.neutralize.enabled}`\n"
+        f"- ic_weighted params: {result.alpha_summary}\n"
+    )
+
+    lines.append("\n## Subperiod performance (same data, same rules, two alphas)\n")
+    lines.append(_oos_perf_table(result.performance))
+
+    lines.append("\n## IC stability (raw factors + both combo scores)\n")
+    lines.append(
+        "_hit rate = share of positive daily ICs; sign consistency = train and "
+        "test mean ICs share one nonzero sign._\n\n"
+    )
+    lines.append(_oos_ic_table(result.ic_stats, result.sign_consistency))
+
+    lines.append("\n## Weight stability (ic_weighted)\n")
+    lines.append(
+        f"- scored dates: **{result.n_scored}** · equal-weight fallbacks: "
+        f"**{result.n_fallback}**\n"
+    )
+    for reason, count in (result.fallback_reasons or {}).items():
+        lines.append(f"  - fallback reason ×{count}: {reason}\n")
+    flips = ", ".join(f"`{k}` {v}" for k, v in (result.sign_flips or {}).items())
+    lines.append(
+        f"- sign flips between consecutive TRAINED rebalance weights "
+        f"(fallback rows excluded): {flips or '_n/a_'}\n\n"
+    )
+    w = result.weights_at_rebalances
+    if w is not None and not w.empty:
+        factor_cols = [c for c in w.columns if c != "fallback"]
+        lines.append("Effective weights at each settled rebalance date "
+                     "(ic_weighted leg):\n\n")
+        header = "| Date | period | " + " | ".join(f"`{c}`" for c in factor_cols)
+        header += " | fallback |\n|" + "---|" * (len(factor_cols) + 3) + "\n"
+        body = ""
+        # period labels match the PERFORMANCE slicing: a straddling rebalance
+        # (holding window crosses the split) is labelled boundary, not train.
+        boundary = {pd.Timestamp(d) for d in (result.boundary_dates or ())}
+        for date, row in w.iterrows():
+            ts = pd.Timestamp(date)
+            if ts in boundary:
+                period = "boundary"
+            else:
+                period = "test" if ts >= result.split_date else "train"
+            cells = " | ".join(_fmt(float(row[c])) for c in factor_cols)
+            body += (
+                f"| {_date_str(date)} | {period} | {cells} | "
+                f"{'YES' if row['fallback'] else 'no'} |\n"
+            )
+        lines.append(header + body)
+
+    lines.append("\n## DOWNGRADES / caveats (INV-007 — must be disclosed)\n")
+    for item in result.downgrades:
+        lines.append(f"- {item}\n")
+
+    lines.append("\n## Artifacts\n")
+    lines.append(f"- report: `{result.report_path}`\n- log: `{result.log_path}`\n")
+    return "".join(lines)
+
+
+def write_oos_stability_summary(result) -> Path:
+    """Render and write the OOS stability report; return the path (SEC-003)."""
+    target = result.report_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_oos_stability(result), encoding="utf-8")
+    return target
+
+
+# --------------------------------------------------------------------------- #
 # Repo-root delivery docs (framework spec §10). These describe the run; they
 # carry no secrets and are regenerable.
 # --------------------------------------------------------------------------- #
