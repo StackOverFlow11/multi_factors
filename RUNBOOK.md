@@ -308,6 +308,46 @@ ic_weighted weight stability (per-rebalance weights with train/test labels,
 sign-flip counts on trained rows, fallback count + reasons); and the explicit
 caveat that this is a small-sample stability check, NOT a return claim.
 
+## Phase 3-4 — robustness matrix (longer history + wider universe)
+
+Re-runs the P3-3 OOS stability check on every (universe × window) cell to test
+whether the single-sample conclusions generalize. No new factor, no new alpha,
+no portfolio / execution / factor-math change. Documented by
+`config/phase3_real_robustness_matrix.yaml` (SSE50 + CSI300 × two 2-year
+folds 2020-2022 / 2022-2024; the CSI300×2020-2022 cell is explicitly
+`skip_cells`-listed for runtime budget and DISCLOSED in the report).
+
+```bash
+# validate (no network)
+... -m qt.cli validate-config        --config config/phase3_real_robustness_matrix.yaml
+# run the matrix (network + token; HEAVY — a CSI300 2y cell alone is ~60-90 min)
+... -m qt.cli run-phase3-robustness  --config config/phase3_real_robustness_matrix.yaml
+```
+
+Mechanics (locked by tests):
+
+- Every cell reuses the P3-3 cell core VERBATIM (`qt.oos_stability._run_oos_cell`):
+  holding-window performance slicing, realization-date IC slicing, walk-forward
+  weights, equal-weight fallback disclosure, and the shared guards (real source,
+  `oos` section, the ic_weighted fake-comparison guard). The single-run
+  `run-phase3-oos` behaviour is unchanged.
+- Per-cell configs are derived from the base with ONLY the cell identity
+  swapped (universe.index_code, data window, split, and a per-cell
+  `output_name` so panels never overwrite each other); the derived config
+  re-runs full pydantic validation.
+- `robustness.skip_cells` reduces coverage EXPLICITLY (validated against the
+  declared universes/windows; at least one cell must remain) and every skip is
+  disclosed in the report — coverage is never silently reduced.
+
+Report (`artifacts/reports/phase3_robustness_matrix.md`): the cell table
+(window / split / per-cell runtime) + skipped cells; a CROSS-CELL stability
+summary (per series: #cells with positive test IC, #cells train→test
+sign-consistent, test IC by cell; #cells where ic_weighted beats equal_weight
+on test annual); full per-cell diagnostics (subperiod performance, IC
+stability, weight sign flips, fallback counts, boundary rebalances); and the
+explicit caveat that this is a stability check — NOT a return claim, not a
+tuned result.
+
 ## Quality gate
 
 ```bash

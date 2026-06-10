@@ -791,6 +791,137 @@ def write_oos_stability_summary(result) -> Path:
 
 
 # --------------------------------------------------------------------------- #
+# Phase 3-4 robustness matrix report (qt.robustness).
+# --------------------------------------------------------------------------- #
+def _matrix_summary_block(summary: dict) -> str:
+    """Cross-cell stability matrix: which findings hold across cells."""
+    n = int(summary.get("n_cells", 0))
+    lines = [
+        f"- cells aggregated: **{n}**\n",
+        f"- ic_weighted beats equal_weight on TEST annual return in "
+        f"**{summary.get('ic_beats_eq_test', 0)}/{n}** cells\n\n",
+        "| Series | test IC > 0 | train→test sign consistent | test IC by cell |\n"
+        "|---|---|---|---|\n",
+    ]
+    for name, s in (summary.get("series") or {}).items():
+        by_cell = ", ".join(
+            f"{label}: {_fmt(v)}" for label, v in (s.get("test_ic_by_cell") or {}).items()
+        )
+        lines.append(
+            f"| `{name}` | {s.get('test_ic_positive', 0)}/{s.get('n_cells', 0)} | "
+            f"{s.get('sign_consistent', 0)}/{s.get('n_cells', 0)} | {by_cell} |\n"
+        )
+    return "".join(lines)
+
+
+def render_robustness_matrix(result) -> str:
+    """Build the phase3 robustness-matrix markdown (pure; no I/O, no secrets)."""
+    cfg = result.config
+    lines: list[str] = []
+    lines.append("# Phase 3-4 — Robustness Matrix "
+                 "(universes × windows, equal_weight vs ic_weighted)\n")
+    lines.append(
+        f"Project: **{cfg.project.name}** · source: **{cfg.data.source}** · "
+        f"ran in **{result.elapsed_seconds:.1f}s**\n"
+    )
+    lines.append(
+        "\n> **This is NOT a return claim and not a tuned result.** It re-runs the "
+        "P3-3 OOS stability check (same three factors, same rules, walk-forward "
+        "weights, holding-window subperiod slicing) on every universe × window "
+        "cell, to test whether the single-sample conclusions generalize. "
+        "Small-sample caveats apply to every cell.\n"
+    )
+
+    lines.append("\n## Cells\n")
+    lines.append(
+        "| Cell (universe \\| window) | window | split | runtime |\n|---|---|---|---|\n"
+    )
+    for label, cell in result.cells.items():
+        runtime = result.cell_runtimes.get(label, float("nan"))
+        lines.append(
+            f"| `{label}` | {_date_str(cell.train_start)} → "
+            f"{_date_str(cell.test_end)} | {_date_str(cell.split_date)} | "
+            f"{runtime:.0f}s |\n"
+        )
+    if result.skipped_cells:
+        sk = ", ".join(f"`{s}`" for s in result.skipped_cells)
+        lines.append(
+            f"\n- **skipped cells (disclosed, runtime budget — coverage is "
+            f"reduced, not hidden):** {sk}\n"
+        )
+
+    lines.append("\n## Cross-cell stability summary\n")
+    lines.append(_matrix_summary_block(result.summary))
+
+    for label, cell in result.cells.items():
+        lines.append(f"\n## Cell `{label}`\n")
+        lines.append(
+            f"- train: {_date_str(cell.train_start)} → {_date_str(cell.train_end)} "
+            f"({cell.n_train_days}d) · test: {_date_str(cell.test_start)} → "
+            f"{_date_str(cell.test_end)} ({cell.n_test_days}d) · split "
+            f"{_date_str(cell.split_date)}\n"
+        )
+        if cell.boundary_dates:
+            bd = ", ".join(_date_str(d) for d in cell.boundary_dates)
+            lines.append(
+                f"- boundary rebalance(s) excluded from both subperiods "
+                f"(holding window straddles the split): {bd}\n"
+            )
+        lines.append("\n### Subperiod performance\n")
+        lines.append(_oos_perf_table(cell.performance))
+        lines.append("\n### IC stability\n")
+        lines.append(_oos_ic_table(cell.ic_stats, cell.sign_consistency))
+        flips = ", ".join(f"`{k}` {v}" for k, v in (cell.sign_flips or {}).items())
+        lines.append(
+            f"\n### Weight stability (ic_weighted)\n"
+            f"- scored dates: **{cell.n_scored}** · equal-weight fallbacks: "
+            f"**{cell.n_fallback}**\n"
+            f"- sign flips between consecutive trained rebalance weights: "
+            f"{flips or '_n/a_'}\n"
+        )
+
+    lines.append("\n## DOWNGRADES / caveats (INV-007 — must be disclosed)\n")
+    # matrix-level scope FIRST: the disclosures below must never read as a
+    # single-universe run (the matrix spans several universes × windows).
+    run_labels = ", ".join(f"`{label}`" for label in result.cells)
+    universes = sorted({label.split("|", 1)[0] for label in result.cells})
+    windows = sorted({label.split("|", 1)[1] for label in result.cells})
+    skipped = ", ".join(f"`{s}`" for s in result.skipped_cells) or "none"
+    lines.append(
+        f"- MATRIX SCOPE: run cells: {run_labels}; skipped cells: {skipped}; "
+        f"universes covered: {universes}; windows covered: {windows}. "
+        "Universe-specific disclosures below are the UNION over all run cells "
+        "(each universe's PIT-membership line appears once — never only the "
+        "first cell's; see the Cells section for per-cell identity).\n"
+    )
+    seen: set[str] = set()
+    for cell in result.cells.values():
+        for item in cell.downgrades:
+            if item not in seen:
+                seen.add(item)
+                lines.append(f"- {item}\n")
+    lines.append(
+        "- MATRIX CAVEAT: per-cell metrics remain SMALL-SAMPLE (each cell = one "
+        "index over one window, ~22 rebalances); the matrix spans multiple "
+        "universes × windows to test REPEATABILITY — the cross-cell summary "
+        "shows which findings repeat, not that any of them is tradable. NOT a "
+        "return claim.\n"
+    )
+
+    lines.append("\n## Artifacts\n")
+    lines.append(f"- report: `{result.report_path}`\n- log: `{result.log_path}`\n")
+    return "".join(lines)
+
+
+def write_robustness_matrix_summary(result) -> Path:
+    """Render and write the robustness-matrix report; return the path (SEC-003)."""
+    target = result.report_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_robustness_matrix(result), encoding="utf-8")
+    return target
+
+
+# --------------------------------------------------------------------------- #
 # Repo-root delivery docs (framework spec §10). These describe the run; they
 # carry no secrets and are regenerable.
 # --------------------------------------------------------------------------- #

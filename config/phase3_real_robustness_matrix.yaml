@@ -1,0 +1,138 @@
+# Phase 3-4 — REAL robustness matrix (longer history + wider universe).
+#
+# Validation layer over the P3-3 OOS framework: the SAME three factors and the
+# SAME equal_weight vs ic_weighted comparison are re-checked on every
+# universe x window cell below, to answer whether the P3-2/P3-3 conclusions
+# were an SSE50 small-sample accident. No new factor, no new alpha, no change
+# to portfolio / execution / factor math. Every cell reuses the P3-3 cell core
+# verbatim (holding-window performance slicing, realization-date IC slicing,
+# walk-forward weights, ic_weighted guard).
+#
+# The data/universe sections below are the BASE; the matrix runner derives one
+# config per cell (universe.index_code + data.start/end + oos.split_date +
+# output_name swapped in; everything else identical). The top-level data window
+# only validates the base config -- per-cell windows come from robustness.windows.
+#
+# Coverage note (runtime disclosure): CSI300 cells pull ~300+ historical names
+# through the rate-limited tushare SDK (~60-90 min per 2y cell), so this config
+# limits CSI300 to the recent fold; add {label: csi300-2020-2022-like} windows
+# for a fuller matrix when the runtime budget allows. The report discloses the
+# exact cells run + per-cell runtime.
+#
+# Run:  python -m qt.cli run-phase3-robustness --config config/phase3_real_robustness_matrix.yaml
+# (report: artifacts/reports/phase3_robustness_matrix.md; needs the tushare
+# token in the external .config.json; hits the network; heavy ~1.5-2 h total.)
+
+project:
+  name: quantitative_trading_phase3_robustness_matrix
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2022-07-01"
+  end: "2024-06-30"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: phase3rm_daily
+
+universe:
+  type: index
+  index_code: "000016.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+factors:
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+  - name: roe
+    enabled: true
+    params: {}
+  - name: netprofit_yoy
+    enabled: true
+    params: {}
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1   # PIT SW level (L1/L2/L3); L1 = 31 broad sectors (standard, DOF-safe)
+
+alpha:
+  model: ic_weighted          # P3-2 walk-forward rolling-IC weights
+  params:
+    window: 60                # trailing trading days of REALIZED ICs (conservative rolling)
+    min_periods: 20           # < this many valid realized ICs -> equal-weight fallback (disclosed)
+    mode: rolling             # rolling (default) | expanding
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 20
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+analytics:
+  forward_return_periods:
+    - 1
+    - 5
+    - 20
+  quantiles: 5
+  benchmark: null
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+
+oos:
+  split_date: "2023-07-01"   # base-config validation only; per-cell splits below
+
+robustness:
+  universes:
+    - "000016.SH"   # SSE50  (the P3-3 sample)
+    - "000300.SH"   # CSI300 (wider universe)
+  windows:
+    - label: "2020-2022"
+      start: "2020-07-01"
+      end: "2022-06-30"
+      split: "2021-07-01"
+    - label: "2022-2024"
+      start: "2022-07-01"
+      end: "2024-06-30"
+      split: "2023-07-01"
+  # cells = universes x windows MINUS the skips below (runtime budget; disclosed).
+  skip_cells:
+    - universe: "000300.SH"
+      window: "2020-2022"

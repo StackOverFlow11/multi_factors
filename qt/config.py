@@ -200,6 +200,92 @@ class OOSCfg(_Strict):
         return v
 
 
+class RobustnessWindowCfg(_Strict):
+    """One time fold of the P3-4 robustness matrix: [start, end] split at split."""
+
+    label: str
+    start: str
+    end: str
+    split: str
+
+    @field_validator("start", "end", "split", mode="before")
+    @classmethod
+    def _coerce_date_to_str(cls, v: Any) -> Any:
+        if isinstance(v, (_date, datetime)):
+            return v.strftime("%Y-%m-%d")
+        return v
+
+    @model_validator(mode="after")
+    def _check_window(self) -> "RobustnessWindowCfg":
+        try:
+            start = datetime.strptime(self.start, "%Y-%m-%d")
+            end = datetime.strptime(self.end, "%Y-%m-%d")
+            split = datetime.strptime(self.split, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(
+                f"robustness window {self.label!r}: start/end/split must be "
+                f"'YYYY-MM-DD' dates ({exc})."
+            ) from exc
+        if not (start < split < end):
+            raise ValueError(
+                f"robustness window {self.label!r}: split ({self.split}) must lie "
+                f"STRICTLY inside [{self.start}, {self.end}] so both subperiods "
+                "are non-empty."
+            )
+        return self
+
+
+class RobustnessSkipCfg(_Strict):
+    """One EXPLICITLY skipped matrix cell (runtime budget; disclosed in report)."""
+
+    universe: str
+    window: str  # a windows[].label
+
+
+class RobustnessCfg(_Strict):
+    """P3-4 robustness matrix: every universe × window pair is one OOS cell.
+
+    ``skip_cells`` removes named cells from the run (e.g. a wide-universe long
+    fold whose rate-limited pull would blow the runtime budget); skipped cells
+    are DISCLOSED in the report — coverage is never silently reduced.
+    """
+
+    universes: list[str]
+    windows: list[RobustnessWindowCfg]
+    skip_cells: list[RobustnessSkipCfg] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_non_empty(self) -> "RobustnessCfg":
+        if not self.universes:
+            raise ValueError("robustness.universes must list at least one index code.")
+        if not self.windows:
+            raise ValueError("robustness.windows must list at least one window.")
+        labels = [w.label for w in self.windows]
+        dupes = sorted({x for x in labels if labels.count(x) > 1})
+        if dupes:
+            raise ValueError(
+                f"robustness.windows labels must be unique; duplicate(s): {dupes}."
+            )
+        for skip in self.skip_cells:
+            if skip.universe not in self.universes:
+                raise ValueError(
+                    f"robustness.skip_cells references unknown universe "
+                    f"{skip.universe!r} (declared: {self.universes})."
+                )
+            if skip.window not in labels:
+                raise ValueError(
+                    f"robustness.skip_cells references unknown window label "
+                    f"{skip.window!r} (declared: {labels})."
+                )
+        run_cells = len(self.universes) * len(self.windows) - len(self.skip_cells)
+        if run_cells < 1:
+            raise ValueError(
+                "robustness.skip_cells removes every cell; at least one cell "
+                "must remain to run."
+            )
+        return self
+
+
 class RootConfig(_Strict):
     """Top-level config composing every section.
 
@@ -221,6 +307,8 @@ class RootConfig(_Strict):
     analytics: AnalyticsCfg = Field(default_factory=AnalyticsCfg)
     output: OutputCfg
     oos: OOSCfg | None = None
+    # P3-4 robustness matrix (consumed only by run-phase3-robustness).
+    robustness: RobustnessCfg | None = None
 
     @model_validator(mode="after")
     def _check_oos_split_inside_window(self) -> "RootConfig":
