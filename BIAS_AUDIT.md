@@ -37,6 +37,7 @@
 - 拉取窗口向回看约 16 个月(`start` 之前),确保回测 `start` 前已披露的上一期财报在集合内、能 as-of **carry forward** 到早期交易日,避免早期 NaN 缺口。
 - 实证:平安银行 2024 Q1(end_date 2024-03-31)披露日 ann_date 2024-04-20;as-of roe 在 04-19 仍是上一期年报值(10.2436),04-22 才切到 Q1(3.1176)——晚于报告期末约 3 周,证明无未来披露泄漏。
 - 财务因子仅在 tushare 数据路径可用;demo 无披露日,配置财务因子 + demo 源会报可读错误,**不伪造财务**。
+- **多因子(P3-1)**:多个财务字段(如 roe + netprofit_yoy)**一次 fetch、一次 as-of 对齐**(同一 `asof_financials` 调用,逐字段独立遵守 `ann_date <= trade_date`),无每因子重复拉取;财务字段可作为**被交易的因子**进入组合(不再只是诊断),报告按字段披露 TRADED vs diagnostic 角色与覆盖率。多因子合成是处理后(z-score/中性化)各列的**等权平均**(EqualWeightAlpha)——无 learned weights、不看 forward returns、不调参;`drop_missing` 要求该日该票**所有**启用因子齐备,缺任一因子即从该截面剔除(显式约定,绝不在部分数据上打分)。
 
 ## 复权
 

@@ -95,3 +95,20 @@ def test_asof_raises_on_missing_field():
 
     with pytest.raises(ValueError, match="missing field"):
         asof_financials(_index(["2024-04-21"]), _fina(), ["nonexistent"])
+
+
+def test_asof_aligns_multiple_fields_in_one_call():
+    """P3-1: several financial fields are as-of aligned in a SINGLE pass.
+
+    The multi-factor pipeline fetches all financial fields once and aligns them
+    together; each field must independently honour ann_date <= trade_date.
+    """
+    fina = _fina().assign(netprofit_yoy=[12.0, -4.0])
+    idx = _index(["2024-04-19", "2024-04-21"])
+    out = asof_financials(idx, fina, ["roe", "netprofit_yoy"])
+    # before the Q1 disclosure both fields still show the prior annual report.
+    assert out["roe"].iloc[0] == 8.0
+    assert out["netprofit_yoy"].iloc[0] == 12.0
+    # after disclosure both switch together.
+    assert out["roe"].iloc[1] == 3.1
+    assert out["netprofit_yoy"].iloc[1] == -4.0

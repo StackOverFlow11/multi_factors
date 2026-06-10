@@ -88,6 +88,12 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `analytics/alphalens_adapter.py`(IC mean/IR + 分位均值)+ `analytics/quantstats_adapter.py`(CAGR/Sharpe/maxDD/vol)薄 adapter,各带 `backend` 字段。
   - **简版 numpy/pandas 仍权威**(驱动回测 + cross-check);依赖不可用/报错 → 报告显式披露 backend(unavailable/error,只记异常**类型**不记消息),**绝不静默假装用了标准库**。
   - **不改 alpha/portfolio/runtime/fills/universe**:P0/P2 交易数字不变(demo ic 0.96/annual 0.84 不变;实测 alphalens IC=简版 IC 完全吻合),只新增 **Standard analytics** 报告段。
-- ✅ 质量门：`pytest` **234 passed**（P0=97 / P1=77 / P2-1=16 / P2-2=22 / P2-3=14 / P2-4=8）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`）+ `run-phase0`（demo）均 OK。
-- ⚠️ 剩余 P2（已显式披露）：日线 only、demo 路径非真数据。
-- 路线图下一步：财务因子组合 / 分钟级（architecture.html §11）。
+- 🔧 **Phase 3-1 首个真实多因子 baseline**（`p3-multifactor-financial-baseline` 分支,代劳待验收）：pipeline 从"只用第一个 enabled factor"升级为**消费全部 enabled factors**;新增 `config/phase3_real_multifactor.yaml`（momentum_20 + roe + netprofit_yoy,SSE50 同窗口,与 phase2 可比）。**不调参、无 learned weights、非收益承诺**。
+  - `_build_factors` 全量实例化（配置序;重名报错）;财务字段**一次 fetch + 一次 as-of 对齐**（逐字段独立守 `ann_date <= trade_date`,无每因子重复拉取）;demo+财务因子仍可读报错。
+  - 合成仍 `EqualWeightAlpha`（处理后各列等权平均,不看 forward returns）;`drop_missing` 要求该日该票**所有**因子齐备（显式披露）。
+  - 报告增强：active factor list / per-factor coverage+IC+分位 / **combo score** 诊断 / 财务 coverage **按字段**披露（TRADED vs diagnostic 角色标注）;`output.baseline_report_name` 使 phase3 报告独立于 phase2。
+  - **真实结果**（SSE50 2023-07~2024-06,~14min）:多因子 annual **−9.05%**（单因子 −10.19%）;per-factor IC: momentum_20 0.0083（与 phase2 run 完全一致,跨 run 一致性实证）/ roe 0.0006 / netprofit_yoy 0.0001;combo IC −0.0038;财务两字段 ann_date 覆盖 **100%**;PIT SW-L1 98.53%。财务因子在该小截面短窗口 IC≈0,照实披露——这是 plumbing 验证。
+  - **回归不破**:phase2 单因子真实 rerun annual −10.19% / IC 0.0083 不变;demo ic 0.96/annual 0.84 不变。
+- ✅ 质量门：`pytest` **249 passed**（P0=97 / P1=78 / P2-1=20 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10）；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml`）+ `run-phase0`（demo）均 OK。
+- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据。
+- 路线图下一步：alpha 加权合成（IC 加权/回归）/ 分钟级（architecture.html §11）。

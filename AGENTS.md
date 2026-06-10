@@ -88,6 +88,10 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `analytics/alphalens_adapter.py`(IC mean/IR + 分位均值)+ `analytics/quantstats_adapter.py`(CAGR/Sharpe/maxDD/vol)薄 adapter,各带 `backend` 字段;`_import_*` 间接层使 import-missing 路径可测;alphalens stdout/warnings 已抑制。
   - **简版仍权威**(驱动回测 + cross-check);依赖不可用/报错 → 报告披露 backend(unavailable/error,只记异常类型),**绝不静默假装**。
   - **不改 alpha/portfolio/runtime/fills/universe**:P0/P2 交易数字不变(demo ic 0.96/annual 0.84 不变;alphalens IC=简版 IC 吻合),只新增 **Standard analytics** 报告段。
-- ✅ 当前质量门：`pytest -p no:cacheprovider` **234 passed**；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`）OK；`run-phase0`（demo）OK。
-- ⚠️ 剩余 P2（已显式披露）：日线 only、demo 路径非真数据。
-- 路线图下一步：财务因子组合 / 分钟级（architecture.html §11）。
+- 🔧 **Phase 3-1 首个真实多因子 baseline**（`p3-multifactor-financial-baseline` 分支,代劳待验收）：pipeline 消费**全部 enabled factors**（曾只用第一个）;`config/phase3_real_multifactor.yaml` = momentum_20 + roe + netprofit_yoy（SSE50 同窗口,与 phase2 可比;不调参、无 learned weights、非收益承诺）。
+  - 财务字段**一次 fetch + 一次 as-of 对齐**;合成仍 EqualWeightAlpha 等权;`drop_missing` 要求全因子齐备（披露）;demo+财务因子仍可读报错;重名因子报错。
+  - 报告：active factor list / per-factor coverage+IC+分位 / combo score 诊断 / 财务 coverage 按字段（TRADED vs diagnostic）;`output.baseline_report_name` 分离 phase3 报告。
+  - 真实结果:多因子 annual **−9.05%**（单因子 −10.19%）;momentum_20 IC 0.0083（跨 run 一致）/ roe 0.0006 / netprofit_yoy 0.0001 / combo −0.0038;财务 ann_date 覆盖 100%;PIT SW-L1 98.53%。回归不破:phase2 rerun −10.19%/0.0083 不变,demo 0.96/0.84 不变。
+- ✅ 当前质量门：`pytest -p no:cacheprovider` **249 passed**；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml`）OK；`run-phase0`（demo）OK。
+- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据。
+- 路线图下一步：alpha 加权合成（IC 加权/回归）/ 分钟级（architecture.html §11）。

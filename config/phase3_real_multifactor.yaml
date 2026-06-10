@@ -1,0 +1,107 @@
+# Phase 3-1 — first REAL multi-factor baseline (price + PIT financial factors).
+#
+# Purpose: the FIRST multi-factor run on the real tushare path: momentum_20 (price)
+# + roe + netprofit_yoy (ann_date PIT-aligned financials), combined by the same
+# EQUAL-WEIGHT alpha (row-wise mean of the processed z-scored / neutralized
+# columns). NO parameter search, NO learned weights, NOT a performance claim —
+# it validates the multi-factor plumbing (batched financial fetch, per-factor
+# diagnostics, combo score) against real data.
+#
+# Universe / window deliberately match config/phase2_real_baseline.yaml (SSE50,
+# 2023-07 ~ 2024-06) so the single- vs multi-factor baselines are comparable.
+#
+# Run:  python -m qt.cli run-phase2-baseline --config config/phase3_real_multifactor.yaml
+# (the real-baseline runner is shared; output.baseline_report_name keeps this
+# report separate from the phase2 one. Needs the tushare token in the external
+# .config.json; hits the network; heavy.)
+
+project:
+  name: quantitative_trading_phase3_real_multifactor
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2023-07-01"
+  end: "2024-06-30"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: phase3_daily
+
+universe:
+  type: index
+  index_code: "000016.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+factors:
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+  - name: roe
+    enabled: true
+    params: {}
+  - name: netprofit_yoy
+    enabled: true
+    params: {}
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1   # PIT SW level (L1/L2/L3); L1 = 31 broad sectors (standard, DOF-safe)
+
+alpha:
+  model: equal_weight
+  params: {}
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 20
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+analytics:
+  forward_return_periods:
+    - 1
+    - 5
+    - 20
+  quantiles: 5
+  benchmark: null
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+  baseline_report_name: phase3_real_multifactor.md
