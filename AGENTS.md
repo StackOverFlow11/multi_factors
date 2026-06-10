@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3,默认 SW-L1 可配置）均已 merge 到 `main`。** commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3,默认 SW-L1 可配置）、#6（进度文档）、#7（P2-4）均已 merge 到 `main`。** commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -84,7 +84,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - **SW 层级可配置** `processing.neutralize.industry_level`(L1/L2/L3,**默认 L1**=31 宽板块,中性化标准 + 小截面自由度更稳)。**关键实证**:旧 tag 年化 −17.6% / SW-L1 −10.2% / SW-L2 −9.3% → **L1≈L2**,−17.6→−10 大跳主因是 **tushare→SW 分类切换**(补 PIT 必然:只有 SW 有 in/out 历史可 PIT 化,旧 tag 无法),**与粒度无关**。(曾误判粒度、默认 L2,经 L2 实测推翻,改默认 L1。)
   - 不静默退回 current：无 SW 历史的票 → 行业 NaN，被 neutralize 按截面丢弃；每次运行 **实际 level + PIT 覆盖率**进 phase2 报告。
   - 真实 baseline(SW-L1,默认):`run-phase2-baseline` OK,symbols=68,settled=11,**PIT SW-L1 coverage 98.53%**(67/68),IC 0.0083,**annual −10.19%**。
-- 🔧 **Phase 2-4 标准分析集成**（**PR #7 OPEN/MERGEABLE,待验收/合并**）：alphalens-reloaded + quantstats 接入报告(**report-only cross-check**)。
+- ✅ **Phase 2-4 标准分析集成**（**PR #7 已 merge 到 `main`**）：alphalens-reloaded + quantstats 接入报告(**report-only cross-check**)。
   - `analytics/alphalens_adapter.py`(IC mean/IR + 分位均值)+ `analytics/quantstats_adapter.py`(CAGR/Sharpe/maxDD/vol)薄 adapter,各带 `backend` 字段;`_import_*` 间接层使 import-missing 路径可测;alphalens stdout/warnings 已抑制。
   - **简版仍权威**(驱动回测 + cross-check);依赖不可用/报错 → 报告披露 backend(unavailable/error,只记异常类型),**绝不静默假装**。
   - **不改 alpha/portfolio/runtime/fills/universe**:P0/P2 交易数字不变(demo ic 0.96/annual 0.84 不变;alphalens IC=简版 IC 吻合),只新增 **Standard analytics** 报告段。
