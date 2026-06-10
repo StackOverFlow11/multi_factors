@@ -183,6 +183,45 @@ The phase2 baseline report (`artifacts/reports/phase2_real_baseline.md`) gains a
 **Execution feasibility** section: per-rebalance blocked buys / blocked sells / carried
 positions / executed turnover / invested fraction, from `BacktestDriver.feasibility_log()`.
 
+## Phase 3-1 — first REAL multi-factor baseline (price + PIT financials)
+
+P3-1 makes the pipeline consume **every enabled factor** (it previously used only
+the first) and adds the first real multi-factor baseline: `momentum_20` + `roe` +
+`netprofit_yoy`, combined by the SAME equal-weight alpha (row-wise mean of the
+processed z-scored / neutralized columns). **No parameter search, no learned
+weights, not a performance claim** — it validates the multi-factor plumbing.
+Documented by `config/phase3_real_multifactor.yaml` (same SSE50 universe + window
+as the phase2 baseline, so the two are comparable).
+
+```bash
+# validate (no network)
+... -m qt.cli validate-config     --config config/phase3_real_multifactor.yaml
+# run the multi-factor real baseline (network + token; heavy, ~10-30 min)
+... -m qt.cli run-phase2-baseline --config config/phase3_real_multifactor.yaml
+```
+
+The real-baseline RUNNER is shared with phase2 (`run-phase2-baseline` — same
+diagnostics machine); `output.baseline_report_name` keeps the report separate:
+`artifacts/reports/phase3_real_multifactor.md` (git-ignored, regenerable).
+
+What P3-1 changes (locked by tests):
+
+- **Multiple enabled factors** each become their own factor-panel column
+  (config order; duplicate names are a config error). Single-factor configs are
+  unchanged (primary factor = the only factor).
+- **Financial fields are fetched ONCE** for all financial factors and as-of
+  aligned in a single `asof_financials` pass (`ann_date <= trade_date` per
+  field) — no per-factor refetch. Demo + financial factor still raises a
+  readable error (no fabricated financials).
+- **Combination** is the equal-weight mean of the per-date processed columns
+  (`EqualWeightAlpha`); `drop_missing` requires ALL enabled factors for a name
+  on a date (disclosed — a name missing any factor is dropped from that
+  cross-section, never scored on partial data).
+- **Report**: active factor list; per-factor coverage / IC / quantile
+  diagnostics plus the COMBO score's; financial ann_date coverage **per field**,
+  labelled TRADED factor vs diagnostic-only. Standard analytics stays
+  report-only (alphalens cross-checks the primary factor).
+
 ## Quality gate
 
 ```bash

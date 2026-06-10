@@ -38,7 +38,7 @@ from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
 from qt.pipeline import (
     _FrameScores,
-    _build_factor,
+    _build_factors,
     _build_scores,
     _build_universe,
     _collect_downgrades,
@@ -83,10 +83,12 @@ class Phase2Result:
     list_date_total: int
     # PIT SW industry coverage for neutralization (NaN if neutralize off)
     industry_pit_coverage: float
-    # ann_date financial coverage (diagnostic)
-    financial_field: str
-    financial_coverage_overall: float
-    financial_coverage_by_rebalance: pd.DataFrame
+    # ann_date financial coverage PER FIELD (P3-1):
+    # financial_coverage[field] = {"is_factor": bool, "overall": float,
+    #                              "by_rebalance": DataFrame}
+    # is_factor distinguishes a TRADED financial factor from a pure diagnostic
+    # (a no-financial-factor run still reports the default field as diagnostic).
+    financial_coverage: dict[str, dict]
     # tradability filter hits
     tradability_hits: pd.DataFrame
     # execution feasibility (direction-aware fills)
@@ -97,7 +99,14 @@ class Phase2Result:
     skipped_terminal_dates: tuple[pd.Timestamp, ...]
     holdings: pd.DataFrame
     # turnover / cost / performance
+    # primary factor = first enabled; factor_names = ALL enabled (P3-1).
     factor_name: str
+    factor_names: tuple[str, ...]
+    # per-factor + combo-score simple analytics (P3-1):
+    # per_factor[name] = {ic_mean, ic_ir, quantile_returns, coverage};
+    # combo_analytics  = {ic_mean, ic_ir, quantile_returns} on the traded score.
+    per_factor: dict[str, dict]
+    combo_analytics: dict
     nav_table: pd.DataFrame
     avg_turnover: float
     cost_drag: float
@@ -283,13 +292,30 @@ def financial_coverage_at_dates(
     return pd.DataFrame(rows, columns=["date", "n_members", "n_covered", "coverage"])
 
 
-def _phase2_downgrades(cfg: RootConfig, financial_field: str) -> tuple[str, ...]:
-    """Base downgrades + phase2-baseline-specific disclosures."""
+def _phase2_downgrades(
+    cfg: RootConfig, financial_coverage: dict[str, dict]
+) -> tuple[str, ...]:
+    """Base downgrades + baseline-specific disclosures (per-field aware, P3-1)."""
+    traded = sorted(f for f, info in financial_coverage.items() if info.get("is_factor"))
+    diag_only = sorted(
+        f for f, info in financial_coverage.items() if not info.get("is_factor")
+    )
+    if traded:
+        fin_item = (
+            f"Financial ann_date coverage is reported PER FIELD: {traded} are TRADED "
+            "financial factors in this run (ann_date PIT-aligned, fetched in one "
+            "pass); their coverage tables are a data-quality lens on the same "
+            "columns the strategy consumes."
+        )
+    else:
+        fin_item = (
+            f"Financial ann_date coverage is a DATA-QUALITY DIAGNOSTIC on "
+            f"{diag_only} (how well disclosed reports populate the universe "
+            "as-of); it is NOT the alpha factor in this baseline (the factor is the "
+            "configured price factor). No financial signal is traded here."
+        )
     extra = (
-        f"Financial ann_date coverage is a DATA-QUALITY DIAGNOSTIC on "
-        f"'{financial_field}' (how well disclosed reports populate the universe "
-        "as-of); it is NOT the alpha factor in this baseline (the factor is the "
-        "configured price factor). No financial signal is traded here.",
+        fin_item,
         "Per-period holdings are the ACHIEVED book recorded by the backtest driver "
         "(post execution-feasibility), NOT the constructor's desired target: a "
         "blocked sell shows the carried name and a blocked buy is absent.",
@@ -328,11 +354,12 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     # --- reuse the exact P0/P1 spine ------------------------------------- #
     universe, symbols = _build_universe(cfg, logger)
     panel = _load_panel(cfg, symbols, logger)
-    factor = _build_factor(cfg)
-    panel = _maybe_enrich_financials(cfg, panel, symbols, factor, logger)
+    factors = _build_factors(cfg)
+    primary = factors[0]
+    panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
     panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
-    factor_panel = _compute_factor_panel(cfg, panel, factor, logger)
+    factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
     processed = _process_factors(cfg, factor_panel, panel)
     score_panel = _build_scores(processed, EqualWeightAlpha())
     scores = _FrameScores(score_panel)
@@ -364,7 +391,9 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     logger.info("backtest: %d candidate rebalance dates, %d settled rows (skipped %d)",
                 len(candidate_dates), len(nav_table), len(skipped_dates))
 
-    ic_mean, ic_ir, q_returns = _factor_analytics(cfg, panel, factor_panel, factor.name)
+    per_factor, combo = _factor_analytics(cfg, panel, factor_panel, score_panel)
+    first = per_factor[primary.name]
+    ic_mean, ic_ir, q_returns = first["ic_mean"], first["ic_ir"], first["quantile_returns"]
     perf = (
         performance_summary(
             nav_table["nav"], periods_per_year=_periods_per_year(cfg.backtest.rebalance)
@@ -373,29 +402,37 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         else {k: float("nan") for k in ("annual_return", "max_drawdown", "volatility", "sharpe")}
     )
     std_performance, std_factor = _standard_analytics(
-        cfg, panel, factor_panel, factor.name, nav_table, ic_mean, ic_ir, perf, logger
+        cfg, panel, factor_panel, primary.name, nav_table, ic_mean, ic_ir, perf, logger
     )
 
     # --- diagnostics (read-only) ----------------------------------------- #
-    financial_field = (
-        factor.name if isinstance(factor, FinancialFactor) else SUPPORTED_FINANCIAL_FIELDS[0]
-    )
-    if isinstance(factor, FinancialFactor):
-        diag_col = panel[financial_field]
+    # ann_date coverage PER financial field (P3-1). Traded financial factors are
+    # already on the panel (one batched fetch); a run with NO financial factor
+    # still reports the default field as a pure diagnostic (extra fetch, not traded).
+    factor_fields = [f.name for f in factors if isinstance(f, FinancialFactor)]
+    if factor_fields:
+        diag_fields = list(factor_fields)
+        diag_panel = panel
     else:
+        diag_fields = [SUPPORTED_FINANCIAL_FIELDS[0]]
         logger.info(
             "diagnostics: fetching '%s' for ann_date coverage report ONLY "
-            "(NOT the active factor; the strategy factor is '%s')",
-            financial_field, factor.name,
+            "(NOT an active factor; the strategy factors are %s)",
+            diag_fields[0], [f.name for f in factors],
         )
         diag_panel = _maybe_enrich_financials(
-            cfg, panel, symbols, FinancialFactor(financial_field), logger
+            cfg, panel, symbols, [FinancialFactor(diag_fields[0])], logger
         )
-        diag_col = diag_panel[financial_field]
-    coverage_by_rebalance = financial_coverage_at_dates(
-        diag_col, universe, panel, settled_dates
-    )
-    coverage_overall = float(diag_col.notna().mean()) if len(diag_col) else float("nan")
+    financial_coverage: dict[str, dict] = {}
+    for field in diag_fields:
+        col = diag_panel[field]
+        financial_coverage[field] = {
+            "is_factor": field in factor_fields,
+            "overall": float(col.notna().mean()) if len(col) else float("nan"),
+            "by_rebalance": financial_coverage_at_dates(
+                col, universe, panel, settled_dates
+            ),
+        }
 
     hits = tradability_hit_stats(
         universe, panel, settled_dates, cfg.universe.filters.model_dump()
@@ -435,16 +472,17 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         list_date_known=list_date_known,
         list_date_total=list_date_total,
         industry_pit_coverage=industry_pit_coverage,
-        financial_field=financial_field,
-        financial_coverage_overall=coverage_overall,
-        financial_coverage_by_rebalance=coverage_by_rebalance,
+        financial_coverage=financial_coverage,
         tradability_hits=hits,
         feasibility_log=feasibility_log,
         rebalance_dates=tuple(settled_dates),
         candidate_rebalance_dates=tuple(candidate_dates),
         skipped_terminal_dates=tuple(skipped_dates),
         holdings=holdings,
-        factor_name=factor.name,
+        factor_name=primary.name,
+        factor_names=tuple(f.name for f in factors),
+        per_factor=per_factor,
+        combo_analytics=combo,
         nav_table=nav_table,
         avg_turnover=float(nav_table["turnover"].mean()) if not nav_table.empty else 0.0,
         cost_drag=float(nav_table["cost"].sum()) if not nav_table.empty else 0.0,
@@ -454,8 +492,9 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         performance=perf,
         std_performance=std_performance,
         std_factor=std_factor,
-        downgrades=_phase2_downgrades(cfg, financial_field),
-        report_path=Path(cfg.output.report_dir) / "phase2_real_baseline.md",
+        downgrades=_phase2_downgrades(cfg, financial_coverage),
+        report_path=Path(cfg.output.report_dir)
+        / (cfg.output.baseline_report_name or "phase2_real_baseline.md"),
         log_path=log_path,
     )
     write_phase2_baseline_summary(result)

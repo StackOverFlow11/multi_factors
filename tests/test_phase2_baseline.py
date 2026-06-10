@@ -283,9 +283,9 @@ def _synthetic_result() -> Phase2Result:
         list_date_known=67,
         list_date_total=68,
         industry_pit_coverage=0.985,
-        financial_field="roe",
-        financial_coverage_overall=0.5,
-        financial_coverage_by_rebalance=cov,
+        financial_coverage={
+            "roe": {"is_factor": False, "overall": 0.5, "by_rebalance": cov}
+        },
         tradability_hits=hits,
         feasibility_log=feas,
         rebalance_dates=(date,),
@@ -293,6 +293,12 @@ def _synthetic_result() -> Phase2Result:
         skipped_terminal_dates=(pd.Timestamp("2024-02-29"),),
         holdings=holdings,
         factor_name="momentum_20",
+        factor_names=("momentum_20",),
+        per_factor={
+            "momentum_20": {"ic_mean": 0.05, "ic_ir": 0.5,
+                            "quantile_returns": qret, "coverage": 0.9}
+        },
+        combo_analytics={"ic_mean": 0.04, "ic_ir": 0.45, "quantile_returns": qret},
         nav_table=nav,
         avg_turnover=1.0,
         cost_drag=0.001,
@@ -351,3 +357,50 @@ def test_render_discloses_pit_industry_coverage():
     assert "point-in-time SW-L1" in md  # phase2 config sets industry_level: L1
     assert "98.50%" in md  # industry_pit_coverage=0.985 rendered as a pct
     assert "current-tag fallback" in md  # explicitly no silent fallback
+
+
+# --------------------------------------------------------------------------- #
+# P3-1 — multi-factor report surface
+# --------------------------------------------------------------------------- #
+def test_render_shows_active_factor_list_and_combo():
+    md = render_phase2_baseline(_synthetic_result())
+    assert "factors (active)" in md          # active factor list disclosed
+    assert "combo score (equal-weight)" in md  # combo diagnostics rendered
+
+
+def test_render_financial_coverage_labels_role_per_field():
+    import dataclasses
+
+    base = _synthetic_result()
+    cov = base.financial_coverage["roe"]["by_rebalance"]
+    multi = dataclasses.replace(
+        base,
+        financial_coverage={
+            "roe": {"is_factor": True, "overall": 0.9, "by_rebalance": cov},
+            "netprofit_yoy": {"is_factor": False, "overall": 0.4, "by_rebalance": cov},
+        },
+    )
+    md = render_phase2_baseline(multi)
+    assert "### `roe` — TRADED financial factor" in md
+    assert "### `netprofit_yoy` — diagnostic only" in md
+    assert "90.00%" in md and "40.00%" in md  # per-field overall coverage
+
+
+def test_render_per_factor_table_includes_coverage_and_ic():
+    md = render_phase2_baseline(_synthetic_result())
+    # the per-factor table row carries the factor's coverage + IC.
+    assert "| `momentum_20` | 90.00% | 0.0500 | 0.5000 |" in md
+
+
+def test_baseline_report_name_is_configurable(tmp_path):
+    """output.baseline_report_name overrides the default phase2 report filename."""
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(Path(_CONFIG).read_text(encoding="utf-8"))
+    raw["output"]["baseline_report_name"] = "phase3_real_multifactor.md"
+    p = tmp_path / "cfg.yaml"
+    p.write_text(_yaml.safe_dump(raw), encoding="utf-8")
+    cfg = load_config(str(p))
+    assert cfg.output.baseline_report_name == "phase3_real_multifactor.md"
+    # default stays None -> historical filename preserved.
+    assert load_config(_CONFIG).output.baseline_report_name is None

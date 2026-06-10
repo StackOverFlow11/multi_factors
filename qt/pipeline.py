@@ -91,7 +91,17 @@ class Phase0Result:
     config: RootConfig
     panel_rows: int
     panel_symbols: int
+    # primary factor = first enabled (drives the legacy single-factor fields and
+    # the standard-analytics factor cross-check); factor_names = ALL enabled.
     factor_name: str
+    factor_names: tuple[str, ...]
+    # P3-1 per-factor + combo-score analytics (simple, authoritative).
+    # per_factor[name] = {ic_mean, ic_ir, quantile_returns, coverage};
+    # combo_analytics  = {ic_mean, ic_ir, quantile_returns} on the traded score.
+    per_factor: dict[str, dict]
+    combo_analytics: dict
+    # legacy top-level metrics == the PRIMARY factor's (unchanged for
+    # single-factor configs).
     ic_mean: float
     ic_ir: float
     quantile_returns: pd.DataFrame
@@ -177,8 +187,9 @@ def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
     mistake a demo run for a real PIT / financial validation, or vice versa.
     """
     real = cfg.data.source == "tushare"
-    factor_name = cfg.factors[0].name if cfg.factors else "?"
-    is_financial = factor_name in SUPPORTED_FINANCIAL_FIELDS
+    enabled_names = [f.name for f in cfg.factors if f.enabled] or ["?"]
+    financial_names = [n for n in enabled_names if n in SUPPORTED_FINANCIAL_FIELDS]
+    price_names = [n for n in enabled_names if n not in SUPPORTED_FINANCIAL_FIELDS]
 
     if real:
         parts = ["front-adjusted (qfq) prices"]
@@ -187,11 +198,12 @@ def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
             if cfg.universe.type == "index"
             else "STATIC universe (still a PIT downgrade — see below)"
         )
-        parts.append(
-            f"ann_date-aligned financial factor '{factor_name}'"
-            if is_financial
-            else f"price factor '{factor_name}'"
-        )
+        factor_bits = []
+        if price_names:
+            factor_bits.append(f"price factor(s) {price_names}")
+        if financial_names:
+            factor_bits.append(f"ann_date-aligned financial factor(s) {financial_names}")
+        parts.append(" + ".join(factor_bits) or "no factor (?)")
         if cfg.processing.neutralize.enabled:
             parts.append("industry+size neutralized")
         path = "DATA PATH = REAL tushare: " + "; ".join(parts) + "."
@@ -218,15 +230,34 @@ def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
         )
 
     # financials / ann_date
-    if is_financial:
+    if financial_names:
         financials = (
-            f"Financial factor '{factor_name}' is ann_date PIT-aligned (DATA-012): "
-            "a figure is used only after its disclosure date, never by report period."
+            f"Financial factor(s) {financial_names} are ann_date PIT-aligned "
+            "(DATA-012): a figure is used only after its disclosure date, never by "
+            "report period. All financial fields are fetched in ONE pass and "
+            "as-of aligned together (P3-1, no per-factor refetch)."
         )
     else:
         financials = (
             "No financial factor in this run; ann_date alignment is implemented and "
             "available but unused here (price factor only)."
+        )
+
+    # multi-factor combination (P3-1)
+    if len(enabled_names) > 1:
+        combo = (
+            f"Multi-factor combination (P3-1): {enabled_names} are combined as the "
+            "EQUAL-WEIGHT mean of the per-date processed (z-scored / neutralized) "
+            "columns — no learned weights, no forward-return fitting, no parameter "
+            "search (the alpha layer never sees future returns). drop_missing "
+            "requires ALL enabled factors for a name on a date: a name missing any "
+            "factor value is dropped from that cross-section (disclosed, not "
+            "silently scored on partial data)."
+        )
+    else:
+        combo = (
+            "Single-factor run: the combined score equals the processed factor "
+            "(equal-weight mean of one column)."
         )
 
     # neutralization
@@ -275,6 +306,7 @@ def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
         path,
         membership,
         financials,
+        combo,
         neutral,
         execution,
         f"Daily ({cfg.data.freq}) bars only; minute-level link is deferred.",
@@ -305,17 +337,20 @@ def run_phase0(config_path: str) -> Phase0Result:
 
     universe, symbols = _build_universe(cfg, logger)
     panel = _load_panel(cfg, symbols, logger)
-    factor = _build_factor(cfg)
-    panel = _maybe_enrich_financials(cfg, panel, symbols, factor, logger)
+    factors = _build_factors(cfg)
+    primary = factors[0]
+    panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
     panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
-    factor_panel = _compute_factor_panel(cfg, panel, factor, logger)
+    factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
 
     processed = _process_factors(cfg, factor_panel, panel)
     scores = _build_scores(processed, EqualWeightAlpha())
 
-    nav_table = _run_backtest(cfg, panel, scores, factor.name, universe, logger)
-    ic_mean, ic_ir, q_returns = _factor_analytics(cfg, panel, factor_panel, factor.name)
+    nav_table = _run_backtest(cfg, panel, scores, primary.name, universe, logger)
+    per_factor, combo = _factor_analytics(cfg, panel, factor_panel, scores)
+    first = per_factor[primary.name]
+    ic_mean, ic_ir, q_returns = first["ic_mean"], first["ic_ir"], first["quantile_returns"]
     perf = (
         performance_summary(
             nav_table["nav"],
@@ -332,7 +367,7 @@ def run_phase0(config_path: str) -> Phase0Result:
     avg_turnover = float(nav_table["turnover"].mean()) if not nav_table.empty else 0.0
     cost_drag = float(nav_table["cost"].sum()) if not nav_table.empty else 0.0
     std_performance, std_factor = _standard_analytics(
-        cfg, panel, factor_panel, factor.name, nav_table, ic_mean, ic_ir, perf, logger
+        cfg, panel, factor_panel, primary.name, nav_table, ic_mean, ic_ir, perf, logger
     )
 
     downgrades = _collect_downgrades(cfg)
@@ -340,7 +375,10 @@ def run_phase0(config_path: str) -> Phase0Result:
         config=cfg,
         panel_rows=len(panel),
         panel_symbols=panel.index.get_level_values("symbol").nunique(),
-        factor_name=factor.name,
+        factor_name=primary.name,
+        factor_names=tuple(f.name for f in factors),
+        per_factor=per_factor,
+        combo_analytics=combo,
         ic_mean=ic_mean,
         ic_ir=ic_ir,
         quantile_returns=q_returns,
@@ -515,49 +553,73 @@ def _enrich_tradability(
     return panel
 
 
-def _build_factor(cfg: RootConfig):
-    """Instantiate the (single, first-enabled) factor from config by name.
+def _build_factors(cfg: RootConfig) -> list:
+    """Instantiate EVERY enabled factor from config, in config order (P3-1).
 
     ``momentum*`` -> :class:`MomentumFactor` (price-based, P0). A financial field
     name (e.g. ``roe``, ``netprofit_yoy``) -> :class:`FinancialFactor`, which needs
     the tushare data path (ann_date alignment) — not available for demo data.
+
+    Multiple enabled factors each become their own factor-panel column; the
+    combined score stays the alpha layer's equal-weight mean (no learned weights).
+    Duplicate factor names are a config error: names become panel columns and a
+    silent collision would overwrite one factor with another.
     """
     enabled = [f for f in cfg.factors if f.enabled]
     if not enabled:
-        raise ValueError("No enabled factor in config.factors; phase0 needs a factor.")
-    spec = enabled[0]
-    params = dict(spec.params)
-    if spec.name in SUPPORTED_FINANCIAL_FIELDS:
-        return FinancialFactor(field=spec.name)
-    if spec.name.startswith("momentum"):
-        return MomentumFactor(
-            window=int(params.get("window", 20)),
-            price_col=str(params.get("price_col", "close")),
+        raise ValueError(
+            "No enabled factor in config.factors; the pipeline needs at least one."
         )
-    raise ValueError(
-        f"Unknown factor {spec.name!r}; expected 'momentum*' or one of "
-        f"{SUPPORTED_FINANCIAL_FIELDS}."
-    )
+    factors: list = []
+    for spec in enabled:
+        params = dict(spec.params)
+        if spec.name in SUPPORTED_FINANCIAL_FIELDS:
+            factors.append(FinancialFactor(field=spec.name))
+        elif spec.name.startswith("momentum"):
+            factors.append(
+                MomentumFactor(
+                    window=int(params.get("window", 20)),
+                    price_col=str(params.get("price_col", "close")),
+                )
+            )
+        else:
+            raise ValueError(
+                f"Unknown factor {spec.name!r}; expected 'momentum*' or one of "
+                f"{SUPPORTED_FINANCIAL_FIELDS}."
+            )
+    names = [f.name for f in factors]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise ValueError(
+            f"Duplicate enabled factor name(s) {dupes}: factor names become factor-"
+            "panel columns and must be unique (e.g. two momentum entries with the "
+            "same window resolve to the same name)."
+        )
+    return factors
 
 
 def _maybe_enrich_financials(
     cfg: RootConfig,
     panel: pd.DataFrame,
     symbols: list[str],
-    factor,
+    factors: list,
     logger: logging.Logger,
 ) -> pd.DataFrame:
-    """Attach the ann_date-aligned financial column when a financial factor is used.
+    """Attach ann_date-aligned columns for ALL financial factors (single fetch).
 
-    Financial factors require the tushare data path: a demo run has no disclosure
-    dates, so we fail with a readable error rather than fabricate financials.
+    Every :class:`FinancialFactor` field among the enabled ``factors`` is fetched
+    in ONE ``fina_indicator`` pass and as-of aligned in ONE
+    :func:`asof_financials` call (P3-1) — no per-factor refetch. Financial factors
+    require the tushare data path: a demo run has no disclosure dates, so we fail
+    with a readable error rather than fabricate financials.
     """
-    if not isinstance(factor, FinancialFactor):
+    fields = [f.name for f in factors if isinstance(f, FinancialFactor)]
+    if not fields:
         return panel
     if cfg.data.source != "tushare":
         raise ValueError(
-            f"Factor '{factor.name}' is a financial factor and needs real financial "
-            f"data (data.source='tushare'); it cannot run on demo data."
+            f"Factor(s) {fields} are financial factors and need real financial "
+            f"data (data.source='tushare'); they cannot run on demo data."
         )
     feed = TushareFinancialFeed(
         cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
@@ -567,13 +629,14 @@ def _maybe_enrich_financials(
     fetch_start = (
         pd.Timestamp(cfg.data.start) - pd.Timedelta(days=_FINANCIAL_LOOKBACK_DAYS)
     ).strftime("%Y-%m-%d")
-    fina = feed.get_fina_indicator(symbols, fetch_start, cfg.data.end, fields=[factor.name])
+    fina = feed.get_fina_indicator(symbols, fetch_start, cfg.data.end, fields=fields)
     enriched = panel.copy()
-    aligned = asof_financials(panel.index, fina, [factor.name])
-    enriched[factor.name] = aligned[factor.name]
+    aligned = asof_financials(panel.index, fina, fields)
+    for field in fields:
+        enriched[field] = aligned[field]
     logger.info(
-        "financials: as-of aligned '%s' by ann_date (%d disclosed rows)",
-        factor.name, len(fina),
+        "financials: as-of aligned %s by ann_date (%d disclosed rows, single fetch)",
+        fields, len(fina),
     )
     return enriched
 
@@ -608,14 +671,23 @@ def _maybe_enrich_listing(
 def _compute_factor_panel(
     cfg: RootConfig,
     panel: pd.DataFrame,
-    factor: MomentumFactor,
+    factors: list,
     logger: logging.Logger,
 ) -> pd.DataFrame:
-    """Compute the factor series, frame it, and persist it via PanelStore-style write."""
-    series = factor.compute(panel)
-    factor_panel = series.to_frame(name=factor.name)
+    """Compute every factor as its own column and persist the multi-column panel.
+
+    One column per enabled factor (P3-1); a single-factor config produces the
+    same one-column frame as before. All columns share the panel's
+    MultiIndex(date, symbol), so downstream processing stays per-date and
+    per-column.
+    """
+    columns = [factor.compute(panel).rename(factor.name) for factor in factors]
+    factor_panel = pd.concat(columns, axis=1)
     _write_factor_panel(cfg, factor_panel)
-    logger.info("factor: %s computed (%d rows)", factor.name, len(factor_panel))
+    logger.info(
+        "factors: %s computed (%d rows x %d columns)",
+        [f.name for f in factors], len(factor_panel), factor_panel.shape[1],
+    )
     return factor_panel
 
 
@@ -715,22 +787,42 @@ def _factor_analytics(
     cfg: RootConfig,
     panel: pd.DataFrame,
     factor_panel: pd.DataFrame,
-    factor_name: str,
-) -> tuple[float, float, pd.DataFrame]:
-    """IC summary + quantile returns from the RAW factor + forward returns.
+    score_panel: pd.Series,
+) -> tuple[dict[str, dict], dict]:
+    """Per-factor + combo-score IC / quantile analytics (simple, authoritative).
 
-    Analytics is the only place forward returns are computed (INV-001). We use
-    the first configured forward-return period for IC (the holding horizon proxy).
+    Analytics is the only place forward returns are computed (INV-001); they are
+    computed ONCE here and shared. Each RAW factor column gets its own IC summary
+    / quantile returns / coverage (non-NaN fraction); the COMBO score — the
+    processed equal-weight mean the backtest actually trades — gets the same
+    treatment (P3-1). The first configured forward-return period is the holding
+    horizon proxy. Returns ``(per_factor, combo)``.
     """
     periods = tuple(int(p) for p in cfg.analytics.forward_return_periods)
     fwd = forward_returns(panel, periods=periods)
     horizon = periods[0]
     fwd_col = fwd[f"forward_return_{horizon}d"]
-    factor_series = factor_panel[factor_name]
-    ic = compute_ic(factor_series, fwd_col)
-    summary = ic_summary(ic)
-    q_returns = quantile_returns(factor_series, fwd_col, quantiles=cfg.analytics.quantiles)
-    return summary["ic_mean"], summary["ic_ir"], q_returns
+    per_factor: dict[str, dict] = {}
+    for name in factor_panel.columns:
+        series = factor_panel[name]
+        summary = ic_summary(compute_ic(series, fwd_col))
+        per_factor[name] = {
+            "ic_mean": summary["ic_mean"],
+            "ic_ir": summary["ic_ir"],
+            "quantile_returns": quantile_returns(
+                series, fwd_col, quantiles=cfg.analytics.quantiles
+            ),
+            "coverage": float(series.notna().mean()) if len(series) else float("nan"),
+        }
+    combo_summary = ic_summary(compute_ic(score_panel, fwd_col))
+    combo = {
+        "ic_mean": combo_summary["ic_mean"],
+        "ic_ir": combo_summary["ic_ir"],
+        "quantile_returns": quantile_returns(
+            score_panel, fwd_col, quantiles=cfg.analytics.quantiles
+        ),
+    }
+    return per_factor, combo
 
 
 def _standard_analytics(
@@ -749,7 +841,11 @@ def _standard_analytics(
     Reads the already-computed nav / factor and produces standard-tool metrics for
     the report; it NEVER feeds back into selection / portfolio / execution, so the
     backtest numbers are unchanged. Unavailable/erroring backends are disclosed and
-    keep the authoritative simple fallback (no silent fake).
+    keep the authoritative simple fallback (no silent fake). The alphalens factor
+    cross-check runs on the PRIMARY (first-enabled) raw factor column — the same
+    series the legacy simple IC is reported on — so single-factor reports are
+    byte-stable; per-factor / combo diagnostics come from the simple
+    implementation (P3-1).
     """
     if not nav_table.empty:
         std_performance = quantstats_performance(

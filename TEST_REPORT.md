@@ -1,4 +1,4 @@
-# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 (bias-boundary → execution realism → PIT industry → standard analytics)
+# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3-1 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor)
 
 ## Commands
 
@@ -10,6 +10,7 @@ Run from the repo root with the project python (env `quant_mf`):
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/example.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/example_tushare.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase2_real_baseline.yaml
+/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_multifactor.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli run-phase0 --config config/example.yaml
 ```
 
@@ -17,12 +18,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **234 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **249 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
-| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`) | exit `0`, prints `OK` |
+| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 234).
+Counts below are the actual per-file `pytest` numbers (sum = 249).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -58,7 +59,7 @@ Counts below are the actual per-file `pytest` numbers (sum = 234).
 | `test_tradability_filters.py` | 7 | shared suspended/ST/limit filter |
 | `test_tradability_enrich.py` | 6 | flag enrichment onto panel |
 | `test_tushare_flags.py` | 3 | suspend_d/namechange/stk_limit feed |
-| `test_pit_financials.py` | 7 | **ann_date as-of** (no disclosure leak) |
+| `test_pit_financials.py` | 8 | **ann_date as-of** (no disclosure leak; +1 P3-1 multi-field single-pass) |
 | `test_tushare_fina.py` | 2 | fina_indicator feed |
 | `test_factors_financial.py` | 3 | financial factor (roe/netprofit_yoy) |
 | `test_financial_pipeline.py` | 5 | factor dispatch + demo-source guard |
@@ -72,7 +73,7 @@ Counts below are the actual per-file `pytest` numbers (sum = 234).
 
 | Test file | Tests | Feature |
 |---|---|---|
-| `test_phase2_baseline.py` | 16 | collectors, demo/real guard, report-field contract, no-secret-leak, settled-vs-candidate dates, loaded-vs-in-window membership, list_date + PIT-industry coverage, standard-analytics cross-check |
+| `test_phase2_baseline.py` | 20 | collectors, demo/real guard, report-field contract, no-secret-leak, settled-vs-candidate dates, loaded-vs-in-window membership, list_date + PIT-industry coverage, standard-analytics cross-check, P3-1 factor-list/per-field-role/per-factor-table/report-name |
 
 ## Per-file breakdown — Phase 2-2 execution realism (22)
 
@@ -94,7 +95,13 @@ Counts below are the actual per-file `pytest` numbers (sum = 234).
 |---|---|---|
 | `test_quantstats_adapter.py` | 4 | quantstats perf metrics + unavailable / error fallback disclosure (no silent fake) |
 | `test_alphalens_adapter.py` | 4 | alphalens IC / quantile metrics + unavailable / error fallback + stdout suppression |
-| **Total (P0 + P1 + P2-1 + P2-2 + P2-3 + P2-4)** | **234** | |
+
+## Per-file breakdown — Phase 3-1 multi-factor (10)
+
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_multifactor_pipeline.py` | 10 | all enabled factors built (order / disabled / duplicate / none), financials fetched ONCE for all fields + as-of both columns + input immutability, demo+financial readable error, e2e demo multi-factor panel + per-factor/combo analytics + primary==first, report factor list + combo + no secret, single-factor legacy shape |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1)** | **249** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -142,6 +149,20 @@ Counts below are the actual per-file `pytest` numbers (sum = 234).
   backends are disclosed (`backend` + exception TYPE only, no message) and keep the
   simple fallback. Empirically the alphalens IC matched the simple IC exactly on the
   demo (0.96), and the demo trading numbers (ic 0.96, annual 0.84) are unchanged.
+- **P3-1 multi-factor (locked by tests):** the pipeline consumes EVERY enabled
+  factor (one factor-panel column each, config order; duplicate names are a
+  config error). Financial fields are fetched in ONE `fina_indicator` pass and
+  as-of aligned in ONE `asof_financials` call (each field independently honours
+  `ann_date <= trade_date`); demo + financial factor still raises a readable
+  error. The combination is the EQUAL-WEIGHT mean of the processed columns —
+  no learned weights, no forward-return fitting; `drop_missing` requires ALL
+  enabled factors (a name missing any factor is dropped from that
+  cross-section, disclosed). Single-factor configs keep their legacy shape and
+  numbers (demo ic 0.96 / annual 0.84 unchanged); the baseline report gains the
+  active factor list, per-factor coverage/IC/quantile tables, the combo-score
+  diagnostics, and per-field ann_date coverage labelled TRADED vs
+  diagnostic-only. `output.baseline_report_name` keeps the phase3 report file
+  separate from the phase2 one.
 - A duplicate test-function name across two files was found and renamed during P2-2
   (it had been silently shadowing one test in the full-suite run). A second, harmless
   duplicate (`test_enrich_does_not_mutate_input` in two files) was verified NOT to drop

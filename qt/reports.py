@@ -90,6 +90,40 @@ def standard_analytics_block(std_performance: dict, std_factor: dict) -> str:
     return "".join(lines)
 
 
+def per_factor_ic_table(per_factor: dict, combo: dict) -> str:
+    """Per-factor + combo-score IC table (simple implementation, P3-1).
+
+    One row per RAW factor (with its non-NaN coverage) plus the COMBO row — the
+    processed equal-weight score the backtest actually trades. The combo has no
+    raw-coverage notion (it exists only post drop_missing), shown as '—'.
+    """
+    header = "| Factor | coverage | IC mean | IC IR |\n|---|---|---|---|\n"
+    rows = ""
+    for name, m in (per_factor or {}).items():
+        rows += (
+            f"| `{name}` | {_fmt(m.get('coverage', float('nan')), pct=True)} | "
+            f"{_fmt(m.get('ic_mean', float('nan')))} | "
+            f"{_fmt(m.get('ic_ir', float('nan')))} |\n"
+        )
+    c = combo or {}
+    rows += (
+        f"| **combo score (equal-weight)** | — | {_fmt(c.get('ic_mean', float('nan')))} | "
+        f"{_fmt(c.get('ic_ir', float('nan')))} |\n"
+    )
+    return header + rows
+
+
+def per_factor_quantiles_block(per_factor: dict, combo: dict) -> str:
+    """Quantile-return tables per factor plus the combo score (P3-1)."""
+    parts: list[str] = []
+    for name, m in (per_factor or {}).items():
+        parts.append(f"### `{name}`\n\n")
+        parts.append(_quantile_table(m.get("quantile_returns")) + "\n")
+    parts.append("### combo score (equal-weight)\n\n")
+    parts.append(_quantile_table((combo or {}).get("quantile_returns")) + "\n")
+    return "".join(parts)
+
+
 def render_phase0_summary(result: "Phase0Result") -> str:
     """Build the phase0 summary markdown string (pure; no I/O)."""
     cfg = result.config
@@ -104,7 +138,8 @@ def render_phase0_summary(result: "Phase0Result") -> str:
         f"window=`[{cfg.data.start}, {cfg.data.end}]`\n"
         f"- universe: type=`{cfg.universe.type}`, "
         f"symbols={list(cfg.universe.symbols)}\n"
-        f"- factor: `{result.factor_name}`\n"
+        f"- factors (active): `{list(result.factor_names)}` "
+        f"(primary: `{result.factor_name}`)\n"
         f"- alpha: `{cfg.alpha.model}`\n"
         f"- portfolio: `{cfg.portfolio.constructor}`, top_n=`{cfg.portfolio.top_n}`\n"
         f"- backtest: rebalance=`{cfg.backtest.rebalance}`, "
@@ -120,12 +155,16 @@ def render_phase0_summary(result: "Phase0Result") -> str:
 
     lines.append("## Factor IC\n")
     lines.append(
-        f"- IC mean: **{_fmt(result.ic_mean)}**\n"
-        f"- IC_IR (mean/std): **{_fmt(result.ic_ir)}**\n"
+        f"- IC mean: **{_fmt(result.ic_mean)}** (primary `{result.factor_name}`)\n"
+        f"- IC_IR (mean/std): **{_fmt(result.ic_ir)}**\n\n"
     )
+    lines.append(per_factor_ic_table(result.per_factor, result.combo_analytics))
 
     lines.append("## Quantile returns\n")
     lines.append(_quantile_table(result.quantile_returns) + "\n")
+    if len(result.factor_names) > 1:
+        lines.append("\n")
+        lines.append(per_factor_quantiles_block(result.per_factor, result.combo_analytics))
 
     lines.append("## Portfolio performance\n")
     lines.append(
@@ -245,6 +284,32 @@ def _coverage_block(overall: float, by_reb: pd.DataFrame) -> str:
     return head + table
 
 
+def _financial_coverage_block(financial_coverage: dict) -> str:
+    """Render the per-field ann_date coverage (P3-1): one subsection per field.
+
+    Each field is labelled by its role — a TRADED financial factor vs a pure
+    diagnostic — so a reader can never mistake a data-quality lens for a signal
+    (or vice versa).
+    """
+    if not financial_coverage:
+        return "_(no financial fields)_\n"
+    parts: list[str] = []
+    for field, info in financial_coverage.items():
+        role = (
+            "TRADED financial factor in this run (ann_date PIT-aligned)"
+            if info.get("is_factor")
+            else "diagnostic only — NOT an alpha factor in this run"
+        )
+        parts.append(f"### `{field}` — {role}\n\n")
+        parts.append(
+            _coverage_block(
+                info.get("overall", float("nan")), info.get("by_rebalance")
+            )
+        )
+        parts.append("\n")
+    return "".join(parts)
+
+
 def _tradability_block(hits: pd.DataFrame) -> str:
     """Render the tradability filter-hit funnel."""
     candidates = hits.attrs.get("candidates", 0)
@@ -324,15 +389,15 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
     cfg = result.config
     perf = result.performance
     lines: list[str] = []
-    lines.append("# Phase 2-1 — Real-data Reproducibility Baseline\n")
+    lines.append("# Real-data Reproducibility Baseline\n")
     lines.append(
         f"Project: **{cfg.project.name}** · source: **{cfg.data.source}** · "
         f"ran in **{result.elapsed_seconds:.1f}s**\n"
     )
     lines.append(
-        "\n> Small-scale REAL (tushare) baseline that runs the existing P0/P1 spine "
-        "end-to-end. No new factor, no parameter search, not a performance claim — "
-        "it validates the real-data plumbing and is fully reproducible from the "
+        "\n> Small-scale REAL (tushare) baseline that runs the existing pipeline "
+        "spine end-to-end. No parameter search, not a performance claim — it "
+        "validates the real-data plumbing and is fully reproducible from the "
         "config below.\n"
     )
 
@@ -340,7 +405,9 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
     lines.append(
         f"- universe: type=`{cfg.universe.type}`, index_code=`{cfg.universe.index_code}`, "
         f"top_n=`{cfg.portfolio.top_n}`\n"
-        f"- factor: `{result.factor_name}` · neutralize=`{cfg.processing.neutralize.enabled}`\n"
+        f"- factors (active): `{list(result.factor_names)}` "
+        f"(primary for the std cross-check: `{result.factor_name}`) · "
+        f"neutralize=`{cfg.processing.neutralize.enabled}`\n"
         f"- filters: `{cfg.universe.filters.model_dump()}`\n"
         f"- backtest: rebalance=`{cfg.backtest.rebalance}`, fee_rate=`{cfg.cost.fee_rate}`\n"
     )
@@ -374,12 +441,10 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
 
     lines.append("\n## Financial ann_date coverage\n")
     lines.append(
-        f"_Diagnostic on `{result.financial_field}` (ann_date as-of); NOT the alpha "
-        f"factor._\n\n"
+        "_Per-field ann_date as-of coverage; each field is labelled TRADED factor "
+        "vs diagnostic-only below._\n\n"
     )
-    lines.append(
-        _coverage_block(result.financial_coverage_overall, result.financial_coverage_by_rebalance)
-    )
+    lines.append(_financial_coverage_block(result.financial_coverage))
 
     lines.append("\n## Tradability filter hits\n")
     lines.append(_tradability_block(result.tradability_hits))
@@ -422,12 +487,13 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
 
     lines.append("\n## Factor IC\n")
     lines.append(
-        f"- IC mean: **{_fmt(result.ic_mean)}**\n"
-        f"- IC_IR (mean/std): **{_fmt(result.ic_ir)}**\n"
+        f"- IC mean: **{_fmt(result.ic_mean)}** (primary `{result.factor_name}`)\n"
+        f"- IC_IR (mean/std): **{_fmt(result.ic_ir)}**\n\n"
     )
+    lines.append(per_factor_ic_table(result.per_factor, result.combo_analytics))
 
     lines.append("\n## Quantile returns\n")
-    lines.append(_quantile_table(result.quantile_returns) + "\n")
+    lines.append(per_factor_quantiles_block(result.per_factor, result.combo_analytics))
 
     lines.append("\n## Portfolio performance\n")
     lines.append(
@@ -546,7 +612,15 @@ def render_bias_audit() -> str:
         "as-of roe 在 04-19 仍是上一期年报值(10.2436),04-22 才切到 Q1(3.1176)——"
         "晚于报告期末约 3 周,证明无未来披露泄漏。\n"
         "- 财务因子仅在 tushare 数据路径可用;demo 无披露日,配置财务因子 + demo 源"
-        "会报可读错误,**不伪造财务**。\n\n"
+        "会报可读错误,**不伪造财务**。\n"
+        "- **多因子(P3-1)**:多个财务字段(如 roe + netprofit_yoy)**一次 fetch、"
+        "一次 as-of 对齐**(同一 `asof_financials` 调用,逐字段独立遵守 "
+        "`ann_date <= trade_date`),无每因子重复拉取;财务字段可作为**被交易的"
+        "因子**进入组合(不再只是诊断),报告按字段披露 TRADED vs diagnostic 角色"
+        "与覆盖率。多因子合成是处理后(z-score/中性化)各列的**等权平均**"
+        "(EqualWeightAlpha)——无 learned weights、不看 forward returns、不调参;"
+        "`drop_missing` 要求该日该票**所有**启用因子齐备,缺任一因子即从该截面剔除"
+        "(显式约定,绝不在部分数据上打分)。\n\n"
         "## 复权\n\n"
         "- 状态: **前复权已实现(P1)**。\n"
         "- panel 始终携带 `adj_factor` 列(DemoFeed 中恒为 1.0)。`data/clean/adjust.py` "

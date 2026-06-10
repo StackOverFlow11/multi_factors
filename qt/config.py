@@ -176,6 +176,10 @@ class OutputCfg(_Strict):
     report_dir: str = "artifacts/reports"
     log_dir: str = "artifacts/logs"
     overwrite: bool = True
+    # Filename for the real-baseline report (run-phase2-baseline). None keeps the
+    # historical default 'phase2_real_baseline.md'; a multi-factor baseline config
+    # sets its own name so it never overwrites the phase2 report (P3-1).
+    baseline_report_name: str | None = None
 
 
 class RootConfig(_Strict):
