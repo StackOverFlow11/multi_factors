@@ -89,7 +89,7 @@ def test_build_factors_mixed_price_and_financial(tmp_path, example_config_path):
 def test_build_factors_duplicate_names_raise(tmp_path, example_config_path):
     specs = [
         {"name": "momentum_20", "enabled": True, "params": {"window": 20}},
-        {"name": "momentum_x", "enabled": True, "params": {"window": 20}},  # same name
+        {"name": "momentum_20", "enabled": True, "params": {"window": 20}},  # dup
     ]
     cfg = load_config(str(_write_cfg(tmp_path, example_config_path, specs)))
     with pytest.raises(ValueError, match="[Dd]uplicate"):

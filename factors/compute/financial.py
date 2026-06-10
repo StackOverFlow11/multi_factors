@@ -13,8 +13,10 @@ import pandas as pd
 
 from factors.base import Factor
 
-# financial fields that may be requested as a factor (P1).
-SUPPORTED_FIELDS: tuple[str, ...] = ("roe", "netprofit_yoy")
+# financial fields that may be requested as a factor (P1; grossprofit_margin
+# joined in P3-5 as the conservative quality candidate — same ann_date as-of
+# machinery, no new temporal logic).
+SUPPORTED_FIELDS: tuple[str, ...] = ("roe", "netprofit_yoy", "grossprofit_margin")
 
 
 class FinancialFactor(Factor):

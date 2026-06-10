@@ -1,0 +1,164 @@
+# Phase 3-5 — REAL factor-candidate robustness matrix (EXPLORATORY).
+#
+# Tests whether the legacy trio's weak signal (P3-3/P3-4 finding) was just a
+# too-narrow factor set: the LEGACY trio (momentum_20 + roe + netprofit_yoy)
+# plus a conservative candidate pack (reversal_5/20, volatility_20,
+# liquidity_20, value_ep/bp, grossprofit_margin) run through the SAME P3-4
+# robustness matrix (same universes x windows, same walk-forward ic_weighted
+# vs equal_weight comparison, same holding-window slicing).
+#
+# EXPLORATORY: factors are conservative textbook definitions, NOT tuned; the
+# run is NOT a return claim. Raw-factor ICs are per-column, so the legacy
+# trio's per-cell ICs double as a no-drift cross-check against the P3-4 report.
+# PIT safety: price/volume factors use only <=t bars; value_ep/bp invert
+# same-day daily_basic pe/pb (non-positive -> NaN); grossprofit_margin rides
+# the ann_date as-of machinery. drop_missing requires ALL enabled factors per
+# name/date (e.g. a loss-maker's NaN value_ep drops it that day) -- disclosed.
+#
+# Run:  python -m qt.cli run-phase3-robustness --config config/phase3_real_factor_candidates.yaml
+# (report: artifacts/reports/phase3_robustness_matrix.md under this config's
+# output dirs; needs the tushare token; HEAVY ~2-2.5h: the CSI300 cell pulls
+# ~400 names x daily_basic pe/pb on top of the P3-4 data. CSI300x2020-2022
+# stays skip_cells-listed -- disclosed in the report.)
+
+project:
+  name: quantitative_trading_phase3_factor_candidates
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2022-07-01"
+  end: "2024-06-30"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: phase3fc_daily
+
+universe:
+  type: index
+  index_code: "000016.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+factors:
+  # legacy trio (kept verbatim so the old-vs-new comparison reads off one run:
+  # raw-factor ICs are per-column and independent of the other columns)
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+  - name: roe
+    enabled: true
+    params: {}
+  - name: netprofit_yoy
+    enabled: true
+    params: {}
+  # P3-5 candidate pack (conservative, daily, PIT-safe; EXPLORATORY — not tuned)
+  - name: reversal_5
+    enabled: true
+    params:
+      window: 5
+  - name: reversal_20
+    enabled: true
+    params:
+      window: 20
+  - name: volatility_20
+    enabled: true
+    params:
+      window: 20
+  - name: liquidity_20
+    enabled: true
+    params:
+      window: 20
+  - name: value_ep      # 1/pe from daily_basic (same-day, PIT-safe; pe<=0 -> NaN)
+    enabled: true
+    params: {}
+  - name: value_bp      # 1/pb from daily_basic
+    enabled: true
+    params: {}
+  - name: grossprofit_margin   # quality; ann_date as-of like roe/netprofit_yoy
+    enabled: true
+    params: {}
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1   # PIT SW level (L1/L2/L3); L1 = 31 broad sectors (standard, DOF-safe)
+
+alpha:
+  model: ic_weighted          # P3-2 walk-forward rolling-IC weights
+  params:
+    window: 60                # trailing trading days of REALIZED ICs (conservative rolling)
+    min_periods: 20           # < this many valid realized ICs -> equal-weight fallback (disclosed)
+    mode: rolling             # rolling (default) | expanding
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 20
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+analytics:
+  forward_return_periods:
+    - 1
+    - 5
+    - 20
+  quantiles: 5
+  benchmark: null
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+
+oos:
+  split_date: "2023-07-01"   # base-config validation only; per-cell splits below
+
+robustness:
+  universes:
+    - "000016.SH"   # SSE50  (the P3-3 sample)
+    - "000300.SH"   # CSI300 (wider universe)
+  windows:
+    - label: "2020-2022"
+      start: "2020-07-01"
+      end: "2022-06-30"
+      split: "2021-07-01"
+    - label: "2022-2024"
+      start: "2022-07-01"
+      end: "2024-06-30"
+      split: "2023-07-01"
+  # cells = universes x windows MINUS the skips below (runtime budget; disclosed).
+  skip_cells:
+    - universe: "000300.SH"
+      window: "2020-2022"
