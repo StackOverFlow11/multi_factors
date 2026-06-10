@@ -757,8 +757,15 @@ def render_oos_stability(result) -> str:
         header = "| Date | period | " + " | ".join(f"`{c}`" for c in factor_cols)
         header += " | fallback |\n|" + "---|" * (len(factor_cols) + 3) + "\n"
         body = ""
+        # period labels match the PERFORMANCE slicing: a straddling rebalance
+        # (holding window crosses the split) is labelled boundary, not train.
+        boundary = {pd.Timestamp(d) for d in (result.boundary_dates or ())}
         for date, row in w.iterrows():
-            period = "test" if pd.Timestamp(date) >= result.split_date else "train"
+            ts = pd.Timestamp(date)
+            if ts in boundary:
+                period = "boundary"
+            else:
+                period = "test" if ts >= result.split_date else "train"
             cells = " | ".join(_fmt(float(row[c])) for c in factor_cols)
             body += (
                 f"| {_date_str(date)} | {period} | {cells} | "

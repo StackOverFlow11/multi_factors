@@ -273,7 +273,9 @@ def _synthetic_oos_result():
         train_start=pd.Timestamp("2022-07-01"), train_end=pd.Timestamp("2023-06-30"),
         test_start=pd.Timestamp("2023-07-03"), test_end=pd.Timestamp("2024-06-28"),
         n_train_days=240, n_test_days=238,
-        boundary_dates=(pd.Timestamp("2023-06-30"),),
+        # one boundary date inside the weights table (2023-05-31) so the
+        # weights-row labelling is exercised, plus one outside it.
+        boundary_dates=(pd.Timestamp("2023-05-31"), pd.Timestamp("2023-06-30")),
         factor_names=("momentum_20", "roe", "netprofit_yoy"),
         performance={
             "equal_weight": {"train": dict(period), "test": dict(period)},
@@ -309,6 +311,9 @@ def test_render_oos_report_disclosed_boundaries_and_metrics():
     assert "realized" in md.lower()
     assert "holding" in md.lower()
     assert "2023-06-30" in md  # the straddling rebalance is disclosed
+    # a straddling rebalance row in the WEIGHTS table is labelled boundary,
+    # matching the performance slicing (not mislabelled train).
+    assert "| 2023-05-31 | boundary |" in md
     # both models' subperiod performance + IC stability + weight stability
     assert "equal_weight" in md and "ic_weighted" in md
     assert "hit rate" in md.lower()
