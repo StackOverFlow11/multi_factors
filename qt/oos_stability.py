@@ -261,10 +261,11 @@ def _oos_downgrades(cfg: RootConfig) -> tuple[str, ...]:
         "on/before the split, test rows start on/after it; a straddling rebalance "
         "is excluded from both and disclosed) and IC stats by the realization "
         "date — never by the row's signal date alone.",
-        "This is a SMALL-SAMPLE stability check (one index, two years, ~22 "
-        "rebalances), NOT a return claim and NOT a tuned result: subperiod "
-        "metrics carry wide uncertainty and must not be read as expected "
-        "performance.",
+        "This is a SMALL-SAMPLE stability check — each run/cell covers ONE index "
+        "universe over ONE window (~22 rebalances per train+test pair) — NOT a "
+        "return claim and NOT a tuned result: subperiod metrics carry wide "
+        "uncertainty and must not be read as expected performance. (A robustness "
+        "matrix spans multiple universes × windows; see its MATRIX SCOPE line.)",
     )
     return _collect_downgrades(cfg) + extra
 

@@ -208,11 +208,22 @@ def _synthetic_matrix_result():
     from qt.robustness import RobustnessResult
     from tests.test_oos_stability import _synthetic_oos_result
 
-    cell = _synthetic_oos_result()
+    base = _synthetic_oos_result()
+    cell = dataclasses.replace(
+        base,
+        downgrades=(
+            "DATA PATH = REAL tushare: PIT index membership (000016.SH); ...",
+            "shared-disclosure line",
+        ),
+    )
     cells = {
         "000016.SH|2022-2024": cell,
         "000300.SH|2022-2024": dataclasses.replace(
-            cell, n_fallback=33, sign_flips={"a": 5, "b": 1}
+            cell, n_fallback=33, sign_flips={"a": 5, "b": 1},
+            downgrades=(
+                "DATA PATH = REAL tushare: PIT index membership (000300.SH); ...",
+                "shared-disclosure line",
+            ),
         ),
     }
     plain = {
@@ -255,6 +266,27 @@ def test_render_matrix_report_covers_cells_summary_and_caveat():
     assert "cells" in md.lower()
     # caveat
     assert "not a" in md.lower() and "claim" in md.lower()
+
+
+def test_render_matrix_downgrades_cover_all_universes():
+    """The DOWNGRADES/caveats section must disclose EVERY run universe — never
+    only the first cell's universe-specific lines (MEDIUM review finding)."""
+    from qt.robustness import render_robustness_matrix
+
+    md = render_robustness_matrix(_synthetic_matrix_result())
+    caveats = md.split("## DOWNGRADES")[1]
+    # matrix-level scope line with run cells / skipped cells / universes / windows
+    assert "MATRIX SCOPE" in caveats
+    assert "000016.SH|2022-2024" in caveats and "000300.SH|2022-2024" in caveats
+    assert "000300.SH|2020-2022" in caveats  # the skipped cell, in the scope line
+    # BOTH universes' membership disclosures present (union, not first-cell-only)
+    assert "PIT index membership (000016.SH)" in caveats
+    assert "PIT index membership (000300.SH)" in caveats
+    # the shared line is deduplicated (union, not concatenation)
+    assert caveats.count("shared-disclosure line") == 1
+    # the per-cell caveat no longer reads as a single-universe claim
+    assert "one index, two years" not in md
+    assert "multiple" in caveats.lower()
 
 
 def test_render_matrix_report_leaks_no_secret():

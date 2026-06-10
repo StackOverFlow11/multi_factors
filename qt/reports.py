@@ -881,17 +881,31 @@ def render_robustness_matrix(result) -> str:
         )
 
     lines.append("\n## DOWNGRADES / caveats (INV-007 — must be disclosed)\n")
+    # matrix-level scope FIRST: the disclosures below must never read as a
+    # single-universe run (the matrix spans several universes × windows).
+    run_labels = ", ".join(f"`{label}`" for label in result.cells)
+    universes = sorted({label.split("|", 1)[0] for label in result.cells})
+    windows = sorted({label.split("|", 1)[1] for label in result.cells})
+    skipped = ", ".join(f"`{s}`" for s in result.skipped_cells) or "none"
+    lines.append(
+        f"- MATRIX SCOPE: run cells: {run_labels}; skipped cells: {skipped}; "
+        f"universes covered: {universes}; windows covered: {windows}. "
+        "Universe-specific disclosures below are the UNION over all run cells "
+        "(each universe's PIT-membership line appears once — never only the "
+        "first cell's; see the Cells section for per-cell identity).\n"
+    )
     seen: set[str] = set()
     for cell in result.cells.values():
         for item in cell.downgrades:
             if item not in seen:
                 seen.add(item)
                 lines.append(f"- {item}\n")
-        break  # cells share the same base config; one cell's disclosures suffice
     lines.append(
-        "- MATRIX CAVEAT: per-cell metrics remain SMALL-SAMPLE (one index, "
-        "~22 rebalances per cell); the cross-cell summary shows which findings "
-        "repeat, not that any of them is tradable. NOT a return claim.\n"
+        "- MATRIX CAVEAT: per-cell metrics remain SMALL-SAMPLE (each cell = one "
+        "index over one window, ~22 rebalances); the matrix spans multiple "
+        "universes × windows to test REPEATABILITY — the cross-cell summary "
+        "shows which findings repeat, not that any of them is tradable. NOT a "
+        "return claim.\n"
     )
 
     lines.append("\n## Artifacts\n")
