@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -101,7 +101,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `config/phase3_real_ic_weighted.yaml`：与 phase3_real_multifactor **唯一差异是 alpha.model**（universe/window/因子/中性化全同,直接可比）。
   - **真实结果**（SSE50 2023-07~2024-06,~14min）:annual **−3.57%**（等权 −9.05% / 单因子 −10.19%）,maxDD −12.93%,训练覆盖 **201/221**（20 个 fallback 全在窗口攒满前,90.95%）。⚠️ 优于等权**不是**业绩声明——单年窗口 + 权重逐期翻号（如 momentum_20 从 −0.58 到 +0.36）正是小样本不稳定的体现,照实披露。
   - **回归不破**:phase3 等权真实 rerun annual −9.05% / IC 0.0083 不变;demo equal_weight ic 0.96/annual 0.84 不变（测试锁定）。
-- 🔧 **Phase 3-3 OOS 稳定性验证**（**PR #12 OPEN**,review 两 HIGH+一 LOW 已修,待验收/合并）：**报告型验证层**,不加新 alpha 复杂度、不改 portfolio/execution/factor math。新 run mode `run-phase3-oos`（`qt/oos_stability.py`）+ `config/phase3_real_oos_stability.yaml`（SSE50 扩到 **2 年** 2022-07~2024-06,split 2023-07-01 → train 1y / test 1y,test 年=旧 baseline 窗口可对照）。
+- ✅ **Phase 3-3 OOS 稳定性验证**（**PR #12 已 merge 到 `main`**,含 review 两 HIGH+一 LOW 修复）：**报告型验证层**,不加新 alpha 复杂度、不改 portfolio/execution/factor math。新 run mode `run-phase3-oos`（`qt/oos_stability.py`）+ `config/phase3_real_oos_stability.yaml`（SSE50 扩到 **2 年** 2022-07~2024-06,split 2023-07-01 → train 1y / test 1y,test 年=旧 baseline 窗口可对照）。
   - **一次数据加载、同一 processed 因子面板、两次回测**（equal_weight vs ic_weighted）;所有诊断按 split 切段（子段 nav 重新归一,绝不跨段串味）。
   - **边界语义（测试锁定）**:walk-forward(rolling subperiod)——任何日期的权重只用该日已实现观测(`t+h <= d`);**扰动 split 后全部 forward returns,train 期所有日期权重逐 bit 不变**(split 无泄漏测试);不用 freeze-at-split(那是新 alpha 模式,超范围)。**绩效切片按持有窗口**(train 行持有期 end≤split、test 行 start≥split,跨界调仓从两段排除并披露;IC 按实现日 t+h 切)——绝不按 signal date 单切(review HIGH 修复:旧切法把跨界持有期的 test 收益记进 train);runner 强制 `alpha.model: ic_weighted`(否则假对比,可读报错)。
   - 报告 `phase3_oos_stability.md`:split 边界+跨界行披露/分期绩效(annual/vol/sharpe/maxDD/turnover)/逐序列 IC 分期(mean/IR/hit rate/sign consistency)/权重稳定性(每期权重含 train-test 标注、trained 行 sign flips、fallback 次数+原因)/小样本 caveat。
