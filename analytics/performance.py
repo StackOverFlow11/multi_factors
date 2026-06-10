@@ -4,10 +4,11 @@ Implements the P0 metrics required by ANA-004: annualized return, max drawdown,
 volatility, Sharpe. ``performance_summary`` bundles them into a plain dict for
 the phase0 report.
 
-Implementation note (INV-007 downgrade): these are simple, dependency-light
-numpy/pandas computations, NOT quantstats/empyrical. ``quantstats`` is available
-and may be used later for the richer HTML tearsheet; any such use must be
-recorded in the phase0 report. The simple version is what runs in P0.
+Implementation note: these are simple, dependency-light numpy/pandas
+computations, and they remain the AUTHORITATIVE backtest result that drives the
+run. Since P2-4, quantstats is wired in as a report-only cross-check via
+``analytics/quantstats_adapter.py`` (backend disclosed in the report); it never
+replaces these numbers.
 
 All functions are pure: inputs are never mutated.
 

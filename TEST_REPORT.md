@@ -1,4 +1,4 @@
-# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 (bias-boundary → execution realism → PIT industry)
+# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 (bias-boundary → execution realism → PIT industry → standard analytics)
 
 ## Commands
 
@@ -17,14 +17,14 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **223 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **234 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 223).
+Counts below are the actual per-file `pytest` numbers (sum = 234).
 
-## Per-file breakdown — Phase 0 core (95)
+## Per-file breakdown — Phase 0 core (97)
 
 | Test file | Tests | Area |
 |---|---|---|
@@ -42,7 +42,7 @@ Counts below are the actual per-file `pytest` numbers (sum = 223).
 | `test_backtest_driver.py` | 7 | backtest driver |
 | `test_analytics_factor.py` | 5 | IC / quantile |
 | `test_analytics_performance.py` | 3 | performance metrics |
-| `test_phase0_pipeline.py` | 8 | end-to-end pipeline |
+| `test_phase0_pipeline.py` | 10 | end-to-end pipeline (+ std-analytics additive / no-leak) |
 | `test_bias_audit_report.py` | 6 | bias audit doc (+2: P2-2 + P2-3 disclosures) |
 
 ## Per-file breakdown — Phase 1 bias-boundary (79)
@@ -68,11 +68,11 @@ Counts below are the actual per-file `pytest` numbers (sum = 223).
 | `test_tushare_covariates.py` | 5 | stock_basic + daily_basic + index_member_all SW feed (level L1/L2/L3 select, bad level) |
 | `test_real_path_config.py` | 4 | demo vs real-path downgrade disclosure (+ PIT industry) |
 
-## Per-file breakdown — Phase 2-1 real-data baseline (15)
+## Per-file breakdown — Phase 2-1 real-data baseline (16)
 
 | Test file | Tests | Feature |
 |---|---|---|
-| `test_phase2_baseline.py` | 15 | collectors, demo/real guard, report-field contract, no-secret-leak, settled-vs-candidate dates, loaded-vs-in-window membership, list_date + PIT-industry coverage |
+| `test_phase2_baseline.py` | 16 | collectors, demo/real guard, report-field contract, no-secret-leak, settled-vs-candidate dates, loaded-vs-in-window membership, list_date + PIT-industry coverage, standard-analytics cross-check |
 
 ## Per-file breakdown — Phase 2-2 execution realism (22)
 
@@ -87,7 +87,14 @@ Counts below are the actual per-file `pytest` numbers (sum = 223).
 | Test file | Tests | Red-line / feature |
 |---|---|---|
 | `test_pit_industry.py` | 12 | SW **as-of** industry (switch at reclassification, carry-forward pre-start, missing → NaN, latest-in_date on overlap) + `enrich_pit_industry` + pipeline wiring (per-date industry, configured SW level passed, no current-tag fallback) + `industry_level` config (default L1, accepts L1/L2/L3, rejects invalid, phase2 config = L1) |
-| **Total (P0 + P1 + P2-1 + P2-2 + P2-3)** | **223** | |
+
+## Per-file breakdown — Phase 2-4 standard analytics (8)
+
+| Test file | Tests | Feature |
+|---|---|---|
+| `test_quantstats_adapter.py` | 4 | quantstats perf metrics + unavailable / error fallback disclosure (no silent fake) |
+| `test_alphalens_adapter.py` | 4 | alphalens IC / quantile metrics + unavailable / error fallback + stdout suppression |
+| **Total (P0 + P1 + P2-1 + P2-2 + P2-3 + P2-4)** | **234** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -100,6 +107,12 @@ Counts below are the actual per-file `pytest` numbers (sum = 223).
 
 - No test hits the network or reads the tushare token (TEST-002, INV-004): the whole
   suite runs on `DemoFeed` / fixtures / monkeypatched SDKs.
+- **Optional analytics extras:** `alphalens-reloaded` / `quantstats` are the
+  `analytics` optional extra in `pyproject.toml` (installed in `quant_mf`). The
+  adapter success-path tests `pytest.importorskip` them — a clean `.[dev]`-only
+  environment SKIPS those 3 tests (disclosed) instead of failing; the
+  fallback/disclosure tests monkeypatch the import and run everywhere. For the
+  full 234-passed run, install `.[analytics]` too (or use `quant_mf`).
 - **P2-2 execution realism (locked by tests):** selection eligibility and execution
   feasibility are split. `runtime.fills.simulate_fills` is the cash-coherent
   sell-then-buy model — at-up-limit blocks buys, at-down-limit blocks sells,
@@ -120,7 +133,16 @@ Counts below are the actual per-file `pytest` numbers (sum = 223).
   history get NaN (the neutralizer drops them) — never a silent current-tag fallback; the
   actual level + PIT coverage are disclosed in the phase2 report. The neutralize math is
   unchanged.
+- **P2-4 standard analytics (locked by tests):** alphalens-reloaded and quantstats are
+  thin, report-only adapters (`analytics/alphalens_adapter.py`,
+  `analytics/quantstats_adapter.py`). The simple numpy/pandas metrics remain the
+  authoritative backtest result and drive the run; the standard tools are an additive
+  cross-check that never touches selection / portfolio / execution
+  (`test_phase0_standard_analytics_is_additive_not_replacing`). Unavailable / erroring
+  backends are disclosed (`backend` + exception TYPE only, no message) and keep the
+  simple fallback. Empirically the alphalens IC matched the simple IC exactly on the
+  demo (0.96), and the demo trading numbers (ic 0.96, annual 0.84) are unchanged.
 - A duplicate test-function name across two files was found and renamed during P2-2
   (it had been silently shadowing one test in the full-suite run). A second, harmless
   duplicate (`test_enrich_does_not_mutate_input` in two files) was verified NOT to drop
-  a test (per-file sum == full-run total = 217).
+  a test (per-file sum == full-run total).

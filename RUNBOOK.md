@@ -223,9 +223,17 @@ Resolved in P2-2 / P2-3 (was deferred):
   neutralizer drops) — never a silent current-tag fallback; the actual level + PIT coverage
   are reported in `phase2_real_baseline.md`.
 
+Resolved in P2-4 (was deferred):
+
+- **Standard analytics** — alphalens-reloaded (IC / quantiles) and quantstats (CAGR /
+  Sharpe / maxDD / vol) are now computed and shown in the report as a **report-only
+  cross-check** (`analytics/alphalens_adapter.py`, `analytics/quantstats_adapter.py`).
+  The simple numpy/pandas metrics remain the AUTHORITATIVE backtest result and drive
+  the run; the standard tools never alter selection / portfolio / execution. When a
+  library is unavailable or errors, the report discloses the `backend` (no silent fake).
+
 Still downgraded / deferred (disclosed):
 
 - **Demo path** uses offline `DemoFeed` — NOT real data (no PIT/financial meaning).
 - **Static universe** option remains a PIT downgrade (use `type: index` for real).
-- **Daily bars only**; **simple IC / performance** (numpy/pandas, not
-  alphalens-reloaded / quantstats).
+- **Daily bars only** (minute-level link deferred).

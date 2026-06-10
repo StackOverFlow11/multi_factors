@@ -34,8 +34,10 @@ from pathlib import Path
 import pandas as pd
 
 from alpha.equal_weight import EqualWeightAlpha
+from analytics.alphalens_adapter import alphalens_factor_metrics
 from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
 from analytics.performance import performance_summary
+from analytics.quantstats_adapter import quantstats_performance
 from data.clean.adjust import front_adjust
 from data.clean.covariates import enrich_covariates, enrich_listing, enrich_pit_industry
 from data.clean.pit_industry import asof_industry
@@ -97,6 +99,9 @@ class Phase0Result:
     performance: dict[str, float]
     avg_turnover: float
     cost_drag: float
+    # P2-4 standard-analytics cross-check (report-only; never alters the above).
+    std_performance: dict
+    std_factor: dict
     downgrades: tuple[str, ...]
     data_path: Path
     factor_path: Path
@@ -273,10 +278,13 @@ def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
         neutral,
         execution,
         f"Daily ({cfg.data.freq}) bars only; minute-level link is deferred.",
-        "IC / quantile returns use a simple numpy/pandas implementation, NOT "
-        "alphalens-reloaded (simple-vs-alphalens fallback, INV-007).",
-        "Performance metrics use a simple numpy/pandas implementation, NOT "
-        "quantstats (simple-vs-quantstats fallback, INV-007).",
+        "Analytics (P2-4): the AUTHORITATIVE backtest metrics are the simple "
+        "numpy/pandas implementation (deterministic, audit-light); "
+        "alphalens-reloaded (IC / quantiles) and quantstats (CAGR / Sharpe / maxDD "
+        "/ vol) are computed ALONGSIDE as a standard cross-check, report-only — they "
+        "never alter selection / portfolio / execution. The 'Standard analytics' "
+        "report section names the backend actually used and discloses it when a "
+        "library is unavailable or errors (no silent fake, INV-007).",
         listing,
     ]
     return tuple(items)
@@ -323,6 +331,9 @@ def run_phase0(config_path: str) -> Phase0Result:
     )
     avg_turnover = float(nav_table["turnover"].mean()) if not nav_table.empty else 0.0
     cost_drag = float(nav_table["cost"].sum()) if not nav_table.empty else 0.0
+    std_performance, std_factor = _standard_analytics(
+        cfg, panel, factor_panel, factor.name, nav_table, ic_mean, ic_ir, perf, logger
+    )
 
     downgrades = _collect_downgrades(cfg)
     result = Phase0Result(
@@ -337,6 +348,8 @@ def run_phase0(config_path: str) -> Phase0Result:
         performance=perf,
         avg_turnover=avg_turnover,
         cost_drag=cost_drag,
+        std_performance=std_performance,
+        std_factor=std_factor,
         downgrades=downgrades,
         data_path=Path(cfg.output.data_dir) / f"{cfg.data.output_name}.parquet",
         factor_path=Path(cfg.output.factor_dir) / "factors.parquet",
@@ -718,3 +731,45 @@ def _factor_analytics(
     summary = ic_summary(ic)
     q_returns = quantile_returns(factor_series, fwd_col, quantiles=cfg.analytics.quantiles)
     return summary["ic_mean"], summary["ic_ir"], q_returns
+
+
+def _standard_analytics(
+    cfg: RootConfig,
+    panel: pd.DataFrame,
+    factor_panel: pd.DataFrame,
+    factor_name: str,
+    nav_table: pd.DataFrame,
+    ic_mean: float,
+    ic_ir: float,
+    perf: dict,
+    logger: logging.Logger,
+) -> tuple[dict, dict]:
+    """Report-only standard-library cross-check (quantstats + alphalens, P2-4).
+
+    Reads the already-computed nav / factor and produces standard-tool metrics for
+    the report; it NEVER feeds back into selection / portfolio / execution, so the
+    backtest numbers are unchanged. Unavailable/erroring backends are disclosed and
+    keep the authoritative simple fallback (no silent fake).
+    """
+    if not nav_table.empty:
+        std_performance = quantstats_performance(
+            nav_table["net_return"],
+            periods_per_year=_periods_per_year(cfg.backtest.rebalance),
+            simple_fallback=perf,
+        )
+    else:
+        std_performance = {"backend": "skipped", **perf}
+    prices_wide = panel["close"].unstack("symbol")
+    horizon = int(cfg.analytics.forward_return_periods[0])
+    std_factor = alphalens_factor_metrics(
+        factor_panel[factor_name],
+        prices_wide,
+        quantiles=int(cfg.analytics.quantiles),
+        period=horizon,
+        simple_fallback={"ic_mean": ic_mean, "ic_ir": ic_ir},
+    )
+    logger.info(
+        "standard analytics (report-only): quantstats=%s alphalens=%s",
+        std_performance.get("backend"), std_factor.get("backend"),
+    )
+    return std_performance, std_factor

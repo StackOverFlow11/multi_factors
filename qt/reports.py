@@ -42,6 +42,54 @@ def _quantile_table(q_returns: pd.DataFrame) -> str:
     return header + rows
 
 
+def _err_suffix(d: dict) -> str:
+    """' (error_type=X)' when a standard-analytics backend errored, else ''."""
+    if (d or {}).get("backend") == "error" and d.get("error_type"):
+        return f" (error_type={d['error_type']})"
+    return ""
+
+
+def standard_analytics_block(std_performance: dict, std_factor: dict) -> str:
+    """Render the report-only standard-library cross-check (P2-4).
+
+    Shows the quantstats performance + alphalens factor metrics WHEN those backends
+    ran, and otherwise discloses the backend (``unavailable`` / ``error`` / ``skipped``)
+    so the report never implies a standard library ran when it did not. These never
+    replace the authoritative simple metrics shown elsewhere.
+    """
+    lines: list[str] = []
+    qb = (std_performance or {}).get("backend", "n/a")
+    if qb == "quantstats":
+        sp = std_performance
+        lines.append(
+            f"- **quantstats** performance: CAGR **{_fmt(sp.get('cagr', float('nan')), pct=True)}** · "
+            f"Sharpe **{_fmt(sp.get('sharpe', float('nan')))}** · "
+            f"maxDD **{_fmt(sp.get('max_drawdown', float('nan')), pct=True)}** · "
+            f"vol **{_fmt(sp.get('volatility', float('nan')), pct=True)}**\n"
+        )
+    else:
+        lines.append(
+            f"- quantstats performance: **backend={qb}**{_err_suffix(std_performance)} "
+            f"— the simple metrics above are authoritative (not faked).\n"
+        )
+    ab = (std_factor or {}).get("backend", "n/a")
+    if ab == "alphalens":
+        sf = std_factor
+        qm = sf.get("quantile_mean", {}) or {}
+        qstr = ", ".join(f"Q{k} {_fmt(float(v), pct=True)}" for k, v in sorted(qm.items()))
+        lines.append(
+            f"- **alphalens** factor: IC mean **{_fmt(sf.get('ic_mean', float('nan')))}** · "
+            f"IC-IR **{_fmt(sf.get('ic_ir', float('nan')))}** "
+            f"({sf.get('n_dates', 0)} dates) · quantile mean fwd-ret: {qstr or '_n/a_'}\n"
+        )
+    else:
+        lines.append(
+            f"- alphalens factor: **backend={ab}**{_err_suffix(std_factor)} "
+            f"— the simple IC above is authoritative (not faked).\n"
+        )
+    return "".join(lines)
+
+
 def render_phase0_summary(result: "Phase0Result") -> str:
     """Build the phase0 summary markdown string (pure; no I/O)."""
     cfg = result.config
@@ -93,6 +141,13 @@ def render_phase0_summary(result: "Phase0Result") -> str:
         f"- total cost drag: **{_fmt(result.cost_drag, pct=True)}**\n"
     )
 
+    lines.append("## Standard analytics (alphalens / quantstats cross-check)\n")
+    lines.append(
+        "_Report-only standard-library metrics; the simple metrics above remain the "
+        "authoritative backtest result (these never alter trading)._\n"
+    )
+    lines.append(standard_analytics_block(result.std_performance, result.std_factor))
+
     lines.append("## DOWNGRADES (INV-007 — must be disclosed)\n")
     lines.append(
         "This Phase 0 run intentionally uses simplified / downgraded components. "
@@ -134,6 +189,7 @@ _PHASE2_REQUIRED_SECTIONS = (
     "## Factor IC",
     "## Quantile returns",
     "## Portfolio performance",
+    "## Standard analytics",
     "## DOWNGRADES",
 )
 
@@ -380,6 +436,13 @@ def render_phase2_baseline(result: "Phase2Result") -> str:
         f"- volatility: **{_fmt(perf.get('volatility', float('nan')), pct=True)}**\n"
         f"- sharpe: **{_fmt(perf.get('sharpe', float('nan')))}**\n"
     )
+
+    lines.append("\n## Standard analytics (alphalens / quantstats cross-check)\n")
+    lines.append(
+        "_Report-only standard-library metrics; the simple metrics above remain the "
+        "authoritative backtest result (these never alter trading)._\n\n"
+    )
+    lines.append(standard_analytics_block(result.std_performance, result.std_factor))
 
     lines.append("\n## DOWNGRADES (INV-007 — must be disclosed)\n")
     for item in result.downgrades:

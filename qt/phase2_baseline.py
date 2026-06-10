@@ -44,6 +44,7 @@ from qt.pipeline import (
     _collect_downgrades,
     _compute_factor_panel,
     _factor_analytics,
+    _standard_analytics,
     _load_panel,
     _make_logger,
     _maybe_enrich_covariates,
@@ -104,6 +105,9 @@ class Phase2Result:
     ic_ir: float
     quantile_returns: pd.DataFrame
     performance: dict
+    # P2-4 standard-analytics cross-check (report-only; never alters trading)
+    std_performance: dict
+    std_factor: dict
     # disclosure
     downgrades: tuple[str, ...]
     # paths
@@ -368,6 +372,9 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         if not nav_table.empty
         else {k: float("nan") for k in ("annual_return", "max_drawdown", "volatility", "sharpe")}
     )
+    std_performance, std_factor = _standard_analytics(
+        cfg, panel, factor_panel, factor.name, nav_table, ic_mean, ic_ir, perf, logger
+    )
 
     # --- diagnostics (read-only) ----------------------------------------- #
     financial_field = (
@@ -445,6 +452,8 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         ic_ir=ic_ir,
         quantile_returns=q_returns,
         performance=perf,
+        std_performance=std_performance,
+        std_factor=std_factor,
         downgrades=_phase2_downgrades(cfg, financial_field),
         report_path=Path(cfg.output.report_dir) / "phase2_real_baseline.md",
         log_path=log_path,
