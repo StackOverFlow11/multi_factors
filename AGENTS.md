@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3,默认 SW-L1 可配置）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）均已 merge 到 `main`。** commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3,默认 SW-L1 可配置）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）均已 merge 到 `main`。** commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -92,12 +92,12 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - 财务字段**一次 fetch + 一次 as-of 对齐**;合成仍 EqualWeightAlpha 等权;`drop_missing` 要求全因子齐备（披露）;demo+财务因子仍可读报错;重名因子报错。
   - 报告：active factor list / per-factor coverage+IC+分位 / combo score 诊断 / 财务 coverage 按字段（TRADED vs diagnostic）;`output.baseline_report_name` 分离 phase3 报告。
   - 真实结果:多因子 annual **−9.05%**（单因子 −10.19%）;momentum_20 IC 0.0083（跨 run 一致）/ roe 0.0006 / netprofit_yoy 0.0001 / combo −0.0038;财务 ann_date 覆盖 100%;PIT SW-L1 98.53%。回归不破:phase2 rerun −10.19%/0.0083 不变,demo 0.96/0.84 不变。
-- 🔧 **Phase 3-2 walk-forward IC 加权 alpha**（`p3-ic-weighted-alpha` 分支,代劳待验收）：`alpha/ic_weight.py::RollingICWeightAlpha`（`alpha.model: ic_weighted`）;EqualWeightAlpha 仍默认+回归基线;不调参、非收益声明。
+- ✅ **Phase 3-2 walk-forward IC 加权 alpha**（**PR #11 已 merge 到 `main`**）：`alpha/ic_weight.py::RollingICWeightAlpha`（`alpha.model: ic_weighted`）;EqualWeightAlpha 仍默认+回归基线;不调参、非收益声明。
   - Lookahead 边界测试锁定:(factor[t], fwd_h[t]) 仅**已实现**(`t+h <= d` 交易日序)进权重;扰动未实现 fwd 权重不变;fwd 只进 `alpha.fit`,factors 层绝不接触。
   - rolling(默认 60d/min20)/expanding;历史不足→该日退回等权(计数披露);权重 L1 归一化、保留符号。报告新增 **Alpha model** 必含小节(模型/超参/覆盖率/每期权重表/fallback/非调参声明)。
   - `config/phase3_real_ic_weighted.yaml` 与 phase3_real_multifactor 唯一差异 alpha.model(直接可比)。
   - 真实结果:annual **−3.57%**(等权 −9.05%),训练覆盖 201/221(20 fallback 全在窗口攒满前)。⚠️ 优于等权非业绩声明——单年窗口+权重逐期翻号即小样本不稳定,照实披露。回归不破:等权 rerun −9.05%/0.0083 不变,demo 0.96/0.84 不变。
-- 🔧 **Phase 3-3 OOS 稳定性验证**（`p3-oos-stability-validation` 分支,代劳待验收）：报告型验证层（`run-phase3-oos` + `qt/oos_stability.py` + `config/phase3_real_oos_stability.yaml`,SSE50 2 年,split 2023-07-01）;不加 alpha 复杂度、不改 portfolio/execution/factor math。
+- 🔧 **Phase 3-3 OOS 稳定性验证**（**PR #12 OPEN**,review 两 HIGH+一 LOW 已修,待验收/合并）：报告型验证层（`run-phase3-oos` + `qt/oos_stability.py` + `config/phase3_real_oos_stability.yaml`,SSE50 2 年,split 2023-07-01）;不加 alpha 复杂度、不改 portfolio/execution/factor math。
   - 一次数据加载、两次回测(equal_weight vs ic_weighted)。walk-forward 边界测试锁定:扰动 split 后全部 fwd,train 期权重逐 bit 不变。**绩效按持有窗口切片**(train 持有 end≤split、test start≥split,跨界调仓排除并披露;IC 按实现日 t+h 切;review HIGH 修复——旧 signal-date 切法把跨界收益记进 train);runner 强制 alpha.model=ic_weighted(防假对比)。
   - 报告:split 边界+跨界行/分期绩效/逐序列 IC(mean/IR/hit/sign consistency)/权重稳定性(sign flips、fallback+原因)/小样本 caveat。
   - **真实关键发现**:三因子 train→test IC **全部翻号**(sign consistency 全 NO),hit 46~53%;权重 sign flips 7/3/4;eq train −11.92%/test −5.27%,ic train −8.31%/test −2.70%(修切片前 train 被污染到 −6.81%/−1.69%)。**P3-2 单年跑赢不可外推——这正是验证层要拿到的证据;非收益声明。**回归不破:eq −9.05%/ic −3.57%/demo 0.96/0.84 全不变;报告 secret scan 干净。
