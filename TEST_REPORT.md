@@ -20,12 +20,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **282 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **285 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 282).
+Counts below are the actual per-file `pytest` numbers (sum = 285).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -111,12 +111,12 @@ Counts below are the actual per-file `pytest` numbers (sum = 282).
 | `test_ic_weight_alpha.py` | 12 | **lookahead red-line**: perturbing unrealized forward returns cannot change weights; exact `t + h <= d` realization cutoff (min_periods boundary); insufficient-history equal-weight fallback (== EqualWeightAlpha row mean); single-factor degeneration to ±1; L1 normalization + sign preservation; degenerate-IC fallback; rolling-vs-expanding window; fit requires forward_returns; dated-cross-section contract; input immutability; weights/fallback log |
 | `test_ic_alpha_pipeline.py` | 6 | alpha dispatch by config (equal_weight / ic_weighted + params / unknown = ConfigError), equal-weight default keeps exact demo numbers (ic 0.96 / annual 0.84) + report line, ic_weighted demo e2e (summary, weights log, early-fallback→late-trained, L1 rows, report disclosure, no secret), ic-weights differ from equal weight on diverging-IC synthetic data |
 
-## Per-file breakdown — Phase 3-3 OOS stability (13)
+## Per-file breakdown — Phase 3-3 OOS stability (16)
 
 | Test file | Tests | Red-line / feature |
 |---|---|---|
-| `test_oos_stability.py` | 13 | **split-boundary no-leakage**: perturbing every post-split forward return leaves all train-period weights bit-identical; `subperiod_perf` slices strictly + rebased nav + empty-slice NaN; `ic_period_stats` mean/IR/hit-rate/n; `sign_consistent` nonzero-same-sign; `weight_sign_flips` on trained rows only (fallback rows excluded); fallback-reason aggregation; OOS config validates + split-inside-window ConfigError; runner rejects demo source + missing `oos` section; report renders boundaries / OOS metrics / weight stability / caveat / no secret |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1 + P3-2 + P3-3)** | **282** | |
+| `test_oos_stability.py` | 16 | **split-boundary no-leakage**: perturbing every post-split forward return leaves all train-period weights bit-identical; **holding-window slicing** (`split_nav_by_holding`: train = holding end ≤ split, test = start ≥ split, straddlers + unknown-end rows excluded and disclosed); `subperiod_perf` rebased nav + empty-slice NaN; `ic_period_stats` sliced by realization date (t+h) with mean/IR/hit-rate/n; `sign_consistent` nonzero-same-sign; `weight_sign_flips` on trained rows only (fallback rows excluded); fallback-reason aggregation; OOS config validates + split-inside-window ConfigError; runner rejects demo source / missing `oos` section / **non-ic_weighted alpha (fake-comparison guard)**; report renders boundaries / straddler disclosure / OOS metrics / weight stability / caveat / no secret |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1 + P3-2 + P3-3)** | **285** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -191,10 +191,14 @@ Counts below are the actual per-file `pytest` numbers (sum = 282).
   demo numbers (ic 0.96 / annual 0.84) are locked unchanged.
 - **P3-3 OOS stability (locked by tests):** `run-phase3-oos` is a REPORT-ONLY
   validation layer — one shared data load, two backtests (equal_weight vs
-  ic_weighted), every diagnostic split at `oos.split_date` (train strictly
-  before, test on/after; subperiod navs rebased so nothing bleeds across).
+  ic_weighted), every diagnostic split at `oos.split_date`. Performance slicing
+  is HOLDING-WINDOW aware (a nav row's return covers [rebalance, next
+  rebalance]: train rows END on/before the split, test rows START on/after it,
+  straddlers are excluded from both and disclosed); IC stats slice by the
+  realization date (t+h); subperiod navs are rebased so nothing bleeds across.
   Evaluation is walk-forward (rolling subperiod): the split-boundary test
-  proves post-split forward returns cannot move any train-period weight.
+  proves post-split forward returns cannot move any train-period weight. The
+  runner refuses a non-ic_weighted `alpha.model` (a fake comparison guard).
   Portfolio / execution / factor math are untouched.
 - A duplicate test-function name across two files was found and renamed during P2-2
   (it had been silently shadowing one test in the full-suite run). A second, harmless

@@ -59,8 +59,8 @@ from runtime.backtest.driver import BacktestDriver
 from runtime.backtest.sim_execution import SimExecution
 
 __all__ = ["OOSResult", "run_phase3_oos", "render_oos_stability",
-           "subperiod_perf", "ic_period_stats", "sign_consistent",
-           "weight_sign_flips", "fallback_reason_counts"]
+           "split_nav_by_holding", "subperiod_perf", "ic_period_stats",
+           "sign_consistent", "weight_sign_flips", "fallback_reason_counts"]
 
 _LOGGER_NAME = "qt.run_phase3_oos"
 _PERF_NAN = {
@@ -84,6 +84,9 @@ class OOSResult:
     test_end: pd.Timestamp | None
     n_train_days: int
     n_test_days: int
+    # rebalance dates whose HOLDING WINDOW straddles the split (excluded from
+    # both subperiods' performance and disclosed in the report).
+    boundary_dates: tuple[pd.Timestamp, ...]
     factor_names: tuple[str, ...]
     # performance[model][period] -> {annual_return, volatility, sharpe,
     # max_drawdown, avg_turnover, n_rebalances}; model in (equal_weight,
@@ -109,47 +112,93 @@ class OOSResult:
 # --------------------------------------------------------------------------- #
 # Pure subperiod statistics (network-free; unit-tested with synthetic inputs).
 # --------------------------------------------------------------------------- #
-def subperiod_perf(
-    nav_table: pd.DataFrame,
-    start: pd.Timestamp | None = None,
-    end: pd.Timestamp | None = None,
-    periods_per_year: int = 12,
-) -> dict:
-    """Performance over the nav rows in [start, end) — period-local compounding.
+def split_nav_by_holding(
+    nav_table: pd.DataFrame, split: pd.Timestamp
+) -> tuple[pd.DataFrame, pd.DataFrame, list[pd.Timestamp]]:
+    """(train_rows, test_rows, boundary_dates) sliced by the HOLDING WINDOW.
 
-    The subperiod nav is REBASED to 1.0 from the slice's own net returns, so a
-    drawdown or annualization never bleeds across the split. ``end`` is
-    exclusive (a rebalance ON the split date belongs to the test period).
-    Empty slices return NaN metrics (never crash).
+    A driver nav row is INDEXED by its rebalance (signal) date, but its return
+    covers the holding window [index[i], index[i+1]] — slicing by the row index
+    alone would credit a straddling holding period's post-split return to the
+    train period. Calendar-pure subperiods therefore require:
+
+      train    <=> holding END on/before the split (return fully realized
+                   pre-split);
+      test     <=> holding START on/after the split;
+      boundary <=> the holding window straddles the split (start < split < end,
+                   or the end is unknown — the LAST row's end is the skipped
+                   terminal candidate, not recoverable here — with a pre-split
+                   start). Boundary rows are EXCLUDED from both subperiods and
+                   disclosed in the report.
     """
     if nav_table is None or nav_table.empty:
+        empty = nav_table if nav_table is not None else pd.DataFrame()
+        return empty, empty, []
+    split = pd.Timestamp(split)
+    starts = [pd.Timestamp(d) for d in nav_table.index]
+    ends: list[pd.Timestamp | None] = starts[1:] + [None]
+    train_mask: list[bool] = []
+    test_mask: list[bool] = []
+    boundary: list[pd.Timestamp] = []
+    for start, end in zip(starts, ends):
+        if start >= split:
+            train_mask.append(False)
+            test_mask.append(True)
+        elif end is not None and end <= split:
+            train_mask.append(True)
+            test_mask.append(False)
+        else:  # straddles the split, or unknown end with a pre-split start
+            train_mask.append(False)
+            test_mask.append(False)
+            boundary.append(start)
+    return nav_table[train_mask], nav_table[test_mask], boundary
+
+
+def subperiod_perf(nav_slice: pd.DataFrame, periods_per_year: int = 12) -> dict:
+    """Performance of one pre-sliced nav segment — period-local compounding.
+
+    The segment nav is REBASED to 1.0 from its own net returns, so a drawdown
+    or annualization never bleeds across the split. Empty slices return NaN
+    metrics (never crash). Slicing itself lives in
+    :func:`split_nav_by_holding` (holding-window aware).
+    """
+    if nav_slice is None or nav_slice.empty:
         return dict(_PERF_NAN)
-    sliced = nav_table
-    if start is not None:
-        sliced = sliced[sliced.index >= pd.Timestamp(start)]
-    if end is not None:
-        sliced = sliced[sliced.index < pd.Timestamp(end)]
-    if sliced.empty:
-        return dict(_PERF_NAN)
-    local_nav = (1.0 + sliced["net_return"]).cumprod()
+    local_nav = (1.0 + nav_slice["net_return"]).cumprod()
     perf = performance_summary(local_nav, periods_per_year=periods_per_year)
     return {
         **perf,
-        "avg_turnover": float(sliced["turnover"].mean()),
-        "n_rebalances": int(len(sliced)),
+        "avg_turnover": float(nav_slice["turnover"].mean()),
+        "n_rebalances": int(len(nav_slice)),
     }
 
 
-def ic_period_stats(ic: pd.Series, split: pd.Timestamp) -> dict[str, dict]:
+def ic_period_stats(
+    ic: pd.Series, split: pd.Timestamp, horizon: int = 1
+) -> dict[str, dict]:
     """{'train': {...}, 'test': {...}} stats of a per-date IC series.
 
+    The IC at factor date t uses the h-day forward return REALIZED at trading
+    position pos(t) + h, so (mirroring the nav slicing):
+      train <=> realization date strictly BEFORE the split;
+      test  <=> factor date on/after the split;
+      straddlers (t < split <= realization) are excluded from both.
     Each period reports the NaN-dropped mean, IR (mean/std, ddof=1), hit rate
-    (share of positive ICs) and observation count. Train is strictly before the
-    split; test is on/after it.
+    (share of positive ICs) and observation count.
     """
     split = pd.Timestamp(split)
+    idx = list(ic.index)
+    n_idx = len(idx)
+    realization = [
+        idx[pos + horizon] if pos + horizon < n_idx else None
+        for pos in range(n_idx)
+    ]
+    train_mask = [
+        r is not None and pd.Timestamp(r) < split for r in realization
+    ]
+    test_mask = [pd.Timestamp(t) >= split for t in idx]
     out: dict[str, dict] = {}
-    for name, mask in (("train", ic.index < split), ("test", ic.index >= split)):
+    for name, mask in (("train", train_mask), ("test", test_mask)):
         clean = ic[mask].dropna()
         n = int(len(clean))
         mean = float(clean.mean()) if n else float("nan")
@@ -207,7 +256,11 @@ def _oos_downgrades(cfg: RootConfig) -> tuple[str, ...]:
         "for subperiod statistics. Weight training is walk-forward (a pair enters "
         "date d's weights only once realized, t + horizon <= d), so no test-period "
         "forward return reaches any train-period computation; freezing weights at "
-        "the split is NOT used (that would be a new alpha mode, out of scope).",
+        "the split is NOT used (that would be a new alpha mode, out of scope). "
+        "Subperiod PERFORMANCE is sliced by the HOLDING WINDOW (train rows end "
+        "on/before the split, test rows start on/after it; a straddling rebalance "
+        "is excluded from both and disclosed) and IC stats by the realization "
+        "date — never by the row's signal date alone.",
         "This is a SMALL-SAMPLE stability check (one index, two years, ~22 "
         "rebalances), NOT a return claim and NOT a tuned result: subperiod "
         "metrics carry wide uncertainty and must not be read as expected "
@@ -254,6 +307,14 @@ def run_phase3_oos(config_path: str) -> OOSResult:
             "run-phase3-oos requires an 'oos' config section with split_date "
             "(train = [data.start, split), test = [split, data.end])."
         )
+    if cfg.alpha.model != "ic_weighted":
+        raise ValueError(
+            "run-phase3-oos compares equal_weight vs ic_weighted: the config's "
+            "alpha section must set model='ic_weighted' (it carries the "
+            "ic-weighted leg's params; the equal-weight control is built "
+            f"internally). Got alpha.model={cfg.alpha.model!r} — running that "
+            "would silently label an equal_weight leg as ic_weighted."
+        )
     split = pd.Timestamp(cfg.oos.split_date)
 
     t0 = time.perf_counter()
@@ -287,16 +348,20 @@ def run_phase3_oos(config_path: str) -> OOSResult:
     logger.info("backtests: equal_weight %d rows, ic_weighted %d rows",
                 len(nav_eq), len(nav_ic))
 
-    # --- subperiod statistics ------------------------------------------------ #
+    # --- subperiod statistics (holding-window aware slicing) ------------------ #
     ppy = _periods_per_year(cfg.backtest.rebalance)
+    eq_train, eq_test, eq_boundary = split_nav_by_holding(nav_eq, split)
+    ic_train, ic_test, ic_boundary = split_nav_by_holding(nav_ic, split)
+    # both legs share the driver's rebalance calendar -> identical boundary rows
+    boundary_dates = tuple(sorted(set(eq_boundary) | set(ic_boundary)))
     performance = {
         "equal_weight": {
-            "train": subperiod_perf(nav_eq, end=split, periods_per_year=ppy),
-            "test": subperiod_perf(nav_eq, start=split, periods_per_year=ppy),
+            "train": subperiod_perf(eq_train, periods_per_year=ppy),
+            "test": subperiod_perf(eq_test, periods_per_year=ppy),
         },
         "ic_weighted": {
-            "train": subperiod_perf(nav_ic, end=split, periods_per_year=ppy),
-            "test": subperiod_perf(nav_ic, start=split, periods_per_year=ppy),
+            "train": subperiod_perf(ic_train, periods_per_year=ppy),
+            "test": subperiod_perf(ic_test, periods_per_year=ppy),
         },
     }
     ic_series: dict[str, pd.Series] = {
@@ -304,7 +369,10 @@ def run_phase3_oos(config_path: str) -> OOSResult:
     }
     ic_series["combo_equal_weight"] = compute_ic(eq_scores, fwd_col)
     ic_series["combo_ic_weighted"] = compute_ic(ic_scores, fwd_col)
-    ic_stats = {name: ic_period_stats(s, split) for name, s in ic_series.items()}
+    ic_stats = {
+        name: ic_period_stats(s, split, horizon=horizon)
+        for name, s in ic_series.items()
+    }
     consistency = {name: sign_consistent(stats) for name, stats in ic_stats.items()}
 
     # weight stability at the SETTLED rebalance dates of the ic run
@@ -335,6 +403,7 @@ def run_phase3_oos(config_path: str) -> OOSResult:
         test_end=test_dates[-1] if test_dates else None,
         n_train_days=len(train_dates),
         n_test_days=len(test_dates),
+        boundary_dates=boundary_dates,
         factor_names=tuple(f.name for f in factors),
         performance=performance,
         ic_stats=ic_stats,

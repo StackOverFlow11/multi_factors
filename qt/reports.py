@@ -705,7 +705,18 @@ def render_oos_stability(result) -> str:
         f"any date d use only observations REALIZED by d (t + horizon <= d), so no "
         f"test-period forward return reaches a train-period computation (locked by "
         f"tests). The split is an accounting boundary for the statistics below.\n"
+        f"- performance slicing is HOLDING-WINDOW aware: a rebalance row's return "
+        f"covers [that rebalance, the next one], so train rows must have their "
+        f"holding END on/before the split and test rows their holding START on/"
+        f"after it. IC stats are sliced by the realization date (t + horizon) the "
+        f"same way.\n"
     )
+    if result.boundary_dates:
+        bd = ", ".join(_date_str(d) for d in result.boundary_dates)
+        lines.append(
+            f"- straddling rebalance(s) excluded from BOTH subperiods (holding "
+            f"window crosses the split): {bd}\n"
+        )
 
     lines.append("\n## Config echo\n")
     lines.append(

@@ -98,9 +98,9 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `config/phase3_real_ic_weighted.yaml` 与 phase3_real_multifactor 唯一差异 alpha.model(直接可比)。
   - 真实结果:annual **−3.57%**(等权 −9.05%),训练覆盖 201/221(20 fallback 全在窗口攒满前)。⚠️ 优于等权非业绩声明——单年窗口+权重逐期翻号即小样本不稳定,照实披露。回归不破:等权 rerun −9.05%/0.0083 不变,demo 0.96/0.84 不变。
 - 🔧 **Phase 3-3 OOS 稳定性验证**（`p3-oos-stability-validation` 分支,代劳待验收）：报告型验证层（`run-phase3-oos` + `qt/oos_stability.py` + `config/phase3_real_oos_stability.yaml`,SSE50 2 年,split 2023-07-01）;不加 alpha 复杂度、不改 portfolio/execution/factor math。
-  - 一次数据加载、两次回测(equal_weight vs ic_weighted),诊断按 split 切段(子段 nav 重归一)。walk-forward 边界测试锁定:扰动 split 后全部 fwd,train 期权重逐 bit 不变。
-  - 报告:split 边界/分期绩效/逐序列 IC(mean/IR/hit/sign consistency)/权重稳定性(sign flips、fallback+原因)/小样本 caveat。
-  - **真实关键发现**:三因子 train→test IC **全部翻号**(sign consistency 全 NO),hit 46~53%;权重 sign flips 7/3/4;eq −6.81%/−5.27%,ic −1.69%/−2.70%(train/test)。**P3-2 单年跑赢不可外推——这正是验证层要拿到的证据;非收益声明。**回归不破:eq −9.05%/ic −3.57%/demo 0.96/0.84 全不变;报告 secret scan 干净。
-- ✅ 当前质量门：`pytest -p no:cacheprovider` **282 passed**；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml`）OK；`run-phase0`（demo）OK。
+  - 一次数据加载、两次回测(equal_weight vs ic_weighted)。walk-forward 边界测试锁定:扰动 split 后全部 fwd,train 期权重逐 bit 不变。**绩效按持有窗口切片**(train 持有 end≤split、test start≥split,跨界调仓排除并披露;IC 按实现日 t+h 切;review HIGH 修复——旧 signal-date 切法把跨界收益记进 train);runner 强制 alpha.model=ic_weighted(防假对比)。
+  - 报告:split 边界+跨界行/分期绩效/逐序列 IC(mean/IR/hit/sign consistency)/权重稳定性(sign flips、fallback+原因)/小样本 caveat。
+  - **真实关键发现**:三因子 train→test IC **全部翻号**(sign consistency 全 NO),hit 46~53%;权重 sign flips 7/3/4;eq train −11.92%/test −5.27%,ic train −8.31%/test −2.70%(修切片前 train 被污染到 −6.81%/−1.69%)。**P3-2 单年跑赢不可外推——这正是验证层要拿到的证据;非收益声明。**回归不破:eq −9.05%/ic −3.57%/demo 0.96/0.84 全不变;报告 secret scan 干净。
+- ✅ 当前质量门：`pytest -p no:cacheprovider` **285 passed**；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml`）OK；`run-phase0`（demo）OK。
 - ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、因子 IC 小样本不稳定（P3-3 实证）。
 - 路线图下一步：更长历史/更宽 universe 的稳定性复检,或分钟级（architecture.html §11）。

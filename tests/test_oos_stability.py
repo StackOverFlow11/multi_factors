@@ -29,6 +29,7 @@ from qt.oos_stability import (
     fallback_reason_counts,
     ic_period_stats,
     sign_consistent,
+    split_nav_by_holding,
     subperiod_perf,
     weight_sign_flips,
 )
@@ -91,38 +92,74 @@ def _nav_table():
     )
 
 
-def test_subperiod_perf_slices_strictly_by_period():
+def test_split_nav_by_holding_assigns_rows_by_holding_window():
+    """A row's return covers [index[i], index[i+1]] — the split must respect it.
+
+    With split 2023-03-01: the 2023-01-31 row (held to 2023-02-28) is fully
+    pre-split -> train; the 2023-02-28 row is held to 2023-03-31, STRADDLING the
+    split -> excluded from BOTH and disclosed; rows starting on/after the split
+    -> test. The last row's end is unknown (terminal candidate) but it starts
+    post-split here, so it is test.
+    """
     nav = _nav_table()
-    split = pd.Timestamp("2023-03-01")
-    train = subperiod_perf(nav, end=split, periods_per_year=12)
-    test = subperiod_perf(nav, start=split, periods_per_year=12)
-    assert train["n_rebalances"] == 2 and test["n_rebalances"] == 3
-    # turnover means are computed within the slice only
-    assert train["avg_turnover"] == pytest.approx((1.0 + 0.4) / 2)
-    assert test["avg_turnover"] == pytest.approx((0.5 + 0.3 + 0.2) / 3)
-    # the subperiod nav is rebased to 1.0 (period-local compounding)
-    assert train["annual_return"] != test["annual_return"]
+    train, test, boundary = split_nav_by_holding(nav, pd.Timestamp("2023-03-01"))
+    assert list(train.index) == [pd.Timestamp("2023-01-31")]
+    assert list(test.index) == [
+        pd.Timestamp("2023-03-31"), pd.Timestamp("2023-04-28"),
+        pd.Timestamp("2023-05-31"),
+    ]
+    assert boundary == [pd.Timestamp("2023-02-28")]  # straddler disclosed
+
+
+def test_split_nav_by_holding_unknown_end_prestart_is_boundary():
+    # split AFTER the last row's start: the last row's holding end is unknown
+    # (terminal candidate), so it cannot be proven pre-split -> boundary.
+    nav = _nav_table()
+    train, test, boundary = split_nav_by_holding(nav, pd.Timestamp("2023-06-15"))
+    assert pd.Timestamp("2023-05-31") in boundary
+    assert len(test) == 0
+    assert list(train.index) == [
+        pd.Timestamp("2023-01-31"), pd.Timestamp("2023-02-28"),
+        pd.Timestamp("2023-03-31"), pd.Timestamp("2023-04-28"),
+    ]
+
+
+def test_subperiod_perf_stats_within_slice_only():
+    nav = _nav_table()
+    train, test, _ = split_nav_by_holding(nav, pd.Timestamp("2023-03-01"))
+    tr = subperiod_perf(train, periods_per_year=12)
+    te = subperiod_perf(test, periods_per_year=12)
+    assert tr["n_rebalances"] == 1 and te["n_rebalances"] == 3
+    assert tr["avg_turnover"] == pytest.approx(1.0)
+    assert te["avg_turnover"] == pytest.approx((0.5 + 0.3 + 0.2) / 3)
     for key in ("annual_return", "volatility", "sharpe", "max_drawdown"):
-        assert key in train and key in test
+        assert key in tr and key in te
 
 
 def test_subperiod_perf_empty_slice_is_nan_not_crash():
     nav = _nav_table()
-    out = subperiod_perf(nav, start=pd.Timestamp("2030-01-01"), periods_per_year=12)
+    out = subperiod_perf(nav.iloc[0:0], periods_per_year=12)
     assert out["n_rebalances"] == 0
     assert math.isnan(out["annual_return"])
 
 
-def test_ic_period_stats_mean_ir_hit_rate():
+def test_ic_period_stats_splits_by_realization_date():
+    """IC at factor date t realizes at t+h: train requires realization < split.
+
+    10 trading days, h=1, split = dates[5]: ICs of t in dates[0..3] realize at
+    dates[1..4] (< split) -> train; t = dates[4] realizes ON dates[5] (== split,
+    not strictly before) -> excluded (boundary); t >= dates[5] -> test.
+    """
     dates = pd.bdate_range("2023-01-02", periods=10)
     ic = pd.Series([0.1, 0.2, -0.1, 0.3, 0.1, -0.2, -0.3, -0.1, 0.2, np.nan],
                    index=dates)
     split = dates[5]
-    stats = ic_period_stats(ic, split)
+    stats = ic_period_stats(ic, split, horizon=1)
     tr, te = stats["train"], stats["test"]
-    assert tr["n"] == 5 and te["n"] == 4  # NaN dropped from the test slice
-    assert tr["ic_mean"] == pytest.approx(np.mean([0.1, 0.2, -0.1, 0.3, 0.1]))
-    assert tr["hit_rate"] == pytest.approx(4 / 5)
+    assert tr["n"] == 4  # dates[0..3] only; dates[4] straddles -> excluded
+    assert te["n"] == 4  # dates[5..8]; dates[9] is NaN -> dropped
+    assert tr["ic_mean"] == pytest.approx(np.mean([0.1, 0.2, -0.1, 0.3]))
+    assert tr["hit_rate"] == pytest.approx(3 / 4)
     assert te["hit_rate"] == pytest.approx(1 / 4)
     assert math.isfinite(tr["ic_ir"]) and math.isfinite(te["ic_ir"])
 
@@ -195,6 +232,19 @@ def test_oos_runner_rejects_demo_source(example_config_path):
         run_phase3_oos(example_config_path)
 
 
+def test_oos_runner_rejects_non_ic_weighted_alpha(tmp_path):
+    """alpha.model=equal_weight would silently produce a FAKE comparison
+    (equal_weight vs equal_weight labelled ic_weighted) — must be refused."""
+    raw = yaml.safe_load(Path(_OOS_CONFIG).read_text(encoding="utf-8"))
+    raw["alpha"] = {"model": "equal_weight", "params": {}}
+    p = tmp_path / "eq_alpha.yaml"
+    p.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    from qt.oos_stability import run_phase3_oos
+
+    with pytest.raises(ValueError, match="ic_weighted"):
+        run_phase3_oos(str(p))
+
+
 def test_oos_runner_requires_oos_section(tmp_path):
     raw = yaml.safe_load(Path(_OOS_CONFIG).read_text(encoding="utf-8"))
     raw.pop("oos")
@@ -223,6 +273,7 @@ def _synthetic_oos_result():
         train_start=pd.Timestamp("2022-07-01"), train_end=pd.Timestamp("2023-06-30"),
         test_start=pd.Timestamp("2023-07-03"), test_end=pd.Timestamp("2024-06-28"),
         n_train_days=240, n_test_days=238,
+        boundary_dates=(pd.Timestamp("2023-06-30"),),
         factor_names=("momentum_20", "roe", "netprofit_yoy"),
         performance={
             "equal_weight": {"train": dict(period), "test": dict(period)},
@@ -254,8 +305,10 @@ def test_render_oos_report_disclosed_boundaries_and_metrics():
     # split boundaries written into the report
     assert "2023-07-01" in md and "2022-07-01" in md and "2024-06-28" in md
     assert "train" in md.lower() and "test" in md.lower()
-    # walk-forward boundary semantics stated
+    # walk-forward boundary semantics + holding-window slicing stated
     assert "realized" in md.lower()
+    assert "holding" in md.lower()
+    assert "2023-06-30" in md  # the straddling rebalance is disclosed
     # both models' subperiod performance + IC stability + weight stability
     assert "equal_weight" in md and "ic_weighted" in md
     assert "hit rate" in md.lower()

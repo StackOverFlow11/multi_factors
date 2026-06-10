@@ -287,8 +287,18 @@ Split semantics (locked by tests):
   post-split forward return cannot change any train-period date's weights
   (split-boundary no-leakage test). Freezing weights at the split is NOT used
   (that would be a new alpha mode; P3-3 adds no alpha complexity).
-- The config's `alpha` section carries the ic_weighted params; the run ALSO
-  evaluates `equal_weight` on the same data as the control.
+- **Performance slicing is HOLDING-WINDOW aware**: a nav row is indexed by its
+  rebalance (signal) date but its return covers [that rebalance, the next one] —
+  so train rows must have their holding END on/before the split, test rows their
+  holding START on/after it, and a straddling rebalance is EXCLUDED from both
+  subperiods and disclosed in the report. IC stats are sliced by the realization
+  date (`t + horizon`) the same way. The test subperiod therefore starts with
+  the first post-split holding period — the same place the 1-year phase3
+  baselines start.
+- The config's `alpha` section carries the ic_weighted params and MUST set
+  `alpha.model: ic_weighted` (guarded: any other model is refused — running
+  equal_weight twice and labelling one leg ic_weighted would be a fake
+  comparison); the `equal_weight` control leg is built internally.
 
 Report (`artifacts/reports/phase3_oos_stability.md`): split boundaries;
 per-subperiod performance for both models (annual / vol / Sharpe / maxDD /
