@@ -92,6 +92,11 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - 财务字段**一次 fetch + 一次 as-of 对齐**;合成仍 EqualWeightAlpha 等权;`drop_missing` 要求全因子齐备（披露）;demo+财务因子仍可读报错;重名因子报错。
   - 报告：active factor list / per-factor coverage+IC+分位 / combo score 诊断 / 财务 coverage 按字段（TRADED vs diagnostic）;`output.baseline_report_name` 分离 phase3 报告。
   - 真实结果:多因子 annual **−9.05%**（单因子 −10.19%）;momentum_20 IC 0.0083（跨 run 一致）/ roe 0.0006 / netprofit_yoy 0.0001 / combo −0.0038;财务 ann_date 覆盖 100%;PIT SW-L1 98.53%。回归不破:phase2 rerun −10.19%/0.0083 不变,demo 0.96/0.84 不变。
-- ✅ 当前质量门：`pytest -p no:cacheprovider` **249 passed**；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml`）OK；`run-phase0`（demo）OK。
+- 🔧 **Phase 3-2 walk-forward IC 加权 alpha**（`p3-ic-weighted-alpha` 分支,代劳待验收）：`alpha/ic_weight.py::RollingICWeightAlpha`（`alpha.model: ic_weighted`）;EqualWeightAlpha 仍默认+回归基线;不调参、非收益声明。
+  - Lookahead 边界测试锁定:(factor[t], fwd_h[t]) 仅**已实现**(`t+h <= d` 交易日序)进权重;扰动未实现 fwd 权重不变;fwd 只进 `alpha.fit`,factors 层绝不接触。
+  - rolling(默认 60d/min20)/expanding;历史不足→该日退回等权(计数披露);权重 L1 归一化、保留符号。报告新增 **Alpha model** 必含小节(模型/超参/覆盖率/每期权重表/fallback/非调参声明)。
+  - `config/phase3_real_ic_weighted.yaml` 与 phase3_real_multifactor 唯一差异 alpha.model(直接可比)。
+  - 真实结果:annual **−3.57%**(等权 −9.05%),训练覆盖 201/221(20 fallback 全在窗口攒满前)。⚠️ 优于等权非业绩声明——单年窗口+权重逐期翻号即小样本不稳定,照实披露。回归不破:等权 rerun −9.05%/0.0083 不变,demo 0.96/0.84 不变。
+- ✅ 当前质量门：`pytest -p no:cacheprovider` **269 passed**；`ruff` clean；`validate-config`（demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml`）OK；`run-phase0`（demo）OK。
 - ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据。
-- 路线图下一步：alpha 加权合成（IC 加权/回归）/ 分钟级（architecture.html §11）。
+- 路线图下一步：样本外/IC 稳定性检验 / 分钟级（architecture.html §11）。

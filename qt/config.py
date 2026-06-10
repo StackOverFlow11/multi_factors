@@ -131,7 +131,9 @@ class ProcessingCfg(_Strict):
 
 
 class AlphaCfg(_Strict):
-    model: str = "equal_weight"
+    # equal_weight = P0 baseline (no future data); ic_weighted = P3-2
+    # walk-forward rolling-IC weights (alpha layer only sees REALIZED history).
+    model: Literal["equal_weight", "ic_weighted"] = "equal_weight"
     params: dict[str, Any] = Field(default_factory=dict)
 
 

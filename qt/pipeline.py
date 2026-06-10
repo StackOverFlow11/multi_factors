@@ -33,7 +33,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from alpha.base import AlphaModel
 from alpha.equal_weight import EqualWeightAlpha
+from alpha.ic_weight import RollingICWeightAlpha
 from analytics.alphalens_adapter import alphalens_factor_metrics
 from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
 from analytics.performance import performance_summary
@@ -100,6 +102,11 @@ class Phase0Result:
     # combo_analytics  = {ic_mean, ic_ir, quantile_returns} on the traded score.
     per_factor: dict[str, dict]
     combo_analytics: dict
+    # P3-2 alpha disclosure: summary = {model, [hyper-params, n_dates,
+    # n_fallback, trained_coverage]}; weights = full per-date EFFECTIVE weights
+    # log (+ fallback flag) for walk-forward models, None for equal_weight.
+    alpha_summary: dict
+    alpha_weights: pd.DataFrame | None
     # legacy top-level metrics == the PRIMARY factor's (unchanged for
     # single-factor configs).
     ic_mean: float
@@ -159,16 +166,87 @@ def _make_logger(log_path: Path, name: str = _LOGGER_NAME) -> logging.Logger:
     return logger
 
 
+def _build_alpha(cfg: RootConfig) -> AlphaModel:
+    """Instantiate the configured alpha model (P3-2).
+
+    ``equal_weight`` -> :class:`EqualWeightAlpha` (P0 baseline, no future data).
+    ``ic_weighted``  -> :class:`RollingICWeightAlpha` (walk-forward rolling-IC
+    weights; the IC horizon is tied to the FIRST configured forward-return
+    period so training and the reported IC share one definition).
+    """
+    params = dict(cfg.alpha.params)
+    if cfg.alpha.model == "equal_weight":
+        return EqualWeightAlpha()
+    if cfg.alpha.model == "ic_weighted":
+        return RollingICWeightAlpha(
+            window=int(params.get("window", 60)),
+            min_periods=int(params.get("min_periods", 20)),
+            horizon=int(cfg.analytics.forward_return_periods[0]),
+            mode=str(params.get("mode", "rolling")),
+        )
+    raise ValueError(
+        f"Unknown alpha.model {cfg.alpha.model!r}; expected 'equal_weight' or "
+        "'ic_weighted'."
+    )
+
+
+def _alpha_forward_returns(
+    cfg: RootConfig, panel: pd.DataFrame, alpha: AlphaModel
+) -> pd.Series | None:
+    """Forward returns for ALPHA FITTING only (None for no-future-data models).
+
+    Computed here — at the alpha boundary — and handed ONLY to ``alpha.fit``:
+    the factor layer never sees them (CLAUDE.md invariant #1). The model itself
+    enforces the walk-forward cutoff (a pair is used at date d only once
+    realized, t + h <= d), locked by tests.
+    """
+    if not getattr(alpha, "requires_forward_returns", False):
+        return None
+    horizon = int(cfg.analytics.forward_return_periods[0])
+    fwd = forward_returns(panel, periods=(horizon,))
+    return fwd[f"forward_return_{horizon}d"]
+
+
+def _alpha_disclosure(
+    cfg: RootConfig, alpha: AlphaModel
+) -> tuple[dict, pd.DataFrame | None]:
+    """(alpha_summary, full per-date weights log) for the result/report.
+
+    For ``ic_weighted``: echoes the hyper-parameters and counts the fallback
+    dates (insufficient realized history -> equal weight) so the report can
+    disclose training coverage. For ``equal_weight``: just the model name.
+    """
+    if isinstance(alpha, RollingICWeightAlpha):
+        log = alpha.weights_log()
+        n_dates = int(len(log))
+        n_fallback = int(log["fallback"].sum()) if n_dates else 0
+        summary = {
+            "model": cfg.alpha.model,
+            **alpha.params(),
+            "n_dates": n_dates,
+            "n_fallback": n_fallback,
+            "trained_coverage": (
+                (n_dates - n_fallback) / n_dates if n_dates else float("nan")
+            ),
+        }
+        return summary, log
+    return {"model": cfg.alpha.model}, None
+
+
 def _build_scores(
-    processed: pd.DataFrame, alpha: EqualWeightAlpha
+    processed: pd.DataFrame,
+    alpha: AlphaModel,
+    forward_returns_for_fit: pd.Series | None = None,
 ) -> pd.Series:
     """Predict one score per (date, symbol) from the processed factor panel.
 
-    The alpha is fit with ``forward_returns=None`` (equal-weight needs no future
-    data) and predicts per-date cross-sections, so a single (date, symbol) score
-    panel is produced for the backtest scores source.
+    ``forward_returns_for_fit`` is passed ONLY to ``alpha.fit`` (the alpha-layer
+    boundary; None for equal-weight). Prediction is per-date cross-sections, so
+    a single (date, symbol) score panel is produced for the backtest scores
+    source; a walk-forward model derives each date's weights from realized
+    history only.
     """
-    alpha.fit(processed, None)
+    alpha.fit(processed, forward_returns_for_fit)
     dates = processed.index.get_level_values("date")
     blocks: list[pd.Series] = []
     for date, block in processed.groupby(dates, sort=True):
@@ -243,8 +321,22 @@ def _collect_downgrades(cfg: RootConfig) -> tuple[str, ...]:
             "available but unused here (price factor only)."
         )
 
-    # multi-factor combination (P3-1)
-    if len(enabled_names) > 1:
+    # factor combination (P3-1 equal-weight / P3-2 walk-forward IC weights)
+    if cfg.alpha.model == "ic_weighted":
+        combo = (
+            f"Alpha = WALK-FORWARD rolling-IC weights (P3-2) over {enabled_names}: "
+            "at each date d the factor weights are the mean per-factor rank IC over "
+            "the trailing window of REALIZED observations only — a (factor[t], "
+            "fwd_h[t]) pair is admitted only once realized (t + h <= d in trading "
+            "days), so no full-sample or future information enters any date's weights "
+            "(locked by a perturb-the-future test). The alpha layer sees historical "
+            "realized forward returns ONLY for this fitting (invariant #1: factors "
+            "never see them). Weights are L1-normalized and sign-preserving (a "
+            "negative-IC factor gets a negative weight). Dates with insufficient "
+            "realized history fall back to EQUAL WEIGHT — the fallback count is "
+            "disclosed in the report. NOT a tuned-performance claim."
+        )
+    elif len(enabled_names) > 1:
         combo = (
             f"Multi-factor combination (P3-1): {enabled_names} are combined as the "
             "EQUAL-WEIGHT mean of the per-date processed (z-scored / neutralized) "
@@ -345,7 +437,10 @@ def run_phase0(config_path: str) -> Phase0Result:
     factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
 
     processed = _process_factors(cfg, factor_panel, panel)
-    scores = _build_scores(processed, EqualWeightAlpha())
+    alpha = _build_alpha(cfg)
+    scores = _build_scores(processed, alpha, _alpha_forward_returns(cfg, panel, alpha))
+    alpha_summary, alpha_weights = _alpha_disclosure(cfg, alpha)
+    logger.info("alpha: %s", alpha_summary)
 
     nav_table = _run_backtest(cfg, panel, scores, primary.name, universe, logger)
     per_factor, combo = _factor_analytics(cfg, panel, factor_panel, scores)
@@ -379,6 +474,8 @@ def run_phase0(config_path: str) -> Phase0Result:
         factor_names=tuple(f.name for f in factors),
         per_factor=per_factor,
         combo_analytics=combo,
+        alpha_summary=alpha_summary,
+        alpha_weights=alpha_weights,
         ic_mean=ic_mean,
         ic_ir=ic_ir,
         quantile_returns=q_returns,

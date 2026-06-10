@@ -30,7 +30,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from alpha.equal_weight import EqualWeightAlpha
 from analytics.performance import performance_summary
 from factors.compute.financial import SUPPORTED_FIELDS as SUPPORTED_FINANCIAL_FIELDS
 from factors.compute.financial import FinancialFactor
@@ -38,6 +37,9 @@ from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
 from qt.pipeline import (
     _FrameScores,
+    _alpha_disclosure,
+    _alpha_forward_returns,
+    _build_alpha,
     _build_factors,
     _build_scores,
     _build_universe,
@@ -107,6 +109,10 @@ class Phase2Result:
     # combo_analytics  = {ic_mean, ic_ir, quantile_returns} on the traded score.
     per_factor: dict[str, dict]
     combo_analytics: dict
+    # P3-2 alpha disclosure (model, hyper-params, fallback counts; weights log
+    # is the full per-date EFFECTIVE weights for walk-forward models else None).
+    alpha_summary: dict
+    alpha_weights: pd.DataFrame | None
     nav_table: pd.DataFrame
     avg_turnover: float
     cost_drag: float
@@ -361,7 +367,12 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
     processed = _process_factors(cfg, factor_panel, panel)
-    score_panel = _build_scores(processed, EqualWeightAlpha())
+    alpha = _build_alpha(cfg)
+    score_panel = _build_scores(
+        processed, alpha, _alpha_forward_returns(cfg, panel, alpha)
+    )
+    alpha_summary, alpha_weights = _alpha_disclosure(cfg, alpha)
+    logger.info("alpha: %s", alpha_summary)
     scores = _FrameScores(score_panel)
 
     constructor = TopNEqualWeight(cfg.portfolio.top_n, long_only=cfg.portfolio.long_only)
@@ -483,6 +494,8 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
         factor_names=tuple(f.name for f in factors),
         per_factor=per_factor,
         combo_analytics=combo,
+        alpha_summary=alpha_summary,
+        alpha_weights=alpha_weights,
         nav_table=nav_table,
         avg_turnover=float(nav_table["turnover"].mean()) if not nav_table.empty else 0.0,
         cost_drag=float(nav_table["cost"].sum()) if not nav_table.empty else 0.0,
