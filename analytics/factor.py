@@ -4,11 +4,11 @@ This module is the ONLY place in the framework allowed to compute forward
 (future-looking) returns. The factor layer must never receive them — see
 CLAUDE.md invariant #1 and CONTRACTS.md §3.
 
-Implementation note (INV-007 downgrade): the IC / quantile logic here is a
-simple numpy/pandas implementation, not alphalens-reloaded. It is deterministic,
-dependency-light, and easy to audit. ``alphalens`` is available and may be wired
-in later for the HTML report; any such swap must be recorded in the phase0
-report. The simple version is what runs in P0.
+Implementation note: the IC / quantile logic here is a simple numpy/pandas
+implementation — deterministic, dependency-light, easy to audit — and it remains
+the AUTHORITATIVE result that drives the run. Since P2-4, alphalens-reloaded is
+wired in as a report-only cross-check via ``analytics/alphalens_adapter.py``
+(backend disclosed in the report); it never replaces these numbers.
 
 All functions are pure: inputs are never mutated.
 """

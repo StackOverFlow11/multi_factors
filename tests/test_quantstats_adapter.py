@@ -5,6 +5,10 @@ returns and produces CAGR / Sharpe / max-drawdown / volatility, tagging the
 ``backend`` it used. If quantstats is unavailable or raises, it must say so and
 carry the simple-pandas fallback through — never silently pretend the standard
 library ran.
+
+quantstats is an OPTIONAL extra (``pip install .[analytics]``): the success-path
+test skips (disclosed) when it is not installed; the fallback/disclosure tests
+monkeypatch the import and run everywhere.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import pytest
 
 from analytics import quantstats_adapter as qa
 from analytics.quantstats_adapter import quantstats_performance
@@ -24,6 +29,7 @@ def _monthly_returns(n=12):
 
 
 def test_quantstats_performance_reports_standard_metrics():
+    pytest.importorskip("quantstats")  # optional extra; skip (not fail) without it
     out = quantstats_performance(_monthly_returns(), periods_per_year=12)
     assert out["backend"] == "quantstats"
     for key in ("cagr", "sharpe", "max_drawdown", "volatility"):

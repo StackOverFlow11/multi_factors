@@ -107,6 +107,12 @@ Counts below are the actual per-file `pytest` numbers (sum = 234).
 
 - No test hits the network or reads the tushare token (TEST-002, INV-004): the whole
   suite runs on `DemoFeed` / fixtures / monkeypatched SDKs.
+- **Optional analytics extras:** `alphalens-reloaded` / `quantstats` are the
+  `analytics` optional extra in `pyproject.toml` (installed in `quant_mf`). The
+  adapter success-path tests `pytest.importorskip` them — a clean `.[dev]`-only
+  environment SKIPS those 3 tests (disclosed) instead of failing; the
+  fallback/disclosure tests monkeypatch the import and run everywhere. For the
+  full 234-passed run, install `.[analytics]` too (or use `quant_mf`).
 - **P2-2 execution realism (locked by tests):** selection eligibility and execution
   feasibility are split. `runtime.fills.simulate_fills` is the cash-coherent
   sell-then-buy model — at-up-limit blocks buys, at-down-limit blocks sells,

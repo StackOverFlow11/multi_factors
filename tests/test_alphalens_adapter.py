@@ -4,6 +4,10 @@ A thin, report-only wrapper over alphalens-reloaded: it consumes the factor Seri
 plus a wide price frame and produces IC mean / IC-IR / per-quantile mean returns,
 tagging the ``backend`` it used. Unavailable/erroring alphalens must be disclosed
 and fall back to the simple-pandas metrics — never a silent fake.
+
+alphalens-reloaded is an OPTIONAL extra (``pip install .[analytics]``): the
+success-path tests skip (disclosed) when it is not installed; the
+fallback/disclosure tests monkeypatch the import and run everywhere.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ import math
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from analytics import alphalens_adapter as aa
 from analytics.alphalens_adapter import alphalens_factor_metrics
@@ -35,6 +40,7 @@ def _synthetic_factor_and_prices(n_days=40, n_sym=12):
 
 
 def test_alphalens_metrics_reports_ic_and_quantiles():
+    pytest.importorskip("alphalens")  # optional extra; skip (not fail) without it
     factor, prices = _synthetic_factor_and_prices()
     out = alphalens_factor_metrics(factor, prices, quantiles=5, period=1)
     assert out["backend"] == "alphalens"
@@ -73,6 +79,7 @@ def test_alphalens_error_discloses_error_type(monkeypatch):
 
 
 def test_alphalens_suppresses_stdout(capsys):
+    pytest.importorskip("alphalens")  # optional extra; skip (not fail) without it
     # alphalens prints a "Dropped ..." banner; the adapter must not pollute stdout.
     factor, prices = _synthetic_factor_and_prices()
     alphalens_factor_metrics(factor, prices, quantiles=5, period=1)
