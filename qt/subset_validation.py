@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
@@ -66,7 +66,8 @@ from qt.robustness import cell_label, derive_cell_config, iter_cells, skipped_ce
 
 __all__ = ["SubsetCellResult", "SubsetValidationResult", "run_phase3_subset",
            "render_subset_validation", "check_subset_preconditions",
-           "process_group", "subperiod_cost", "summarize_subset_matrix"]
+           "process_group", "subperiod_cost", "summarize_subset_matrix",
+           "sample_class", "independent_verdict", "summarize_by_sample"]
 
 _LOGGER_NAME = "qt.run_phase3_subset"
 
@@ -111,6 +112,13 @@ class SubsetValidationResult:
     summary: dict
     report_path: Path
     log_path: Path
+    # ---- P3-7 independent-sample dimension (defaults keep P3-6 results valid) --
+    # cell label -> "independent" | "screened"
+    cell_samples: dict[str, str] = field(default_factory=dict)
+    # sample class -> a summarize_subset_matrix() dict over THAT class only
+    sample_summaries: dict[str, dict] = field(default_factory=dict)
+    # independent cell label -> independent_verdict() dict
+    verdicts: dict[str, dict] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -234,6 +242,119 @@ def summarize_subset_matrix(cells: dict[str, dict], base_scenario: str) -> dict:
             "ic_test_annual_by_scenario": ic_test_annual_by_scenario,
         }
     return {"n_cells": len(cells), "groups": groups_summary}
+
+
+def sample_class(cfg: RootConfig, universe: str, window_label: str) -> str:
+    """``"independent"`` iff the cell is declared in ``independent_cells``.
+
+    Everything else — including every cell of a pre-P3-7 config — is
+    ``"screened"``: the conservative default, because independence is a human
+    declaration (the machine cannot know which data took part in screening),
+    and an undeclared cell must never silently count as a holdout.
+    """
+    sv = cfg.subset_validation
+    if sv is None:
+        return "screened"
+    declared = {(c.universe, c.window) for c in sv.independent_cells}
+    return "independent" if (universe, window_label) in declared else "screened"
+
+
+def independent_verdict(
+    raw_ic_stats: dict[str, dict],
+    hypotheses: dict[str, str],
+    n_settled: int,
+    min_rebalances: int,
+) -> dict:
+    """Factual sign check of the pre-declared hypotheses on ONE independent cell.
+
+    A hypothesis HOLDS iff the factor's mean IC carries the expected sign in
+    BOTH subperiods of the holdout window (both postdate the screening, so
+    both must agree for a clean confirmation). A NaN or missing IC never
+    holds. Sample sufficiency gates everything: fewer settled rebalances
+    (train + test) than ``min_rebalances`` yields ``INSUFFICIENT-DATA`` with
+    the size disclosed — the per-factor table is still reported for
+    transparency. This is a SIGN check on ICs, never a return claim.
+
+    Statuses: ``SUPPORTED`` (all hold) / ``PARTIAL`` (some) / ``NOT SUPPORTED``
+    (none) / ``INSUFFICIENT-DATA`` / ``NO-HYPOTHESES``.
+    """
+    factors: dict[str, dict] = {}
+    n_holds = 0
+    for name, expected in hypotheses.items():
+        stats = raw_ic_stats.get(name) or {}
+        train = float((stats.get("train") or {}).get("ic_mean", float("nan")))
+        test = float((stats.get("test") or {}).get("ic_mean", float("nan")))
+
+        def _matches(value: float) -> bool:
+            if not math.isfinite(value) or value == 0.0:
+                return False
+            return value > 0 if expected == "positive" else value < 0
+
+        holds_train = _matches(train)
+        holds_test = _matches(test)
+        holds = holds_train and holds_test
+        n_holds += int(holds)
+        factors[name] = {
+            "expected": expected,
+            "train_ic": train,
+            "test_ic": test,
+            "holds_train": holds_train,
+            "holds_test": holds_test,
+            "holds": holds,
+        }
+
+    n_hyp = len(hypotheses)
+    if n_settled < min_rebalances:
+        status = "INSUFFICIENT-DATA"
+        reason = (
+            f"only {n_settled} settled rebalances (train+test) in this cell, "
+            f"below the configured minimum of {min_rebalances} — too few periods "
+            "to read the sign check as evidence either way."
+        )
+    elif n_hyp == 0:
+        status = "NO-HYPOTHESES"
+        reason = "no hypotheses configured; nothing to verdict."
+    elif n_holds == n_hyp:
+        status = "SUPPORTED"
+        reason = f"all {n_hyp} hypothesis factors carry the expected IC sign in BOTH subperiods."
+    elif n_holds == 0:
+        status = "NOT SUPPORTED"
+        reason = f"0/{n_hyp} hypothesis factors carry the expected IC sign in both subperiods."
+    else:
+        status = "PARTIAL"
+        reason = (
+            f"{n_holds}/{n_hyp} hypothesis factors carry the expected IC sign in "
+            "both subperiods."
+        )
+    return {
+        "status": status,
+        "reason": reason,
+        "n_settled": int(n_settled),
+        "min_rebalances": int(min_rebalances),
+        "n_holds": n_holds,
+        "n_hypotheses": n_hyp,
+        "factors": factors,
+    }
+
+
+def summarize_by_sample(
+    cells: dict[str, dict], cell_samples: dict[str, str], base_scenario: str
+) -> dict[str, dict]:
+    """Per-sample-class cross-cell summaries (screened and independent NEVER mix).
+
+    Each class gets its own :func:`summarize_subset_matrix` over ONLY its
+    cells, so no screened number can leak into the independent summary (or
+    vice versa) — the conclusions gate of the P3-7 /goal. Unlabeled cells
+    default to ``screened`` (the conservative class).
+    """
+    by_class: dict[str, dict[str, dict]] = {}
+    for label, cell in cells.items():
+        cls = cell_samples.get(label, "screened")
+        by_class.setdefault(cls, {})[label] = cell
+    return {
+        cls: summarize_subset_matrix(class_cells, base_scenario=base_scenario)
+        for cls, class_cells in by_class.items()
+    }
 
 
 def check_subset_preconditions(
@@ -469,6 +590,28 @@ def run_phase3_subset(config_path: str) -> SubsetValidationResult:
         logger.info("cell %s: done in %.1fs", label, runtimes[label])
 
     plain = {label: {"groups": c.groups} for label, c in cells.items()}
+    cell_samples = {
+        cell_label(u, w): sample_class(cfg, u, w.label) for u, w in cells_to_run
+    }
+    verdicts: dict[str, dict] = {}
+    for label, cell in cells.items():
+        if cell_samples.get(label) != "independent":
+            continue
+        # the rebalance calendar is group/scenario-independent: read the settled
+        # train+test counts off the first group's base-scenario ic_weighted leg.
+        first_group = next(iter(cell.groups.values()))
+        base_perf = first_group["performance"][base_scenario]["ic_weighted"]
+        n_settled = int(base_perf["train"].get("n_rebalances", 0)) + int(
+            base_perf["test"].get("n_rebalances", 0)
+        )
+        verdicts[label] = independent_verdict(
+            cell.raw_ic_stats,
+            dict(cfg.subset_validation.hypotheses),
+            n_settled=n_settled,
+            min_rebalances=cfg.subset_validation.min_rebalances,
+        )
+        logger.info("independent verdict %s: %s (%s)",
+                    label, verdicts[label]["status"], verdicts[label]["reason"])
     result = SubsetValidationResult(
         config=cfg,
         elapsed_seconds=time.perf_counter() - t0,
@@ -480,10 +623,17 @@ def run_phase3_subset(config_path: str) -> SubsetValidationResult:
         summary=summarize_subset_matrix(plain, base_scenario=base_scenario),
         report_path=Path(cfg.output.report_dir) / "phase3_subset_validation.md",
         log_path=log_path,
+        cell_samples=cell_samples,
+        sample_summaries=summarize_by_sample(
+            plain, cell_samples, base_scenario=base_scenario
+        ),
+        verdicts=verdicts,
     )
     write_subset_validation_summary(result)
     logger.info(
-        "phase3 subset done: %d cells, report=%s (%.1fs)",
-        result.summary["n_cells"], result.report_path, result.elapsed_seconds,
+        "phase3 subset done: %d cells (%d independent), report=%s (%.1fs)",
+        result.summary["n_cells"],
+        sum(1 for v in cell_samples.values() if v == "independent"),
+        result.report_path, result.elapsed_seconds,
     )
     return result

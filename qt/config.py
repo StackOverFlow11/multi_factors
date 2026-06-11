@@ -335,17 +335,51 @@ class CostScenarioCfg(_Strict):
         return v
 
 
+class IndependentCellCfg(_Strict):
+    """One matrix cell declared a GENUINELY INDEPENDENT holdout (P3-7).
+
+    The declaration is explicit and human-made — the machine cannot know which
+    data took part in factor screening. Cells not listed are labeled
+    screened/post-hoc in the report; the independent verdict reads ONLY the
+    declared cells.
+    """
+
+    universe: str
+    window: str  # a robustness.windows[].label
+
+
 class SubsetValidationCfg(_Strict):
     """P3-6 subset validation: factor groups × cost scenarios over the matrix.
 
     A multiplier-1.0 scenario is REQUIRED: it anchors the cost-drag comparison
     (every other scenario reads as "the same trades at k× the fee").
+
+    P3-7 adds the independent-sample dimension: ``independent_cells`` labels
+    holdout cells (everything else is screened/post-hoc), ``hypotheses`` fixes
+    the expected IC sign per factor BEFORE the run (a factual sign check, not a
+    return claim), and ``min_rebalances`` gates sample sufficiency (too few
+    settled rebalances → an INSUFFICIENT-DATA verdict, never a silent pass).
     """
 
     groups: list[FactorGroupCfg]
     cost_scenarios: list[CostScenarioCfg] = Field(
         default_factory=lambda: [CostScenarioCfg(label="base", fee_multiplier=1.0)]
     )
+    independent_cells: list[IndependentCellCfg] = Field(default_factory=list)
+    hypotheses: dict[str, Literal["positive", "negative"]] = Field(
+        default_factory=dict
+    )
+    min_rebalances: int = 8
+
+    @field_validator("min_rebalances")
+    @classmethod
+    def _check_min_rebalances(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError(
+                f"subset_validation.min_rebalances must be a positive integer; "
+                f"got {v!r}."
+            )
+        return v
 
     @model_validator(mode="after")
     def _check_sections(self) -> "SubsetValidationCfg":
@@ -414,6 +448,45 @@ class RootConfig(_Strict):
                     f"{unknown} that are not ENABLED entries of config.factors "
                     f"(enabled: {sorted(enabled)}). A disabled or unknown factor "
                     "has no raw factor-panel column to subset."
+                )
+        bad_hyp = [f for f in self.subset_validation.hypotheses if f not in enabled]
+        if bad_hyp:
+            raise ValueError(
+                f"subset_validation.hypotheses references factor(s) {bad_hyp} that "
+                f"are not ENABLED entries of config.factors (enabled: "
+                f"{sorted(enabled)}); a hypothesis needs a raw factor-panel column "
+                "to check."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_independent_cells(self) -> "RootConfig":
+        if self.subset_validation is None or not self.subset_validation.independent_cells:
+            return self
+        if self.robustness is None:
+            raise ValueError(
+                "subset_validation.independent_cells references matrix cells, but "
+                "there is no 'robustness' section declaring universes/windows."
+            )
+        labels = [w.label for w in self.robustness.windows]
+        skipped = {(s.universe, s.window) for s in self.robustness.skip_cells}
+        for cell in self.subset_validation.independent_cells:
+            if cell.universe not in self.robustness.universes:
+                raise ValueError(
+                    f"subset_validation.independent_cells references unknown "
+                    f"universe {cell.universe!r} (declared: {self.robustness.universes})."
+                )
+            if cell.window not in labels:
+                raise ValueError(
+                    f"subset_validation.independent_cells references unknown "
+                    f"window label {cell.window!r} (declared: {labels})."
+                )
+            if (cell.universe, cell.window) in skipped:
+                raise ValueError(
+                    f"subset_validation.independent_cells declares "
+                    f"{cell.universe!r}|{cell.window!r} an independent holdout, but "
+                    "that cell is skip_cells-listed and never runs — an independent "
+                    "validation that does not run is a contradiction."
                 )
         return self
 

@@ -140,10 +140,17 @@ def _cmd_run_phase3_subset(args: argparse.Namespace) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     n_groups = len(result.summary.get("groups", {}))
+    verdict_note = ""
+    if result.verdicts:
+        statuses = ", ".join(
+            f"{label}={v['status']}" for label, v in result.verdicts.items()
+        )
+        verdict_note = f"\nindependent verdicts: {statuses}"
     print(
         f"OK run-phase3-subset: cells={result.summary['n_cells']}, "
         f"groups={n_groups}, scenarios={len(result.scenario_fees)}, "
-        f"skipped={len(result.skipped_cells)} ({result.elapsed_seconds:.1f}s)\n"
+        f"skipped={len(result.skipped_cells)} ({result.elapsed_seconds:.1f}s)"
+        f"{verdict_note}\n"
         f"report: {result.report_path}"
     )
     return 0

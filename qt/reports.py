@@ -950,11 +950,11 @@ def _subset_perf_table(performance: dict) -> str:
     return header + rows
 
 
-def _subset_group_summary_block(glabel: str, gsum: dict) -> str:
+def _subset_group_summary_block(glabel: str, gsum: dict, level: str = "###") -> str:
     """One group's cross-cell summary (combo stability + cost ladder)."""
     n = int(gsum.get("n_cells", 0))
     lines = [
-        f"\n### Group `{glabel}` across cells\n",
+        f"\n{level} Group `{glabel}` across cells\n",
         f"- ic_weighted beats equal_weight on TEST annual return at the BASE "
         f"scenario in **{gsum.get('ic_beats_eq_test_base', 0)}/{n}** cells\n\n",
         "| Combo series | test IC > 0 | train→test sign consistent | "
@@ -1039,13 +1039,16 @@ def render_subset_validation(result) -> str:
     )
 
     lines.append("\n## Cells\n")
+    cell_samples = getattr(result, "cell_samples", None) or {}
     lines.append(
-        "| Cell (universe \\| window) | window | split | runtime |\n|---|---|---|---|\n"
+        "| Cell (universe \\| window) | sample | window | split | runtime |\n"
+        "|---|---|---|---|---|\n"
     )
     for label, cell in result.cells.items():
         runtime = result.cell_runtimes.get(label, float("nan"))
+        sample = cell_samples.get(label, "screened")
         lines.append(
-            f"| `{label}` | {_date_str(cell.train_start)} → "
+            f"| `{label}` | {sample} | {_date_str(cell.train_start)} → "
             f"{_date_str(cell.test_end)} | {_date_str(cell.split_date)} | "
             f"{runtime:.0f}s |\n"
         )
@@ -1056,10 +1059,63 @@ def render_subset_validation(result) -> str:
             f"reduced, not hidden):** {sk}\n"
         )
 
+    verdicts = getattr(result, "verdicts", None) or {}
+    if verdicts:
+        lines.append("\n## Independent holdout verdict\n")
+        lines.append(
+            "_Derived from INDEPENDENT cells ONLY (declared in "
+            "`subset_validation.independent_cells`; their data took no part in "
+            "factor screening — screened cells never enter this section). A "
+            "hypothesis HOLDS iff the factor's mean IC carries the pre-declared "
+            "expected sign in BOTH subperiods of the holdout cell (both postdate "
+            "the screening). Settled rebalances below `min_rebalances` yield "
+            "INSUFFICIENT-DATA. This is a factual IC sign check — NOT a return "
+            "claim._\n"
+        )
+        for label, v in verdicts.items():
+            lines.append(f"\n### `{label}` — **{v['status']}**\n")
+            lines.append(
+                f"- sample size: **{v['n_settled']}** settled rebalances "
+                f"(train+test) vs required minimum **{v['min_rebalances']}**\n"
+                f"- {v['reason']}\n\n"
+            )
+            lines.append(
+                "| Hypothesis factor | expected sign | train IC | test IC | "
+                "holds (train) | holds (test) | holds (BOTH) |\n"
+                "|---|---|---|---|---|---|---|\n"
+            )
+            for name, f in (v.get("factors") or {}).items():
+                lines.append(
+                    f"| `{name}` | {f['expected']} | {_fmt(f['train_ic'])} | "
+                    f"{_fmt(f['test_ic'])} | {'YES' if f['holds_train'] else 'NO'} | "
+                    f"{'YES' if f['holds_test'] else 'NO'} | "
+                    f"{'**YES**' if f['holds'] else 'NO'} |\n"
+                )
+
     lines.append("\n## Cross-cell summary by group\n")
-    lines.append(f"- cells aggregated: **{int(result.summary.get('n_cells', 0))}**\n")
-    for glabel, gsum in (result.summary.get("groups") or {}).items():
-        lines.append(_subset_group_summary_block(glabel, gsum))
+    sample_summaries = getattr(result, "sample_summaries", None) or {}
+    if "independent" in sample_summaries:
+        lines.append(
+            "_Summaries are computed PER SAMPLE CLASS — independent holdout "
+            "cells are never averaged with screened (post-hoc) cells._\n"
+        )
+        for cls, title in (("independent", "Independent holdout cells"),
+                           ("screened", "Screened (post-hoc) cells")):
+            if cls not in sample_summaries:
+                continue
+            cls_summary = sample_summaries[cls]
+            lines.append(f"\n### {title}\n")
+            lines.append(
+                f"- cells aggregated: **{int(cls_summary.get('n_cells', 0))}**\n"
+            )
+            for glabel, gsum in (cls_summary.get("groups") or {}).items():
+                lines.append(_subset_group_summary_block(glabel, gsum, level="####"))
+    else:
+        lines.append(
+            f"- cells aggregated: **{int(result.summary.get('n_cells', 0))}**\n"
+        )
+        for glabel, gsum in (result.summary.get("groups") or {}).items():
+            lines.append(_subset_group_summary_block(glabel, gsum))
 
     for label, cell in result.cells.items():
         lines.append(f"\n## Cell `{label}`\n")
@@ -1105,9 +1161,13 @@ def render_subset_validation(result) -> str:
     universes = sorted({label.split("|", 1)[0] for label in result.cells})
     windows = sorted({label.split("|", 1)[1] for label in result.cells})
     skipped = ", ".join(f"`{s}`" for s in result.skipped_cells) or "none"
+    samples_note = "; ".join(
+        f"`{label}` = {cell_samples.get(label, 'screened')}" for label in result.cells
+    )
     lines.append(
         f"- MATRIX SCOPE: run cells: {run_labels}; skipped cells: {skipped}; "
-        f"universes covered: {universes}; windows covered: {windows}. "
+        f"universes covered: {universes}; windows covered: {windows}; "
+        f"sample classes: {samples_note}. "
         "Universe-specific disclosures below are the UNION over all run cells.\n"
     )
     seen: set[str] = set()
