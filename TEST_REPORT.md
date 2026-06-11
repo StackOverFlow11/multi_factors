@@ -146,6 +146,13 @@ Counts below are the actual per-file `pytest` numbers (sum = 349).
   `artifacts/reports/phase1_summary.md`.
 - **P2-1** baseline (SSE50, ~11 min): `artifacts/reports/phase2_real_baseline.md` —
   settled-date diagnostics, ann_date coverage, tradability funnel.
+- **P3-6** subset validation + cost sensitivity (3 cells × 4 groups × 3
+  scenarios, ~2.1 h): `artifacts/reports/phase3_subset_validation.md` —
+  THREE-layer no-drift reconciliation passed (raw-factor ICs 66/66 rows
+  identical to the P3-5 matrix report; `legacy_trio`@base reproduces the
+  P3-3/P3-4 numbers exactly; `full_pack`@base reproduces the P3-5 numbers
+  exactly); turnover identical across cost scenarios as designed; secret scan
+  0 occurrences (token value / "token" / ".config.json") in report and log.
 
 ## Notes
 
