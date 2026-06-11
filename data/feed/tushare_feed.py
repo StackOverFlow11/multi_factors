@@ -68,7 +68,7 @@ class TushareFeed(DataFeed):
         secret_file: str,
         token_key: str = "tushare.token",
         rate_limit: int | None = None,
-        max_retries: int = 3,
+        max_retries: int = 6,
     ) -> None:
         self._secret_file = str(secret_file)
         self._token_key = token_key

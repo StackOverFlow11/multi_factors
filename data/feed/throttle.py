@@ -16,7 +16,7 @@ from typing import Any
 def request_with_retry(
     fn: Callable[..., Any],
     *,
-    max_retries: int = 3,
+    max_retries: int = 6,
     rate_limit: int | None = None,
     **kwargs: Any,
 ) -> Any:
