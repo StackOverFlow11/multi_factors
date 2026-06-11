@@ -56,6 +56,7 @@ from data.store.panel_store import PanelStore
 from factors.compute.candidates import (
     VALUE_FIELDS,
     LiquidityFactor,
+    OvernightMomentumFactor,
     ReversalFactor,
     ValueFactor,
     VolatilityFactor,
@@ -683,6 +684,12 @@ def _build_factors(cfg: RootConfig) -> list:
             factor = FinancialFactor(field=spec.name)
         elif spec.name in VALUE_FIELDS:
             factor = ValueFactor(spec.name)
+        elif spec.name.startswith("overnight_mom"):
+            factor = OvernightMomentumFactor(
+                window=window,
+                open_col=str(params.get("open_col", "open")),
+                close_col=str(params.get("close_col", "close")),
+            )
         elif spec.name.startswith("momentum"):
             factor = MomentumFactor(
                 window=window, price_col=str(params.get("price_col", "close"))
@@ -702,8 +709,8 @@ def _build_factors(cfg: RootConfig) -> list:
         else:
             raise ValueError(
                 f"Unknown factor {spec.name!r}; expected 'momentum*', 'reversal*', "
-                f"'volatility*', 'liquidity*', one of {VALUE_FIELDS} or one of "
-                f"{SUPPORTED_FINANCIAL_FIELDS}."
+                f"'volatility*', 'liquidity*', 'overnight_mom*', one of "
+                f"{VALUE_FIELDS} or one of {SUPPORTED_FINANCIAL_FIELDS}."
             )
         # window-named factors derive their name from params: a spec named
         # reversal_5 with params.window=10 would silently mislabel the column.

@@ -27,7 +27,7 @@ Run from the repo root with the project python (env `quant_mf`):
 | Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 317).
+Counts below are the actual per-file `pytest` numbers (sum = 322).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -125,13 +125,13 @@ Counts below are the actual per-file `pytest` numbers (sum = 317).
 |---|---|---|
 | `test_robustness_matrix.py` | 14 | matrix config validation (universes/windows/unique labels, split-inside-window, unknown-skip + all-skipped ConfigErrors); cell enumeration excludes skips in config order; per-cell config derivation swaps ONLY the cell identity (incl. unique per-cell output_name; derived cell passes the shared OOS preconditions); cross-cell aggregation attributes strictly per cell (no mixing, no dilution); runner guards (demo source / missing robustness section / non-ic_weighted alpha); report renders cell labels + skipped-cell disclosure + boundary/fallback/sign-consistency + cross-cell summary + caveat + no secret |
 
-## Per-file breakdown — Phase 3-5 factor candidates (17 + 1 reworked)
+## Per-file breakdown — Phase 3-5 factor candidates (22 + 1 reworked)
 
 | Test file | Tests | Red-line / feature |
 |---|---|---|
-| `test_candidate_factors.py` | 17 | per-factor math vs manual references (reversal == −momentum, volatility rolling std, liquidity log-mean-amount); leading-window NaN; future-bar perturbation invariance; per-symbol isolation; non-positive amount → NaN never −inf; missing-column readable errors; ValueFactor surfaces enriched column + rejects unknown fields; grossprofit_margin in SUPPORTED_FIELDS; dispatch builds every candidate + rejects name/params mismatch; value enrichment ONE fetch for both fields + 1/pe 1/pb math + non-positive guards + demo readable error + input immutability; demo e2e with price candidates (per-factor analytics, report, no secret); candidates config validates |
+| `test_candidate_factors.py` | 22 | per-factor math vs manual references (reversal == −momentum, volatility rolling std, liquidity log-mean-amount, overnight Σlog(open/prev-close) incl. prev-close-never-crosses-symbols); leading-window NaN; future-bar perturbation invariance; per-symbol isolation; non-positive amount → NaN never −inf; missing-column readable errors; ValueFactor surfaces enriched column + rejects unknown fields; grossprofit_margin in SUPPORTED_FIELDS; dispatch builds every candidate + rejects name/params mismatch; value enrichment ONE fetch for both fields + 1/pe 1/pb math + non-positive guards + demo readable error + input immutability; demo e2e with price candidates (per-factor analytics, report, no secret); candidates config validates |
 | `test_multifactor_pipeline.py` (reworked 1) | — | duplicate-name test now uses a true duplicate spec (the new name/params-mismatch guard catches the old mislabel construction earlier) |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-5)** | **317** | |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-5)** | **322** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -221,7 +221,7 @@ Counts below are the actual per-file `pytest` numbers (sum = 317).
   config-validated and disclosed (never silent); cross-cell aggregation is
   strictly per cell. Single-run `run-phase3-oos` behaviour is unchanged.
 - **P3-5 factor candidates (locked by tests):** conservative daily PIT-safe
-  candidates (reversal_5/20, volatility_20, liquidity_20, value_ep/bp via one
+  candidates (reversal_5/20, volatility_20, liquidity_20, overnight_mom_20, value_ep/bp via one
   daily_basic fetch with non-positive guards, grossprofit_margin via the
   existing ann_date machinery). The dispatch rejects a window-name/params
   mismatch; legacy configs reproduce their numbers (demo ic 0.96 / annual

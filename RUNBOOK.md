@@ -372,11 +372,12 @@ no-future-bars, per-symbol isolation, immutability):
 | `reversal_5/20` | −(close[t]/close[t−w] − 1) | exact negative of momentum (≤t bars) |
 | `volatility_20` | std of trailing 20 daily returns (ddof=1, full window) | ≤t bars |
 | `liquidity_20` | log(mean(amount, 20)) (non-positive → NaN) | same-day bar amount |
+| `overnight_mom_20` | Σ log(open[t]/close[t−1]) over 20d (non-positive → NaN) | open known at the t open; computed at the t close |
 | `value_ep` / `value_bp` | 1/pe, 1/pb from `daily_basic` (one fetch; ≤0 → NaN) | ratios published same-day |
 | `grossprofit_margin` | financial quality field | ann_date as-of (existing machinery) |
 
 Registry / dispatch: `_build_factors` resolves `reversal*` / `volatility*` /
-`liquidity*` / value fields / financial fields; window-named factors must agree
+`liquidity*` / `overnight_mom*` / value fields / financial fields; window-named factors must agree
 with `params.window` (a mismatch is a readable config error, never a silent
 mislabel). Legacy configs are untouched and reproduce their numbers.
 

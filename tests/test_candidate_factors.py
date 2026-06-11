@@ -26,6 +26,7 @@ import yaml
 
 from factors.compute.candidates import (
     LiquidityFactor,
+    OvernightMomentumFactor,
     ReversalFactor,
     ValueFactor,
     VolatilityFactor,
@@ -45,12 +46,17 @@ def _panel(n_days=30, syms=("A", "B")):
     dates = pd.bdate_range("2024-01-01", periods=n_days)
     idx = pd.MultiIndex.from_product([dates, list(syms)], names=["date", "symbol"])
     close = []
+    open_ = []
     amount = []
     for i in range(n_days):
         for j, _ in enumerate(syms):
-            close.append(100.0 + i + 50.0 * j)     # deterministic per-symbol path
+            c = 100.0 + i + 50.0 * j               # deterministic per-symbol path
+            close.append(c)
+            open_.append(c - 0.4 - 0.1 * j)        # a stable overnight gap
             amount.append(1e6 * (1 + j) + 1e3 * i)
-    return pd.DataFrame({"close": close, "amount": amount}, index=idx)
+    return pd.DataFrame(
+        {"open": open_, "close": close, "amount": amount}, index=idx
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -137,6 +143,60 @@ def test_liquidity_requires_amount_column():
 
 
 # --------------------------------------------------------------------------- #
+# overnight momentum
+# --------------------------------------------------------------------------- #
+def test_overnight_mom_matches_manual_sum_of_log_gaps():
+    panel = _panel()
+    out = OvernightMomentumFactor(window=20).compute(panel)
+    assert out.name == "overnight_mom_20"
+    a = panel.xs("A", level="symbol")
+    manual = np.log(a["open"] / a["close"].shift(1)).rolling(
+        20, min_periods=20
+    ).sum()
+    pd.testing.assert_series_equal(
+        out.xs("A", level="symbol"), manual.rename("overnight_mom_20"),
+        check_names=True,
+    )
+    # needs w overnight returns (= w+1 bars): rows 0..19 are NaN, row 20 finite
+    got_a = out.xs("A", level="symbol")
+    assert got_a.iloc[:20].isna().all() and math.isfinite(got_a.iloc[20])
+
+
+def test_overnight_mom_ignores_future_bars():
+    panel = _panel()
+    t = pd.Timestamp(panel.index.get_level_values("date").unique()[25])
+    before = OvernightMomentumFactor(window=20).compute(panel).loc[(t, "A")]
+    poisoned = panel.copy()
+    future = poisoned.index.get_level_values("date") > t
+    poisoned.loc[future, ["open", "close"]] = 9_999.0
+    after = OvernightMomentumFactor(window=20).compute(poisoned).loc[(t, "A")]
+    assert before == after
+
+
+def test_overnight_mom_prev_close_never_crosses_symbols():
+    panel = _panel()
+    before = OvernightMomentumFactor(window=5).compute(panel).xs("A", level="symbol")
+    poisoned = panel.copy()
+    b_rows = poisoned.index.get_level_values("symbol") == "B"
+    poisoned.loc[b_rows, ["open", "close"]] = 1.0
+    after = OvernightMomentumFactor(window=5).compute(poisoned).xs("A", level="symbol")
+    pd.testing.assert_series_equal(before, after)
+
+
+def test_overnight_mom_nonpositive_prices_are_nan_not_inf():
+    panel = _panel().copy()
+    panel.loc[panel.index[:6], "open"] = 0.0
+    out = OvernightMomentumFactor(window=3).compute(panel)
+    assert not np.isinf(out.dropna()).any()
+
+
+def test_overnight_mom_requires_open_column():
+    panel = _panel().drop(columns=["open"])
+    with pytest.raises(ValueError, match="open"):
+        OvernightMomentumFactor(window=20).compute(panel)
+
+
+# --------------------------------------------------------------------------- #
 # value (daily_basic enrichment surface)
 # --------------------------------------------------------------------------- #
 def test_value_factor_surfaces_enriched_column():
@@ -191,6 +251,7 @@ def test_dispatch_builds_every_candidate(tmp_path, example_config_path):
         {"name": "reversal_20", "enabled": True, "params": {"window": 20}},
         {"name": "volatility_20", "enabled": True, "params": {"window": 20}},
         {"name": "liquidity_20", "enabled": True, "params": {"window": 20}},
+        {"name": "overnight_mom_20", "enabled": True, "params": {"window": 20}},
         {"name": "value_ep", "enabled": True, "params": {}},
         {"name": "value_bp", "enabled": True, "params": {}},
         {"name": "roe", "enabled": True, "params": {}},
@@ -202,8 +263,9 @@ def test_dispatch_builds_every_candidate(tmp_path, example_config_path):
     assert isinstance(factors[1], ReversalFactor)
     assert isinstance(factors[3], VolatilityFactor)
     assert isinstance(factors[4], LiquidityFactor)
-    assert isinstance(factors[5], ValueFactor)
-    assert isinstance(factors[8], FinancialFactor)
+    assert isinstance(factors[5], OvernightMomentumFactor)
+    assert isinstance(factors[6], ValueFactor)
+    assert isinstance(factors[9], FinancialFactor)
 
 
 def test_dispatch_rejects_name_params_mismatch(tmp_path, example_config_path):
@@ -312,6 +374,7 @@ def test_candidates_config_validates():
     # legacy trio kept for the old-vs-new comparison + the candidate pack
     assert {"momentum_20", "roe", "netprofit_yoy"} <= set(names)
     assert {"reversal_5", "reversal_20", "volatility_20", "liquidity_20",
-            "value_ep", "value_bp", "grossprofit_margin"} <= set(names)
+            "overnight_mom_20", "value_ep", "value_bp",
+            "grossprofit_margin"} <= set(names)
     assert cfg.robustness is not None  # runs through the P3-4 matrix
     assert cfg.alpha.model == "ic_weighted"

@@ -76,6 +76,10 @@ factors:
     enabled: true
     params:
       window: 20
+  - name: overnight_mom_20   # sum of log(open_t/close_{t-1}) over 20d (open known at t)
+    enabled: true
+    params:
+      window: 20
   - name: value_ep      # 1/pe from daily_basic (same-day, PIT-safe; pe<=0 -> NaN)
     enabled: true
     params: {}

@@ -123,6 +123,54 @@ class LiquidityFactor(Factor):
         return np.log(safe).reindex(panel.index).rename(self.name)
 
 
+class OvernightMomentumFactor(Factor):
+    """Cumulative overnight (close→open) log return over a fixed window.
+
+        overnight_ret[t]    = log(open[t] / close[t-1])
+        overnight_mom_w[t]  = sum(overnight_ret[t-w+1 .. t])
+
+    PIT argument: open[t] is known at the t open and close[t-1] the prior
+    close, so the value at t uses only <=t information (factors are computed at
+    the t close). Both prices are front-adjusted by the same anchor, so the
+    ratio is ex-dividend-safe. Computation is strictly per symbol (the t-1
+    close never crosses symbols); non-positive prices map to NaN (never a
+    silent ``-inf``); the leading window is NaN (min_periods = w full overnight
+    returns, which need w+1 bars).
+    """
+
+    name: str = "overnight_mom_20"
+
+    def __init__(
+        self, window: int = 20, open_col: str = "open", close_col: str = "close"
+    ) -> None:
+        if not isinstance(window, int) or window < 1:
+            raise ValueError(
+                f"overnight momentum window must be a positive integer, got {window!r}."
+            )
+        self._window = window
+        self._open_col = open_col
+        self._close_col = close_col
+        self.name = f"overnight_mom_{window}"
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        missing = [c for c in (self._open_col, self._close_col) if c not in panel.columns]
+        if missing:
+            raise ValueError(
+                f"overnight momentum factor needs {missing} column(s); panel has "
+                f"{list(panel.columns)}."
+            )
+        open_px = panel[self._open_col]
+        close_px = panel[self._close_col]
+        # strictly-lagged close within each symbol; never crosses symbols.
+        prev_close = close_px.groupby(level="symbol").shift(1)
+        ratio = (open_px / prev_close).where((open_px > 0) & (prev_close > 0))
+        overnight = np.log(ratio)
+        mom = overnight.groupby(level="symbol", group_keys=False).apply(
+            lambda s: s.rolling(self._window, min_periods=self._window).sum()
+        )
+        return mom.reindex(panel.index).rename(self.name)
+
+
 class ValueFactor(Factor):
     """Surface a daily_basic-enriched value column (``value_ep`` / ``value_bp``).
 
