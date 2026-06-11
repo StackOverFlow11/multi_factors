@@ -122,7 +122,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - `config/phase3_real_factor_candidates.yaml`:旧三 + 候选八 = 11 因子,同 P3-4 矩阵形状(CSI300×2020-2022 显式 skip 披露);**旧 vs 新一跑读出**(raw IC 按列独立)。
   - **真实矩阵（11 因子版 3 cells / 2h;旧三因子+前轮候选 per-cell IC 逐数不变=不漂移 smoke ✓;secret scan 0;一次 CSI300 网络故障后整 run 重跑成功）**:
     - **"因子集太窄"假设获得支持**:`value_ep`/`value_bp` test IC **3/3 正、0.037~0.056**;`volatility_20` **3/3 负、−0.044~−0.079**(低波方向稳定)——比旧三因子(|IC|≤0.015)高一个量级且方向跨 cell 一致。liquidity 3/3 负但量级小;`overnight_mom_20` test IC 2/3 正(+0.008/+0.016,2020-22 为负)中等偏弱;reversal/grossprofit_margin 翻号无信号。
-    - `combo_ic_weighted` test IC **3/3 正 + 3/3 sign consistent**(0.0255/0.0014/0.0402)——walk-forward IC 加权吃到了新信号;10 因子**等权** combo 反被翻号因子稀释(IC 0/3 正,CSI300 test **−25.2%**)——等权对因子集质量敏感。
+    - `combo_ic_weighted` test IC **3/3 正 + 3/3 sign consistent**(0.0253/0.0012/0.0395)——walk-forward IC 加权吃到了新信号;11 因子**等权** combo 反被翻号因子稀释(IC 0/3 正,CSI300 test **−25.2%**)——等权对因子集质量敏感。
     - 组合绩效:ic test −2.21%/−5.02%/−2.76%(**3/3 cells 跑赢等权**;CSI300 train +23.11%→test −2.76%,train→test 衰减仍显著)。
     - ⚠️ **EXPLORATORY,非收益声明**:value/低波在 2020-2024 A 股是已知强势 regime;三 cells 窗口重叠非独立样本;未调参、未做成本敏感性。下一步候选:value+lowvol 子集独立复检。
 - ✅ 质量门：`pytest` **322 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=15 / P3-5=22）；`ruff` clean；`validate-config`（旧 7 配置 + `phase3_real_factor_candidates.yaml`）+ `run-phase0`（demo）均 OK。

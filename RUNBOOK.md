@@ -354,7 +354,7 @@ Adds a conservative, daily, PIT-safe candidate factor pack and re-runs the
 P3-4 robustness matrix to test whether the legacy trio's weak signal was just
 a too-narrow factor set. **Exploratory — not tuned, not a return claim.** No
 alpha / portfolio / execution / OOS / robustness model change. Documented by
-`config/phase3_real_factor_candidates.yaml` (legacy trio + 7 candidates,
+`config/phase3_real_factor_candidates.yaml` (legacy trio + 8 candidates,
 same matrix shape as P3-4 incl. the disclosed CSI300×2020-2022 skip).
 
 ```bash

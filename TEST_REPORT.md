@@ -22,7 +22,7 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **299 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **322 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
