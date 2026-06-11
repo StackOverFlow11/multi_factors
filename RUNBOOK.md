@@ -348,6 +348,47 @@ stability, weight sign flips, fallback counts, boundary rebalances); and the
 explicit caveat that this is a stability check — NOT a return claim, not a
 tuned result.
 
+## Phase 3-5 — factor candidate pack (EXPLORATORY)
+
+Adds a conservative, daily, PIT-safe candidate factor pack and re-runs the
+P3-4 robustness matrix to test whether the legacy trio's weak signal was just
+a too-narrow factor set. **Exploratory — not tuned, not a return claim.** No
+alpha / portfolio / execution / OOS / robustness model change. Documented by
+`config/phase3_real_factor_candidates.yaml` (legacy trio + 8 candidates,
+same matrix shape as P3-4 incl. the disclosed CSI300×2020-2022 skip).
+
+```bash
+# validate (no network)
+... -m qt.cli validate-config        --config config/phase3_real_factor_candidates.yaml
+# run (network + token; HEAVY ~2-2.5h — CSI300 adds ~400 names × daily_basic pe/pb)
+... -m qt.cli run-phase3-robustness  --config config/phase3_real_factor_candidates.yaml
+```
+
+Candidates (all locked by unit tests for math, leading-window NaN,
+no-future-bars, per-symbol isolation, immutability):
+
+| Factor | Definition | PIT argument |
+|---|---|---|
+| `reversal_5/20` | −(close[t]/close[t−w] − 1) | exact negative of momentum (≤t bars) |
+| `volatility_20` | std of trailing 20 daily returns (ddof=1, full window) | ≤t bars |
+| `liquidity_20` | log(mean(amount, 20)) (non-positive → NaN) | same-day bar amount |
+| `overnight_mom_20` | Σ log(open[t]/close[t−1]) over 20d (non-positive → NaN) | open known at the t open; computed at the t close |
+| `value_ep` / `value_bp` | 1/pe, 1/pb from `daily_basic` (one fetch; ≤0 → NaN) | ratios published same-day |
+| `grossprofit_margin` | financial quality field | ann_date as-of (existing machinery) |
+
+Registry / dispatch: `_build_factors` resolves `reversal*` / `volatility*` /
+`liquidity*` / `overnight_mom*` / value fields / financial fields; window-named factors must agree
+with `params.window` (a mismatch is a readable config error, never a silent
+mislabel). Legacy configs are untouched and reproduce their numbers.
+
+Old-vs-new comparison reads off ONE run: raw-factor ICs are per-column (each
+factor's IC depends only on its own column + forward returns), so the legacy
+trio's per-cell ICs in the candidates run double as a no-drift cross-check
+against the P3-4 report, and the candidate ICs are directly comparable in the
+same report. Note `drop_missing` requires ALL enabled factors per name/date
+(e.g. a loss-maker's NaN `value_ep` drops it that day) — the combo legs are
+therefore NOT the P3-4 combos; disclosed.
+
 ## Quality gate
 
 ```bash

@@ -53,6 +53,14 @@ from data.feed.tushare_feed import TushareFeed
 from data.feed.tushare_fina import TushareFinancialFeed
 from data.feed.tushare_flags import TushareFlagsFeed
 from data.store.panel_store import PanelStore
+from factors.compute.candidates import (
+    VALUE_FIELDS,
+    LiquidityFactor,
+    OvernightMomentumFactor,
+    ReversalFactor,
+    ValueFactor,
+    VolatilityFactor,
+)
 from factors.compute.financial import SUPPORTED_FIELDS as SUPPORTED_FINANCIAL_FIELDS
 from factors.compute.financial import FinancialFactor
 from factors.compute.momentum import MomentumFactor
@@ -432,6 +440,7 @@ def run_phase0(config_path: str) -> Phase0Result:
     factors = _build_factors(cfg)
     primary = factors[0]
     panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
+    panel = _maybe_enrich_value(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
     panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
@@ -670,20 +679,48 @@ def _build_factors(cfg: RootConfig) -> list:
     factors: list = []
     for spec in enabled:
         params = dict(spec.params)
+        window = int(params.get("window", 20))
         if spec.name in SUPPORTED_FINANCIAL_FIELDS:
-            factors.append(FinancialFactor(field=spec.name))
+            factor = FinancialFactor(field=spec.name)
+        elif spec.name in VALUE_FIELDS:
+            factor = ValueFactor(spec.name)
+        elif spec.name.startswith("overnight_mom"):
+            factor = OvernightMomentumFactor(
+                window=window,
+                open_col=str(params.get("open_col", "open")),
+                close_col=str(params.get("close_col", "close")),
+            )
         elif spec.name.startswith("momentum"):
-            factors.append(
-                MomentumFactor(
-                    window=int(params.get("window", 20)),
-                    price_col=str(params.get("price_col", "close")),
-                )
+            factor = MomentumFactor(
+                window=window, price_col=str(params.get("price_col", "close"))
+            )
+        elif spec.name.startswith("reversal"):
+            factor = ReversalFactor(
+                window=window, price_col=str(params.get("price_col", "close"))
+            )
+        elif spec.name.startswith("volatility"):
+            factor = VolatilityFactor(
+                window=window, price_col=str(params.get("price_col", "close"))
+            )
+        elif spec.name.startswith("liquidity"):
+            factor = LiquidityFactor(
+                window=window, amount_col=str(params.get("amount_col", "amount"))
             )
         else:
             raise ValueError(
-                f"Unknown factor {spec.name!r}; expected 'momentum*' or one of "
-                f"{SUPPORTED_FINANCIAL_FIELDS}."
+                f"Unknown factor {spec.name!r}; expected 'momentum*', 'reversal*', "
+                f"'volatility*', 'liquidity*', 'overnight_mom*', one of "
+                f"{VALUE_FIELDS} or one of {SUPPORTED_FINANCIAL_FIELDS}."
             )
+        # window-named factors derive their name from params: a spec named
+        # reversal_5 with params.window=10 would silently mislabel the column.
+        if factor.name != spec.name:
+            raise ValueError(
+                f"Factor name/params mismatch: config names {spec.name!r} but the "
+                f"params resolve to {factor.name!r} (window-named factors must "
+                "agree with params.window)."
+            )
+        factors.append(factor)
     names = [f.name for f in factors]
     dupes = sorted({n for n in names if names.count(n) > 1})
     if dupes:
@@ -734,6 +771,54 @@ def _maybe_enrich_financials(
     logger.info(
         "financials: as-of aligned %s by ann_date (%d disclosed rows, single fetch)",
         fields, len(fina),
+    )
+    return enriched
+
+
+def _maybe_enrich_value(
+    cfg: RootConfig,
+    panel: pd.DataFrame,
+    symbols: list[str],
+    factors: list,
+    logger: logging.Logger,
+) -> pd.DataFrame:
+    """Attach value_ep / value_bp columns when value factors are enabled (P3-5).
+
+    ONE daily_basic fetch covers both fields. The published pe/pb are same-day
+    ratios (PIT-safe by construction); the inversion guards non-positive ratios
+    to NaN (a negative or zero pe/pb would otherwise flip the value ranking).
+    Demo has no pe/pb — a readable error, never fabricated ratios.
+    """
+    fields = [f.name for f in factors if isinstance(f, ValueFactor)]
+    if not fields:
+        return panel
+    if cfg.data.source != "tushare":
+        raise ValueError(
+            f"Factor(s) {fields} need daily_basic pe/pb (data.source='tushare'); "
+            "they cannot run on demo data."
+        )
+    feed = TushareCovariatesFeed(
+        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+    )
+    ratios = feed.value_ratios(symbols, cfg.data.start, cfg.data.end)
+    enriched = panel.copy()
+    if ratios.empty:
+        for field in fields:
+            enriched[field] = float("nan")
+        logger.info("value: daily_basic returned no rows; %s all-NaN", fields)
+        return enriched
+    r = ratios.copy()
+    r["symbol"] = r["symbol"].astype(str)
+    r = r.set_index(["date", "symbol"]).sort_index()
+    inverted = {
+        "value_ep": 1.0 / r["pe"].where(r["pe"] > 0),
+        "value_bp": 1.0 / r["pb"].where(r["pb"] > 0),
+    }
+    for field in fields:
+        enriched[field] = inverted[field].reindex(enriched.index)
+    logger.info(
+        "value: daily_basic pe/pb enriched -> %s (%d ratio rows, single fetch)",
+        fields, len(r),
     )
     return enriched
 

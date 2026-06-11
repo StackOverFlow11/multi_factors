@@ -11,6 +11,9 @@ Provides the cross-sectional inputs the pipeline needs:
   * ``market_cap(symbols, s, e)`` -> DataFrame[date, symbol, market_cap]
         (tushare ``daily_basic.total_mv``, in 10k CNY; only the log is used, so
         units do not matter). Genuinely per-date.
+  * ``value_ratios(symbols, s, e)`` -> DataFrame[date, symbol, pe, pb]
+        (tushare ``daily_basic``; published same-day, PIT-safe by construction;
+        the value-factor inversion happens in the pipeline, P3-5).
   * ``listing_dates(symbols)``    -> {symbol: list_date}  (``stock_basic.list_date``,
         for the ``min_listing_days`` buy filter, UNI-008).
   * ``industry(symbols)``         -> {symbol: industry}  (``stock_basic.industry``,
@@ -127,6 +130,39 @@ class TushareCovariatesFeed:
             if rows:
                 out[str(sym)] = rows
         return out
+
+    def value_ratios(self, symbols: list[str], start: str, end: str) -> pd.DataFrame:
+        """Return DataFrame[date, symbol, pe, pb] from daily_basic (P3-5).
+
+        The ratios are published same-day (PIT-safe by construction); the
+        inversion to value_ep / value_bp (with non-positive guards) happens in
+        the pipeline's value enrichment, not here.
+        """
+        pro = self._client()
+        s = pd.Timestamp(start).strftime("%Y%m%d")
+        e = pd.Timestamp(end).strftime("%Y%m%d")
+        frames: list[pd.DataFrame] = []
+        for sym in symbols:
+            df = self._call(
+                pro.daily_basic,
+                ts_code=sym,
+                start_date=s,
+                end_date=e,
+                fields="ts_code,trade_date,pe,pb",
+            )
+            if df is not None and len(df) > 0:
+                frames.append(df)
+        if not frames:
+            return pd.DataFrame(
+                {"date": pd.Series([], dtype="datetime64[ns]"),
+                 "symbol": pd.Series([], dtype=object),
+                 "pe": pd.Series([], dtype=float),
+                 "pb": pd.Series([], dtype=float)}
+            )
+        out = pd.concat(frames, ignore_index=True).rename(columns={"ts_code": "symbol"})
+        out["date"] = pd.to_datetime(out["trade_date"].astype(str), format="%Y%m%d")
+        out["symbol"] = out["symbol"].astype(str)
+        return out[["date", "symbol", "pe", "pb"]]
 
     def market_cap(self, symbols: list[str], start: str, end: str) -> pd.DataFrame:
         """Return DataFrame[date, symbol, market_cap] from daily_basic.total_mv."""

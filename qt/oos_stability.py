@@ -51,6 +51,7 @@ from qt.pipeline import (
     _maybe_enrich_covariates,
     _maybe_enrich_financials,
     _maybe_enrich_listing,
+    _maybe_enrich_value,
     _periods_per_year,
     _process_factors,
 )
@@ -359,6 +360,7 @@ def _run_oos_cell(
     panel = _load_panel(cfg, symbols, logger)
     factors = _build_factors(cfg)
     panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
+    panel = _maybe_enrich_value(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
     panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
