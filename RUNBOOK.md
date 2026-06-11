@@ -434,6 +434,43 @@ Semantics worth knowing before reading the report:
   robustness + cost sensitivity, not independent confirmation; NOT a return
   claim.
 
+## Phase 3-7 — genuinely independent sample validation (EXPLORATORY)
+
+Moves the P3-5/P3-6 value/low-vol finding from "post-hoc comparison on the
+screening windows" to a genuinely independent holdout: the same
+`run-phase3-subset` mode, with cells explicitly labeled **independent holdout**
+vs **screened/post-hoc** and a pre-declared hypothesis sign check. No new
+factor / alpha / tuning; the P3-6 group/cost logic is unchanged. Documented by
+`config/phase3_real_independent_validation.yaml`.
+
+```bash
+# validate (no network)
+... -m qt.cli validate-config    --config config/phase3_real_independent_validation.yaml
+# run (network + token; HEAVY ~2-2.5h — CSI300|2024-2026 dominates)
+... -m qt.cli run-phase3-subset  --config config/phase3_real_independent_validation.yaml
+```
+
+Semantics worth knowing before reading the report:
+
+- **Independence is a human declaration** (`subset_validation.independent_cells`):
+  the machine cannot know which data took part in screening, so undeclared
+  cells default to screened (conservative). A declared cell must exist in the
+  matrix and must NOT be skip-listed (an independent validation that never
+  runs is a config error).
+- **Hypotheses are fixed BEFORE the run** (`subset_validation.hypotheses`,
+  e.g. `value_ep: positive` / `volatility_20: negative`). The verdict is a
+  factual IC SIGN check: a hypothesis HOLDS iff the expected sign appears in
+  BOTH subperiods of the holdout cell. Statuses: SUPPORTED / PARTIAL /
+  NOT SUPPORTED / INSUFFICIENT-DATA (fewer settled rebalances than
+  `min_rebalances` — size always disclosed). Never a return claim.
+- **Conclusions never mix**: the report's cross-cell summaries are computed
+  per sample class, and the "Independent holdout verdict" section reads
+  independent cells only. The screened anchor cell (SSE50|2022-2024) must
+  reproduce the P3-6 numbers exactly — the in-run no-drift check.
+- NOTE: every `run-phase3-subset` config writes
+  `artifacts/reports/phase3_subset_validation.md` — a P3-7 run overwrites a
+  P3-6 report (regenerable; numbers live in CLAUDE.md/TEST_REPORT).
+
 ## Quality gate
 
 ```bash

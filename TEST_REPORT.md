@@ -1,4 +1,4 @@
-# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor → walk-forward IC alpha → OOS stability → robustness matrix → factor candidates → subset + cost sensitivity)
+# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor → walk-forward IC alpha → OOS stability → robustness matrix → factor candidates → subset + cost sensitivity → independent validation)
 
 ## Commands
 
@@ -16,6 +16,7 @@ Run from the repo root with the project python (env `quant_mf`):
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_robustness_matrix.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_factor_candidates.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_subset_costs.yaml
+/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_independent_validation.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli run-phase0 --config config/example.yaml
 ```
 
@@ -23,12 +24,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **349 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **372 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
-| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml` + `phase3_real_subset_costs.yaml`) | exit `0`, prints `OK` |
+| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml` + `phase3_real_subset_costs.yaml` + `phase3_real_independent_validation.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 349).
+Counts below are the actual per-file `pytest` numbers (sum = 372).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -138,7 +139,15 @@ Counts below are the actual per-file `pytest` numbers (sum = 349).
 | Test file | Tests | Red-line / feature |
 |---|---|---|
 | `test_subset_validation.py` | 27 | subset config validation (groups non-empty / unique labels / non-empty unique factors / factors must reference ENABLED config factors incl. the disabled-factor case; scenario labels unique / positive multipliers / **mandatory multiplier-1.0 base scenario**; default = single base scenario); runner guards (demo source / missing `subset_validation` / missing `robustness` / non-ic_weighted alpha); `subperiod_cost` totals + arithmetic annualization + empty-slice NaN; **`_run_backtest_for(fee_rate=None)` default-preserving (old call shape bitwise identical)**; **cost scenarios change the cost line ONLY** (2× fee ⇒ identical trades/turnover/gross, exactly doubled cost, net = gross − cost); **per-group reprocessing** (drop_missing applies to the group's columns — a row killed by an excluded column's NaN survives; a group with every column reproduces `_process_factors` bitwise; missing column → readable error); cross-cell aggregation strictly per cell AND per group (incl. per-scenario cost ladder keyed by cell); report renders group/scenario disclosure + skipped cells + boundary + no-drift hook + POST-HOC & not-a-return-claim caveats + MATRIX SCOPE + union downgrades + no secret; CLI `run-phase3-subset` readable guard |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-6)** | **349** | |
+| **Total through P3-6** | **349** | |
+
+## Per-file breakdown — Phase 3-7 independent validation (22 + 1 throttle hardening)
+
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_independent_validation.py` | 22 | independent-cells config validation (must reference declared robustness universes/windows; a skip-listed cell cannot be declared independent — a holdout that never runs is a contradiction; hypotheses must reference ENABLED factors with a positive/negative literal; min_rebalances > 0; **the P3-6 config still validates with inert defaults**); explicit sample-class labeling (undeclared → screened, the conservative default); **verdict logic** (HOLDS iff expected IC sign in BOTH subperiods; SUPPORTED / PARTIAL / NOT SUPPORTED; **INSUFFICIENT-DATA overrides the sign check** with n_settled vs threshold disclosed; NaN or missing IC never holds); **per-class summaries never mix** (screened cell attributions never appear under independent and vice versa); report renders sample column + per-class cross-cell sections + a verdict section containing ONLY independent cells + INSUFFICIENT-DATA disclosure; a P3-6-era result (defaults) renders the old report shape; no secret |
+| `test_tushare_throttle.py` (+1) | 1 | the DEFAULT retry budget survives a multi-failure transient outage (6 attempts ≈ 23s of capped exponential backoff; two real ~2h runs died on ConnectionError under the old 3-attempt ≈ 3s budget) |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-7)** | **372** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -153,6 +162,16 @@ Counts below are the actual per-file `pytest` numbers (sum = 349).
   P3-3/P3-4 numbers exactly; `full_pack`@base reproduces the P3-5 numbers
   exactly); turnover identical across cost scenarios as designed; secret scan
   0 occurrences (token value / "token" / ".config.json") in report and log.
+- **P3-7** independent-sample validation (screened anchor + 2 independent
+  holdout cells on 2024-07-01..2026-05-31, ~2.2 h; the P3-7 report overwrites
+  the P3-6 one — same filename, regenerable): screened anchor SSE50|2022-2024
+  reproduced the P3-6 numbers exactly (raw ICs 22/22 vs the P3-5 matrix
+  report; all group base annuals identical); **independent verdict SUPPORTED
+  in 2/2 holdout cells** (21 settled rebalances each vs minimum 8;
+  value_ep/value_bp positive and volatility_20 negative in BOTH subperiods of
+  BOTH cells) with visible magnitude attenuation in the later subperiod;
+  secret scan 0 occurrences in report and log. Two earlier run attempts died
+  on transient ConnectionError → default retry budget hardened 3→6 attempts.
 
 ## Notes
 
@@ -252,6 +271,16 @@ Counts below are the actual per-file `pytest` numbers (sum = 349).
   linearly, and `_run_backtest_for`'s new `fee_rate` parameter is
   default-preserving. POST-HOC subset selection is disclosed in the report;
   not tuned, not a return claim.
+- **P3-7 independent validation (locked by tests):** independence is a HUMAN
+  DECLARATION (`subset_validation.independent_cells`) — undeclared cells
+  default to screened; a declared cell must exist in the matrix and must not
+  be skip-listed. Hypotheses (expected IC signs) are fixed in config BEFORE
+  the run; the verdict is a factual sign check (HOLDS iff the expected sign
+  appears in BOTH subperiods; INSUFFICIENT-DATA when settled rebalances <
+  min_rebalances, size disclosed; NaN/missing never holds). Cross-cell
+  summaries are computed PER SAMPLE CLASS and the verdict section reads
+  independent cells only — screened and independent numbers never mix. The
+  P3-6 group/cost logic and config are unchanged.
 - A duplicate test-function name across two files was found and renamed during P2-2
   (it had been silently shadowing one test in the full-suite run). A second, harmless
   duplicate (`test_enrich_does_not_mutate_input` in two files) was verified NOT to drop
