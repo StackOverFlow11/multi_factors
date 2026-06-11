@@ -1,0 +1,196 @@
+# Phase 3-6 — REAL value+lowvol subset re-check + cost sensitivity (EXPLORATORY).
+#
+# Asks two questions on top of the P3-5 finding (value/low-vol candidates carry
+# the only order-of-magnitude IC signal):
+#   1. Is the value+lowvol SUBSET more robust than the full 11-factor pack and
+#      the legacy trio, head-to-head on the SAME data (same universes x windows,
+#      same walk-forward ic_weighted vs equal_weight comparison, same
+#      holding-window OOS slicing)?
+#   2. How sensitive is each group's net result to trading costs (base / 2x /
+#      high-cost fee scenarios)?
+#
+# HONESTY NOTES (also disclosed in the report):
+#   * POST-HOC SELECTION: the value+lowvol subset was chosen AFTER seeing the
+#     P3-5 results on these SAME windows — this matrix quantifies RELATIVE
+#     robustness and cost sensitivity; it is NOT independent confirmation and
+#     NOT a return claim.
+#   * Groups are re-processed independently from ONE shared raw factor panel
+#     (drop_missing applies per group); raw-factor ICs are per-column, so the
+#     per-cell raw ICs double as a no-drift cross-check against the P3-5 report.
+#   * Cost scenarios scale cost.fee_rate ONLY; scores/fills never see the fee,
+#     so trades and turnover are IDENTICAL across scenarios — only the cost
+#     line (and thus net return) changes. high_cost = 4x is a pessimistic
+#     bound (commission + stamp duty + slippage/impact), not a calibration.
+#
+# Run:  python -m qt.cli run-phase3-subset --config config/phase3_real_subset_costs.yaml
+# (report: artifacts/reports/phase3_subset_validation.md; needs the tushare
+# token; HEAVY ~2-2.5h, dominated by the CSI300 cell's rate-limited pulls.
+# CSI300x2020-2022 stays skip_cells-listed — disclosed in the report.)
+
+project:
+  name: quantitative_trading_phase3_subset_costs
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2022-07-01"
+  end: "2024-06-30"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: phase3sv_daily
+
+universe:
+  type: index
+  index_code: "000016.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+factors:
+  # FULL 11-factor pack (P3-5, verbatim): the shared raw factor panel every
+  # group below subsets from. Raw-factor ICs stay per-column -> no-drift check.
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+  - name: roe
+    enabled: true
+    params: {}
+  - name: netprofit_yoy
+    enabled: true
+    params: {}
+  - name: reversal_5
+    enabled: true
+    params:
+      window: 5
+  - name: reversal_20
+    enabled: true
+    params:
+      window: 20
+  - name: volatility_20
+    enabled: true
+    params:
+      window: 20
+  - name: liquidity_20
+    enabled: true
+    params:
+      window: 20
+  - name: overnight_mom_20
+    enabled: true
+    params:
+      window: 20
+  - name: value_ep
+    enabled: true
+    params: {}
+  - name: value_bp
+    enabled: true
+    params: {}
+  - name: grossprofit_margin
+    enabled: true
+    params: {}
+
+processing:
+  drop_missing: true        # applies PER GROUP (each group re-processed alone)
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+
+alpha:
+  model: ic_weighted          # P3-2 walk-forward rolling-IC weights (per group)
+  params:
+    window: 60
+    min_periods: 20
+    mode: rolling
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 20
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001             # BASE fee; scenarios below multiply this
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+analytics:
+  forward_return_periods:
+    - 1
+    - 5
+    - 20
+  quantiles: 5
+  benchmark: null
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+
+oos:
+  split_date: "2023-07-01"   # base-config validation only; per-cell splits below
+
+robustness:
+  universes:
+    - "000016.SH"   # SSE50
+    - "000300.SH"   # CSI300
+  windows:
+    - label: "2020-2022"
+      start: "2020-07-01"
+      end: "2022-06-30"
+      split: "2021-07-01"
+    - label: "2022-2024"
+      start: "2022-07-01"
+      end: "2024-06-30"
+      split: "2023-07-01"
+  skip_cells:
+    - universe: "000300.SH"
+      window: "2020-2022"
+
+subset_validation:
+  # The three groups the /goal compares, plus the OPTIONAL +liquidity variant
+  # (measured instead of guessed; backtests are cheap once the data is loaded).
+  groups:
+    - label: legacy_trio
+      factors: [momentum_20, roe, netprofit_yoy]
+    - label: full_pack
+      factors: [momentum_20, roe, netprofit_yoy, reversal_5, reversal_20,
+                volatility_20, liquidity_20, overnight_mom_20, value_ep,
+                value_bp, grossprofit_margin]
+    - label: value_lowvol
+      factors: [value_ep, value_bp, volatility_20]
+    - label: value_lowvol_liq
+      factors: [value_ep, value_bp, volatility_20, liquidity_20]
+  # fee multipliers on cost.fee_rate; exactly the base/2x/high-cost ladder the
+  # /goal asks for. A multiplier-1.0 scenario is REQUIRED (the cost-drag anchor).
+  cost_scenarios:
+    - label: base
+      fee_multiplier: 1.0
+    - label: 2x
+      fee_multiplier: 2.0
+    - label: high_cost
+      fee_multiplier: 4.0

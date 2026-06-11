@@ -1,4 +1,4 @@
-# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor → walk-forward IC alpha → OOS stability → robustness matrix → factor candidates)
+# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor → walk-forward IC alpha → OOS stability → robustness matrix → factor candidates → subset + cost sensitivity)
 
 ## Commands
 
@@ -15,6 +15,7 @@ Run from the repo root with the project python (env `quant_mf`):
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_oos_stability.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_robustness_matrix.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_factor_candidates.yaml
+/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_subset_costs.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli run-phase0 --config config/example.yaml
 ```
 
@@ -22,12 +23,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **322 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **349 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
-| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml`) | exit `0`, prints `OK` |
+| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml` + `phase3_real_subset_costs.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 322).
+Counts below are the actual per-file `pytest` numbers (sum = 349).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -131,7 +132,13 @@ Counts below are the actual per-file `pytest` numbers (sum = 322).
 |---|---|---|
 | `test_candidate_factors.py` | 22 | per-factor math vs manual references (reversal == −momentum, volatility rolling std, liquidity log-mean-amount, overnight Σlog(open/prev-close) incl. prev-close-never-crosses-symbols); leading-window NaN; future-bar perturbation invariance; per-symbol isolation; non-positive amount → NaN never −inf; missing-column readable errors; ValueFactor surfaces enriched column + rejects unknown fields; grossprofit_margin in SUPPORTED_FIELDS; dispatch builds every candidate + rejects name/params mismatch; value enrichment ONE fetch for both fields + 1/pe 1/pb math + non-positive guards + demo readable error + input immutability; demo e2e with price candidates (per-factor analytics, report, no secret); candidates config validates |
 | `test_multifactor_pipeline.py` (reworked 1) | — | duplicate-name test now uses a true duplicate spec (the new name/params-mismatch guard catches the old mislabel construction earlier) |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-5)** | **322** | |
+
+## Per-file breakdown — Phase 3-6 subset validation + cost sensitivity (27)
+
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_subset_validation.py` | 27 | subset config validation (groups non-empty / unique labels / non-empty unique factors / factors must reference ENABLED config factors incl. the disabled-factor case; scenario labels unique / positive multipliers / **mandatory multiplier-1.0 base scenario**; default = single base scenario); runner guards (demo source / missing `subset_validation` / missing `robustness` / non-ic_weighted alpha); `subperiod_cost` totals + arithmetic annualization + empty-slice NaN; **`_run_backtest_for(fee_rate=None)` default-preserving (old call shape bitwise identical)**; **cost scenarios change the cost line ONLY** (2× fee ⇒ identical trades/turnover/gross, exactly doubled cost, net = gross − cost); **per-group reprocessing** (drop_missing applies to the group's columns — a row killed by an excluded column's NaN survives; a group with every column reproduces `_process_factors` bitwise; missing column → readable error); cross-cell aggregation strictly per cell AND per group (incl. per-scenario cost ladder keyed by cell); report renders group/scenario disclosure + skipped cells + boundary + no-drift hook + POST-HOC & not-a-return-claim caveats + MATRIX SCOPE + union downgrades + no secret; CLI `run-phase3-subset` readable guard |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-6)** | **349** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -227,6 +234,17 @@ Counts below are the actual per-file `pytest` numbers (sum = 322).
   mismatch; legacy configs reproduce their numbers (demo ic 0.96 / annual
   0.84 unchanged). EXPLORATORY — validated through the unchanged P3-4
   robustness matrix; not tuned, not a return claim.
+- **P3-6 subset validation + cost sensitivity (locked by tests):**
+  `run-phase3-subset` is a REPORT-ONLY comparison layer — per cell, ONE shared
+  data load + raw factor panel (the same call sequence as the P3-3/P3-4 cell
+  core, which is untouched), then each configured factor GROUP is re-processed
+  independently (drop_missing per group; an all-columns group reproduces the
+  old processing bitwise) and run through the same equal_weight-vs-ic_weighted
+  comparison under every COST SCENARIO. Scenarios scale `cost.fee_rate` only:
+  trades/turnover/gross are identical across scenarios, the cost line scales
+  linearly, and `_run_backtest_for`'s new `fee_rate` parameter is
+  default-preserving. POST-HOC subset selection is disclosed in the report;
+  not tuned, not a return claim.
 - A duplicate test-function name across two files was found and renamed during P2-2
   (it had been silently shadowing one test in the full-suite run). A second, harmless
   duplicate (`test_enrich_does_not_mutate_input` in two files) was verified NOT to drop

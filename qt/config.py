@@ -286,6 +286,95 @@ class RobustnessCfg(_Strict):
         return self
 
 
+class FactorGroupCfg(_Strict):
+    """One named factor group of the P3-6 subset validation.
+
+    ``factors`` must reference ENABLED entries of the top-level ``factors``
+    list (checked at the RootConfig level — a disabled or unknown name has no
+    raw factor-panel column to subset). Each group is re-processed
+    INDEPENDENTLY from the shared raw factor panel, so ``drop_missing``
+    applies per group, exactly as if the group were the configured factor set.
+    """
+
+    label: str
+    factors: list[str]
+
+    @model_validator(mode="after")
+    def _check_factors(self) -> "FactorGroupCfg":
+        if not self.factors:
+            raise ValueError(
+                f"subset_validation group {self.label!r} must list at least one factor."
+            )
+        dupes = sorted({f for f in self.factors if self.factors.count(f) > 1})
+        if dupes:
+            raise ValueError(
+                f"subset_validation group {self.label!r} lists duplicate factor(s) "
+                f"{dupes}; each factor may appear once per group."
+            )
+        return self
+
+
+class CostScenarioCfg(_Strict):
+    """One trading-cost scenario: ``cost.fee_rate`` × ``fee_multiplier``.
+
+    Scenarios scale the fee ONLY — scores and fills never see the fee, so the
+    trades (and turnover) are identical across scenarios; only the cost line
+    (and thus net return) changes.
+    """
+
+    label: str
+    fee_multiplier: float
+
+    @field_validator("fee_multiplier")
+    @classmethod
+    def _check_multiplier(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError(
+                f"cost scenario fee_multiplier must be positive; got {v!r}."
+            )
+        return v
+
+
+class SubsetValidationCfg(_Strict):
+    """P3-6 subset validation: factor groups × cost scenarios over the matrix.
+
+    A multiplier-1.0 scenario is REQUIRED: it anchors the cost-drag comparison
+    (every other scenario reads as "the same trades at k× the fee").
+    """
+
+    groups: list[FactorGroupCfg]
+    cost_scenarios: list[CostScenarioCfg] = Field(
+        default_factory=lambda: [CostScenarioCfg(label="base", fee_multiplier=1.0)]
+    )
+
+    @model_validator(mode="after")
+    def _check_sections(self) -> "SubsetValidationCfg":
+        if not self.groups:
+            raise ValueError(
+                "subset_validation.groups must list at least one group."
+            )
+        labels = [g.label for g in self.groups]
+        dupes = sorted({x for x in labels if labels.count(x) > 1})
+        if dupes:
+            raise ValueError(
+                f"subset_validation group labels must be unique; duplicate(s): {dupes}."
+            )
+        scn_labels = [s.label for s in self.cost_scenarios]
+        scn_dupes = sorted({x for x in scn_labels if scn_labels.count(x) > 1})
+        if scn_dupes:
+            raise ValueError(
+                f"subset_validation cost scenario labels must be unique; "
+                f"duplicate(s): {scn_dupes}."
+            )
+        if not any(s.fee_multiplier == 1.0 for s in self.cost_scenarios):
+            raise ValueError(
+                "subset_validation.cost_scenarios must include one scenario with "
+                "fee_multiplier == 1.0 (the base anchor for the cost-drag "
+                "comparison)."
+            )
+        return self
+
+
 class RootConfig(_Strict):
     """Top-level config composing every section.
 
@@ -309,6 +398,24 @@ class RootConfig(_Strict):
     oos: OOSCfg | None = None
     # P3-4 robustness matrix (consumed only by run-phase3-robustness).
     robustness: RobustnessCfg | None = None
+    # P3-6 subset validation (consumed only by run-phase3-subset).
+    subset_validation: SubsetValidationCfg | None = None
+
+    @model_validator(mode="after")
+    def _check_subset_groups_reference_enabled_factors(self) -> "RootConfig":
+        if self.subset_validation is None:
+            return self
+        enabled = {f.name for f in self.factors if f.enabled}
+        for group in self.subset_validation.groups:
+            unknown = [f for f in group.factors if f not in enabled]
+            if unknown:
+                raise ValueError(
+                    f"subset_validation group {group.label!r} references factor(s) "
+                    f"{unknown} that are not ENABLED entries of config.factors "
+                    f"(enabled: {sorted(enabled)}). A disabled or unknown factor "
+                    "has no raw factor-panel column to subset."
+                )
+        return self
 
     @model_validator(mode="after")
     def _check_oos_split_inside_window(self) -> "RootConfig":
