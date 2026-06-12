@@ -24,12 +24,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **372 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **375 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml` + `phase3_real_subset_costs.yaml` + `phase3_real_independent_validation.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 372).
+Counts below are the actual per-file `pytest` numbers (sum = 375).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -141,13 +141,13 @@ Counts below are the actual per-file `pytest` numbers (sum = 372).
 | `test_subset_validation.py` | 27 | subset config validation (groups non-empty / unique labels / non-empty unique factors / factors must reference ENABLED config factors incl. the disabled-factor case; scenario labels unique / positive multipliers / **mandatory multiplier-1.0 base scenario**; default = single base scenario); runner guards (demo source / missing `subset_validation` / missing `robustness` / non-ic_weighted alpha); `subperiod_cost` totals + arithmetic annualization + empty-slice NaN; **`_run_backtest_for(fee_rate=None)` default-preserving (old call shape bitwise identical)**; **cost scenarios change the cost line ONLY** (2× fee ⇒ identical trades/turnover/gross, exactly doubled cost, net = gross − cost); **per-group reprocessing** (drop_missing applies to the group's columns — a row killed by an excluded column's NaN survives; a group with every column reproduces `_process_factors` bitwise; missing column → readable error); cross-cell aggregation strictly per cell AND per group (incl. per-scenario cost ladder keyed by cell); report renders group/scenario disclosure + skipped cells + boundary + no-drift hook + POST-HOC & not-a-return-claim caveats + MATRIX SCOPE + union downgrades + no secret; CLI `run-phase3-subset` readable guard |
 | **Total through P3-6** | **349** | |
 
-## Per-file breakdown — Phase 3-7 independent validation (22 + 1 throttle hardening)
+## Per-file breakdown — Phase 3-7 independent validation (25 + 1 throttle hardening)
 
 | Test file | Tests | Red-line / feature |
 |---|---|---|
-| `test_independent_validation.py` | 22 | independent-cells config validation (must reference declared robustness universes/windows; a skip-listed cell cannot be declared independent — a holdout that never runs is a contradiction; hypotheses must reference ENABLED factors with a positive/negative literal; min_rebalances > 0; **the P3-6 config still validates with inert defaults**); explicit sample-class labeling (undeclared → screened, the conservative default); **verdict logic** (HOLDS iff expected IC sign in BOTH subperiods; SUPPORTED / PARTIAL / NOT SUPPORTED; **INSUFFICIENT-DATA overrides the sign check** with n_settled vs threshold disclosed; NaN or missing IC never holds); **per-class summaries never mix** (screened cell attributions never appear under independent and vice versa); report renders sample column + per-class cross-cell sections + a verdict section containing ONLY independent cells + INSUFFICIENT-DATA disclosure; a P3-6-era result (defaults) renders the old report shape; no secret |
+| `test_independent_validation.py` | 25 | independent-cells config validation (must reference declared robustness universes/windows; a skip-listed cell cannot be declared independent — a holdout that never runs is a contradiction; hypotheses must reference ENABLED factors with a positive/negative literal; min_rebalances > 0; **the P3-6 config still validates with inert defaults**); explicit sample-class labeling (undeclared → screened, the conservative default); **verdict logic** (HOLDS iff expected IC sign in BOTH subperiods; SUPPORTED / PARTIAL / NOT SUPPORTED; **INSUFFICIENT-DATA overrides the sign check** with n_settled vs threshold disclosed; NaN or missing IC never holds); **per-class summaries never mix** (screened cell attributions never appear under independent and vice versa); report renders sample column + per-class cross-cell sections + a verdict section containing ONLY independent cells + INSUFFICIENT-DATA disclosure; a P3-6-era result (defaults) renders the old report shape; no secret; **sample-aware title/framing/caveats** (a run with independent cells must not carry the P3-6 'same windows / not independent confirmation' framing — review HIGH x2; P3-6-era rendering and downgrades text unchanged, locked by regression tests) |
 | `test_tushare_throttle.py` (+1) | 1 | the DEFAULT retry budget survives a multi-failure transient outage (6 attempts ≈ 23s of capped exponential backoff; two real ~2h runs died on ConnectionError under the old 3-attempt ≈ 3s budget) |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-7)** | **372** | |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-7)** | **375** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
