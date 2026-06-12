@@ -347,3 +347,44 @@ def test_render_independent_result_leaks_no_secret():
     md = render_subset_validation(result)
     assert result.config.data.external_secret_file not in md
     assert "token" not in md.lower()
+
+
+# --------------------------------------------------------------------------- #
+# review HIGH fixes: title / intro / caveat / downgrades must be sample-aware
+# --------------------------------------------------------------------------- #
+def test_render_title_and_caveats_are_sample_aware():
+    """A run WITH independent cells must not carry the P3-6 'same windows /
+    not independent confirmation' framing anywhere (review HIGH x2)."""
+    from qt.reports import render_subset_validation
+
+    md = render_subset_validation(_synthetic_independent_result())
+    first_line = md.split("\n", 1)[0]
+    assert "Phase 3-7" in first_line and "Independent" in first_line
+    assert "Phase 3-6" not in first_line
+    low = md.lower()
+    assert "not independent confirmation" not in low
+    assert "same overlapping windows" not in low
+    # the sample-class framing replaces it (screened stays post-hoc, holdout not)
+    assert "independent holdout" in low and "screened" in low
+
+
+def test_render_p36_result_keeps_old_title_and_posthoc_framing():
+    from qt.reports import render_subset_validation
+    from tests.test_subset_validation import _synthetic_subset_result
+
+    md = render_subset_validation(_synthetic_subset_result())
+    assert md.split("\n", 1)[0].startswith("# Phase 3-6")
+    assert "POST-HOC" in md  # the P3-6 framing is still correct for P3-6 runs
+
+
+def test_subset_downgrades_are_sample_aware():
+    from qt.subset_validation import _subset_downgrades
+
+    joined = "\n".join(_subset_downgrades(load_config(_INDEP_CONFIG)))
+    assert "SAMPLE CLASSES" in joined
+    assert "NOT independent confirmation" not in joined
+    assert "NOT a return claim" in joined  # the honesty line survives
+
+    joined_old = "\n".join(_subset_downgrades(load_config(_P36_CONFIG)))
+    assert "POST-HOC SELECTION" in joined_old
+    assert "SAMPLE CLASSES" not in joined_old  # P3-6 text unchanged

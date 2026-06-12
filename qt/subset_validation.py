@@ -375,8 +375,14 @@ def check_subset_preconditions(
 
 
 def _subset_downgrades(cfg: RootConfig) -> tuple[str, ...]:
-    """Base downgrades + the P3-6 comparison caveats (INV-007)."""
-    extra = (
+    """Base downgrades + the subset-comparison caveats (INV-007), SAMPLE-AWARE.
+
+    A config that declares independent holdout cells (P3-7) must not carry the
+    P3-6 "same windows / NOT independent confirmation" caveat — it would
+    contradict the run's own verdict section; a config without independent
+    cells keeps the P3-6 caveats verbatim.
+    """
+    shared = (
         "SUBSET VALIDATION SEMANTICS: every factor group is re-processed "
         "INDEPENDENTLY from one shared raw factor panel — drop_missing applies "
         "to the group's own columns, exactly as if the group were the configured "
@@ -388,18 +394,42 @@ def _subset_downgrades(cfg: RootConfig) -> tuple[str, ...]:
         "and turnover are IDENTICAL across scenarios — only the cost line (and "
         "net return) changes (locked by tests). cost_drag_annual is the simple "
         "arithmetic annualization (mean per-rebalance cost x rebalances/year).",
-        "POST-HOC SELECTION: the value+lowvol subset was chosen AFTER seeing the "
-        "P3-5 results on these SAME universes x windows. This matrix quantifies "
-        "RELATIVE robustness (subset vs full pack vs legacy trio on equal "
-        "footing) and cost sensitivity; it is NOT independent confirmation of "
-        "the value/low-vol signal — that needs genuinely new windows/universes. "
-        "NOT a return claim.",
-        "This remains a SMALL-SAMPLE comparison — each cell covers one index "
-        "universe over one window (~22 rebalances per train+test pair) and the "
-        "windows overlap across cells; subperiod metrics carry wide uncertainty "
-        "and must not be read as expected performance. NOT a tuned result.",
     )
-    return _collect_downgrades(cfg) + extra
+    has_independent = bool(
+        cfg.subset_validation is not None
+        and cfg.subset_validation.independent_cells
+    )
+    if has_independent:
+        extra = (
+            "SAMPLE CLASSES: screened (post-hoc) cells lie on the windows the "
+            "value+lowvol subset was selected on (P3-5/P3-6) — their conclusions "
+            "remain post-hoc; INDEPENDENT holdout cells are declared in "
+            "subset_validation.independent_cells and their data postdates all "
+            "factor screening. Independent conclusions live ONLY in the "
+            "Independent holdout verdict section and the independent-class "
+            "summary; the two are never averaged together.",
+            "This remains a SMALL-SAMPLE comparison — each cell covers one index "
+            "universe over one window (~21-22 rebalances per train+test pair), "
+            "and the holdout cells share ONE time window across universes "
+            "(universe robustness, not two independent time draws); an IC sign "
+            "check confirms neither magnitude nor portfolio profitability. "
+            "Subperiod metrics carry wide uncertainty and must not be read as "
+            "expected performance. NOT a return claim, NOT a tuned result.",
+        )
+    else:
+        extra = (
+            "POST-HOC SELECTION: the value+lowvol subset was chosen AFTER seeing the "
+            "P3-5 results on these SAME universes x windows. This matrix quantifies "
+            "RELATIVE robustness (subset vs full pack vs legacy trio on equal "
+            "footing) and cost sensitivity; it is NOT independent confirmation of "
+            "the value/low-vol signal — that needs genuinely new windows/universes. "
+            "NOT a return claim.",
+            "This remains a SMALL-SAMPLE comparison — each cell covers one index "
+            "universe over one window (~22 rebalances per train+test pair) and the "
+            "windows overlap across cells; subperiod metrics carry wide uncertainty "
+            "and must not be read as expected performance. NOT a tuned result.",
+        )
+    return _collect_downgrades(cfg) + shared + extra
 
 
 # --------------------------------------------------------------------------- #
