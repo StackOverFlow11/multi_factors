@@ -182,6 +182,11 @@ class OutputCfg(_Strict):
     # historical default 'phase2_real_baseline.md'; a multi-factor baseline config
     # sets its own name so it never overwrites the phase2 report (P3-1).
     baseline_report_name: str | None = None
+    # Filename for the subset-validation report (run-phase3-subset). None keeps
+    # the historical default 'phase3_subset_validation.md'; a config sets its
+    # own name so different studies sharing the run mode never overwrite each
+    # other's report (P3-8; the same precedent as baseline_report_name).
+    subset_report_name: str | None = None
 
 
 class OOSCfg(_Strict):
