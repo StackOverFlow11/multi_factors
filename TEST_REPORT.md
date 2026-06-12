@@ -1,4 +1,4 @@
-# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor → walk-forward IC alpha → OOS stability → robustness matrix → factor candidates → subset + cost sensitivity → independent validation)
+# TEST_REPORT — Phase 0 + Phase 1 + Phase 2 + Phase 3 (bias-boundary → execution realism → PIT industry → standard analytics → multi-factor → walk-forward IC alpha → OOS stability → robustness matrix → factor candidates → subset + cost sensitivity → independent validation → CSI500 generalization)
 
 ## Commands
 
@@ -17,6 +17,7 @@ Run from the repo root with the project python (env `quant_mf`):
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_factor_candidates.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_subset_costs.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_independent_validation.yaml
+/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli validate-config --config config/phase3_real_csi500_generalization.yaml
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli run-phase0 --config config/example.yaml
 ```
 
@@ -24,12 +25,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **375 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **379 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
-| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml` + `phase3_real_subset_costs.yaml` + `phase3_real_independent_validation.yaml`) | exit `0`, prints `OK` |
+| Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml` + `phase3_real_subset_costs.yaml` + `phase3_real_independent_validation.yaml` + `phase3_real_csi500_generalization.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 375).
+Counts below are the actual per-file `pytest` numbers (sum = 379).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -147,7 +148,14 @@ Counts below are the actual per-file `pytest` numbers (sum = 375).
 |---|---|---|
 | `test_independent_validation.py` | 25 | independent-cells config validation (must reference declared robustness universes/windows; a skip-listed cell cannot be declared independent — a holdout that never runs is a contradiction; hypotheses must reference ENABLED factors with a positive/negative literal; min_rebalances > 0; **the P3-6 config still validates with inert defaults**); explicit sample-class labeling (undeclared → screened, the conservative default); **verdict logic** (HOLDS iff expected IC sign in BOTH subperiods; SUPPORTED / PARTIAL / NOT SUPPORTED; **INSUFFICIENT-DATA overrides the sign check** with n_settled vs threshold disclosed; NaN or missing IC never holds); **per-class summaries never mix** (screened cell attributions never appear under independent and vice versa); report renders sample column + per-class cross-cell sections + a verdict section containing ONLY independent cells + INSUFFICIENT-DATA disclosure; a P3-6-era result (defaults) renders the old report shape; no secret; **sample-aware title/framing/caveats** (a run with independent cells must not carry the P3-6 'same windows / not independent confirmation' framing — review HIGH x2; P3-6-era rendering and downgrades text unchanged, locked by regression tests) |
 | `test_tushare_throttle.py` (+1) | 1 | the DEFAULT retry budget survives a multi-failure transient outage (6 attempts ≈ 23s of capped exponential backoff; two real ~2h runs died on ConnectionError under the old 3-attempt ≈ 3s budget) |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-7)** | **375** | |
+| **Total through P3-7** | **375** | |
+
+## Per-file breakdown — Phase 3-8 CSI500 generalization (4)
+
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_csi500_generalization.py` | 4 | CSI500 config validates with the expected cell roles (screened anchor SSE50|2022-2024; independent SSE50|2024-2026 + 000905.SH|2024-2026; CSI500|2022-2024 skipped+disclosed; same groups/scenarios/hypotheses as P3-7 — no tuning); sample classes labeled correctly; **`output.subset_report_name`** lets each subset-validation study own its report file (default None keeps the historical `phase3_subset_validation.md` bitwise — the P3-6/P3-7 configs are locked unchanged), so a P3-8 run never clobbers the accepted P3-7 artifact |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-8)** | **379** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 

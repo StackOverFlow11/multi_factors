@@ -148,6 +148,12 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
     - combo_ic_weighted 独立 test IC **8/8 正**（4 组×2 cells，0.0060~0.0238）——walk-forward IC 加权在 holdout 上仍有效。
     - **组合净值仍未确立**：独立 base ic test——legacy_trio **+1.15%/+8.13%**（2/2 正，恰是此前实证"无信号"的组！）、full_pack +7.30%/−1.93%、value_lowvol +1.72%/−4.68%、liq +3.53%/−0.39%——组间排名跨 cell 翻转,~21 rebalances 小样本,**IC 符号确认 ≠ 组合盈利**；成本阶梯仍全单调。非收益声明。
   - secret scan 报告+日志 0 处；demo 0.96/0.84 不变。
-- ✅ 质量门：`pytest` **375 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=15 / P3-5=22 / P3-6=27 / P3-7=25+1 throttle）；`ruff` clean；`validate-config`（全部 10 配置）+ `run-phase0`（demo）均 OK。
-- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、旧三因子无信号（P3-3/P3-4 实证;但其组合在 2024-2026 holdout 上 2/2 正——小样本翻转的又一例证）;value/低波信号获得**独立样本符号级确认但量级衰减**（P3-7），组合级盈利能力未确立;subset 报告文件名跨 config 共用（后跑覆盖前跑）。
-- 路线图下一步：更长 holdout 积累（2026-06 之后滚动复检）/ 新 universe（中证500）/ 成本模型细化（印花税卖侧不对称、冲击成本）,或分钟级（architecture.html §11）。
+- ✅ **Phase 3-8 CSI500 独立泛化检验**（分支 `p3-csi500-value-lowvol-generalization`，**EXPLORATORY**）：P3-7 的符号级结论是否泛化到筛选 universe 之外——新增独立 cell **CSI500（000905.SH）|2024-2026**（universe+时间双独立）。**机器零改动**复用 P3-7 层（同组/同成本场景/同假设，不加因子不调参）；唯一代码变更 `output.subset_report_name`（沿 `baseline_report_name` 先例，默认 None 保持旧文件名 bitwise，测试锁定）——P3-8 报告独立成文件，**不再覆盖已验收的 P3-7 artifact**。
+  - cell 设计：SSE50|2022-2024（screened 锚，须 ≡P3-6/P3-7）+ SSE50|2024-2026（independent 锚，须 ≡P3-7 verdict 数字）+ CSI500|2024-2026（主问题）；CSI500|2022-2024 skip 披露（~645 名×2y 再加 ~3h 不值）。数据可行性先实测：index_weight 月度 500 名快照到 2026-05-29 含 2024-06-28 pre-start 锚。
+  - **真实 run（3 cells/~3.55h，CSI500 735 distinct 名主导；一次跑通）双锚对账 ✓**：screened raw IC 22/22 ≡ P3-5 报告；independent SSE50 verdict IC 逐数 ≡ P3-7（+0.0322/+0.0134、+0.0379/+0.0033、−0.0320/−0.0120）——复现性二度确认。
+  - **CSI500 verdict：SUPPORTED**（21 settled vs min 8）：value_ep **+0.0083/+0.0145**（train/test）、value_bp **+0.0230/+0.0127**、volatility_20 **−0.0350/−0.0272**——三假设双子期全保持。**且衰减更小**：CSI500 test 子期量级（0.0127~0.0272）明显高于 SSE50/CSI300 holdout 的后段（0.003~0.016）——value/低波信号在中盘股上更强，**P3-7 结论泛化成立（GENERALIZES，未减弱）**。
+  - combo_ic_weighted CSI500 test IC 全 4 组正（0.0243/0.0294/0.0286/0.0285，为三个 holdout cells 最高）；**组合净值 CSI500 base 全组正且 4× 高成本仍全正**（trio +17.80%→+10.57% / full_pack +7.83%→+2.95% / value_lowvol +4.19%→+1.14% / liq +4.02%→+0.84%）——首个全成本阶梯为正的 cell。⚠️ 仍然诚实：trio +17.80% 又是组间排名跨 cell 翻转的例证（中盘动量 regime）；单窗口 ~21 调仓小样本；**非收益声明**。
+  - 报告标题沿用 P3-7 机器的报告类型名（study 由 project 行与 cell 标签标识）；文案/分区检查全过（无 stale P3-6 措辞、verdict 节只含独立 cells）；secret scan 报告+日志 0 处；demo 0.96/0.84 不变。
+- ✅ 质量门：`pytest` **379 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=15 / P3-5=22 / P3-6=27 / P3-7=25+1 throttle / P3-8=4）；`ruff` clean；`validate-config`（全部 11 配置）+ `run-phase0`（demo）均 OK。
+- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、旧三因子无信号（P3-3/P3-4 实证;但其组合在 2024-2026 holdout 上 SSE50/CSI300/CSI500 全正、CSI500 高达 +17.8%——小样本/regime 翻转的持续例证）;value/低波信号获得**独立样本符号级确认**（P3-7 SSE50/CSI300 量级衰减;P3-8 CSI500 泛化成立且更强），组合级盈利能力仍未确立（排名跨 cell 翻转）;subset 报告文件名已可配置（P3-8 起不再互覆盖）。
+- 路线图下一步：更长 holdout 积累（2026-06 之后滚动复检）/ 中证1000 或全市场扩展 / 成本模型细化（印花税卖侧不对称、冲击成本）,或分钟级（architecture.html §11）。
