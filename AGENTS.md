@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）、#13（进度文档）、#14（P3-4）、#15（进度文档）、#16（P3-5）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）、#13（进度文档）、#14（P3-4）、#15（进度文档）、#16（P3-5）、#17（进度文档）、#18（P3-6）、#19（P3-7）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -125,7 +125,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
     - `combo_ic_weighted` test IC **3/3 正 + 3/3 sign consistent**(0.0253/0.0012/0.0395)——walk-forward IC 加权吃到了新信号;11 因子**等权** combo 反被翻号因子稀释(IC 0/3 正,CSI300 test **−25.2%**)——等权对因子集质量敏感。
     - 组合绩效:ic test −2.21%/−5.02%/−2.76%(**3/3 cells 跑赢等权**;CSI300 train +23.11%→test −2.76%,train→test 衰减仍显著)。
     - ⚠️ **EXPLORATORY,非收益声明**:value/低波在 2020-2024 A 股是已知强势 regime;三 cells 窗口重叠非独立样本;未调参、未做成本敏感性。下一步候选:value+lowvol 子集独立复检。
-- ✅ **Phase 3-6 value+lowvol 子集复检 + 成本敏感性**（分支 `p3-value-lowvol-subset-validation`，**EXPLORATORY**）：把 P3-5 发现的 value/低波信号做**组间对照**（同一矩阵、同 footing），并补三档交易成本场景。**report-only：不加 alpha、不调参、不动 portfolio/execution/OOS 切片/robustness 聚合；`_run_oos_cell` 一字未动**。
+- ✅ **Phase 3-6 value+lowvol 子集复检 + 成本敏感性**（**PR #18 已 merge 到 `main`**，**EXPLORATORY**）：把 P3-5 发现的 value/低波信号做**组间对照**（同一矩阵、同 footing），并补三档交易成本场景。**report-only：不加 alpha、不调参、不动 portfolio/execution/OOS 切片/robustness 聚合；`_run_oos_cell` 一字未动**。
   - 新 run mode `run-phase3-subset`（`qt/subset_validation.py`）+ `config/phase3_real_subset_costs.yaml`：4 组（legacy_trio / full_pack=11 因子 / value_lowvol=value_ep+value_bp+volatility_20 / value_lowvol_liq=+liquidity_20，/goal 的"可选"直接实测）× 3 成本场景（base ×1 / 2x ×2 / high_cost ×4，**必须有 multiplier=1.0 base 锚**，config 校验强制）× P3-4 矩阵 3 cells（CSI300×2020-2022 skip 照旧披露）。
   - **机制（测试锁定）**：每 cell 一次共享加载 + raw factor panel（与 OOS cell 同调用序）→ 每组从 raw panel **独立重处理**（`drop_missing` 按组——切 processed 列会错因为 drop_missing 跨列；全列组与旧处理 bitwise 一致）→ 每组 eq vs walk-forward ic_weighted × 每场景回测。成本场景只乘 `cost.fee_rate`：scores/fills 不见 fee → **trades/turnover/gross 跨场景严格不变，只动成本线**；`_run_backtest_for` 增加 default-preserving `fee_rate` 参数（None==旧行为，bitwise 测试锁定）。
   - **三层不漂移对账（真实 run 全过）**：① raw 因子 IC **66/66 行**（11 因子×train/test×3 cells）与 P3-5 报告逐数一致；② `legacy_trio`@base 逐数复现 P3-3/P3-4（ic test −7.85%/−2.70%/−17.74%，train +7.09%/−8.31%/+11.07%）；③ `full_pack`@base 逐数复现 P3-5（ic test −2.21%/−5.02%/−2.76%，combo IC 0.0253/0.0012/0.0395，eq test −4.30%/−6.83%/−25.16%）——按组重处理 ≡ 把该组当配置因子集单跑。
@@ -136,7 +136,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
     - **成本敏感性（新维度）**：base→2x→high_cost **全组全 cell 单调恶化**（无例外）；4× fee 退化 1.7~4.4pp 年化——legacy_trio CSI300 最重（−17.74%→−22.13%，高换手代价），value_lowvol 低换手（0.41~0.74/月）退化 ~1.8~2.4pp；算术年化 drag base ~0.5-0.9% / high_cost ~1.4-4.8%；turnover 跨场景不变实测 ✓。
     - ⚠️ **全组 test annual 均为负——非收益声明**；**POST-HOC 选择已披露**（子集是在同一批窗口上看完 P3-5 结果后选的，本 run 只量化相对稳健性+成本敏感性，**不是独立确认**——独立确认需真正新窗口/新 universe）。
   - secret scan 报告+日志 0 处（token 值/"token"/".config.json"）；demo 0.96/0.84 不变。
-- ✅ **Phase 3-7 独立样本验证**（分支 `p3-independent-value-lowvol-validation`，**stacked 在 P3-6 分支上**——验收门要求复用 P3-6 机器；P3-6 merge 后可 rebase/顺序 PR。**EXPLORATORY**，含 review 2 HIGH 修复）：把 value/低波发现从"同窗口 POST-HOC 对照"推进到真正独立 holdout。不加因子/alpha、不调参；P3-6 group/cost 逻辑与配置不变（旧 27 测试原样通过）。
+- ✅ **Phase 3-7 独立样本验证**（**PR #19 已 merge 到 `main`**，曾 stacked 在 P3-6 分支上、PR #18 先合后顺序合入。**EXPLORATORY**，含 review 2 HIGH 修复）：把 value/低波发现从"同窗口 POST-HOC 对照"推进到真正独立 holdout。不加因子/alpha、不调参；P3-6 group/cost 逻辑与配置不变（旧 27 测试原样通过）。
   - **review 2 HIGH 修复**：P3-7 报告曾沿用 P3-6 标题/"not independent confirmation"开场白/"SAME overlapping windows"收尾 caveat，与自身 verdict 节矛盾 → `render_subset_validation` 标题/框架/caveat 与 `_subset_downgrades` 按是否含 independent cells 分支（P3-6 配置原文不变，回归测试锁定，+3 测试）；artifact 按用户指示**不重跑矩阵**，以确定性脚本把 5 处与数据无关的静态文案行替换为新渲染器的精确输出（新字符串从新代码路径提取、非手敲；diff 仅 5 行、全部数字未动、secret scan 0）。
   - **机制（测试锁定）**：独立性是**人的声明**——`subset_validation.independent_cells` 显式列 cell（必须引用矩阵已声明 cell、**禁止与 skip_cells 冲突**——"声明独立验证却不跑"是配置错误；未声明一律默认 screened，保守）；`hypotheses`（因子→期望 IC 符号）**run 前固定**于 config（value_ep+/value_bp+/volatility_20−，源自 P3-5 筛选）；`min_rebalances`（默认 8）不足 → **INSUFFICIENT-DATA**（样本量必披露，绝不静默通过）。verdict=事实性符号检查（HOLDS=期望符号在 holdout **双子期**都成立；SUPPORTED/PARTIAL/NOT SUPPORTED；NaN/缺列不成立）；**分类汇总绝不混**（summarize_by_sample 按 sample class 各自聚合；verdict 节只读独立 cells）。
   - 真实 config：screened anchor SSE50|2022-2024（必须逐数复现 P3-6=run 内不漂移锚）+ 独立 SSE50|2024-2026、CSI300|2024-2026（**2024-07-01→2026-05-31 后于全部筛选**，split 2025-07-01；数据实测到 2026-06）；CSI300|2022-2024 skip 披露。
