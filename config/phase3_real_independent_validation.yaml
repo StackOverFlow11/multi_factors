@@ -1,0 +1,207 @@
+# Phase 3-7 — REAL independent-sample validation for value/lowvol (EXPLORATORY).
+#
+# Moves the P3-5/P3-6 value/low-vol finding from "post-hoc comparison on the
+# screening windows" to a GENUINELY INDEPENDENT sample: the 2024-07-01 ..
+# 2026-05-31 window (latest complete month) POSTDATES every window the
+# candidates were screened on (P3-5/P3-6 used <= 2024-06-30), so neither
+# subperiod of an independent cell took part in factor selection.
+#
+# Cell roles (explicitly labeled, never averaged together):
+#   * 000016.SH|2022-2024  -> SCREENED anchor: must reproduce the P3-6 numbers
+#     exactly (in-run no-drift check); its conclusions are post-hoc.
+#   * 000016.SH|2024-2026  -> INDEPENDENT holdout (new window).
+#   * 000300.SH|2024-2026  -> INDEPENDENT holdout (new window, wider universe).
+#   * 000300.SH|2022-2024  -> skipped (runtime budget; the anchor needs one cell).
+#
+# The independent verdict (report section) reads ONLY independent cells: per
+# hypothesis factor (expected IC sign fixed BEFORE the run, from the P3-5
+# screening), does the sign hold in BOTH subperiods of the holdout window?
+# Sample sufficiency is gated by min_rebalances — too few settled rebalances
+# yields an INSUFFICIENT-DATA verdict, never a silent pass.
+#
+# Run:  python -m qt.cli run-phase3-subset --config config/phase3_real_independent_validation.yaml
+# (report: artifacts/reports/phase3_subset_validation.md under this config's
+# output dirs; needs the tushare token; HEAVY ~2-2.5h — the CSI300|2024-2026
+# cell pulls ~400 names x 23 months through the rate-limited SDK.)
+
+project:
+  name: quantitative_trading_phase3_independent_validation
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2022-07-01"
+  end: "2026-05-31"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: phase3iv_daily
+
+universe:
+  type: index
+  index_code: "000016.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+factors:
+  # FULL 11-factor pack (P3-5/P3-6, verbatim — factor math unchanged).
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+  - name: roe
+    enabled: true
+    params: {}
+  - name: netprofit_yoy
+    enabled: true
+    params: {}
+  - name: reversal_5
+    enabled: true
+    params:
+      window: 5
+  - name: reversal_20
+    enabled: true
+    params:
+      window: 20
+  - name: volatility_20
+    enabled: true
+    params:
+      window: 20
+  - name: liquidity_20
+    enabled: true
+    params:
+      window: 20
+  - name: overnight_mom_20
+    enabled: true
+    params:
+      window: 20
+  - name: value_ep
+    enabled: true
+    params: {}
+  - name: value_bp
+    enabled: true
+    params: {}
+  - name: grossprofit_margin
+    enabled: true
+    params: {}
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+
+alpha:
+  model: ic_weighted
+  params:
+    window: 60
+    min_periods: 20
+    mode: rolling
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 20
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+analytics:
+  forward_return_periods:
+    - 1
+    - 5
+    - 20
+  quantiles: 5
+  benchmark: null
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+
+oos:
+  split_date: "2023-07-01"   # base-config validation only; per-cell splits below
+
+robustness:
+  universes:
+    - "000016.SH"   # SSE50  (screened anchor + independent holdout)
+    - "000300.SH"   # CSI300 (independent holdout)
+  windows:
+    - label: "2022-2024"     # SCREENED window (P3-3..P3-6 all used it)
+      start: "2022-07-01"
+      end: "2024-06-30"
+      split: "2023-07-01"
+    - label: "2024-2026"     # INDEPENDENT window: postdates all screening
+      start: "2024-07-01"
+      end: "2026-05-31"      # latest complete month at run time
+      split: "2025-07-01"
+  skip_cells:
+    - universe: "000300.SH"
+      window: "2022-2024"    # runtime budget; one screened anchor is enough
+
+subset_validation:
+  # P3-6 group comparison reused VERBATIM (groups/cost logic unchanged).
+  groups:
+    - label: legacy_trio
+      factors: [momentum_20, roe, netprofit_yoy]
+    - label: full_pack
+      factors: [momentum_20, roe, netprofit_yoy, reversal_5, reversal_20,
+                volatility_20, liquidity_20, overnight_mom_20, value_ep,
+                value_bp, grossprofit_margin]
+    - label: value_lowvol
+      factors: [value_ep, value_bp, volatility_20]
+    - label: value_lowvol_liq
+      factors: [value_ep, value_bp, volatility_20, liquidity_20]
+  cost_scenarios:
+    - label: base
+      fee_multiplier: 1.0
+    - label: 2x
+      fee_multiplier: 2.0
+    - label: high_cost
+      fee_multiplier: 4.0
+  # P3-7: cells whose (universe, window) took NO part in factor screening.
+  # Everything not listed here is labeled screened/post-hoc in the report;
+  # the independent verdict reads ONLY the cells below.
+  independent_cells:
+    - universe: "000016.SH"
+      window: "2024-2026"
+    - universe: "000300.SH"
+      window: "2024-2026"
+  # Expected IC signs FIXED BEFORE the run (from the P3-5 screening finding);
+  # the verdict checks whether each sign holds in BOTH subperiods of every
+  # independent cell. Factual sign check only — never a return claim.
+  hypotheses:
+    value_ep: positive
+    value_bp: positive
+    volatility_20: negative
+  # Fewer settled rebalances (train+test) than this in an independent cell
+  # -> INSUFFICIENT-DATA verdict with the sample size disclosed.
+  min_rebalances: 8

@@ -950,11 +950,11 @@ def _subset_perf_table(performance: dict) -> str:
     return header + rows
 
 
-def _subset_group_summary_block(glabel: str, gsum: dict) -> str:
+def _subset_group_summary_block(glabel: str, gsum: dict, level: str = "###") -> str:
     """One group's cross-cell summary (combo stability + cost ladder)."""
     n = int(gsum.get("n_cells", 0))
     lines = [
-        f"\n### Group `{glabel}` across cells\n",
+        f"\n{level} Group `{glabel}` across cells\n",
         f"- ic_weighted beats equal_weight on TEST annual return at the BASE "
         f"scenario in **{gsum.get('ic_beats_eq_test_base', 0)}/{n}** cells\n\n",
         "| Combo series | test IC > 0 | train→test sign consistent | "
@@ -988,24 +988,53 @@ def _subset_group_summary_block(glabel: str, gsum: dict) -> str:
 
 
 def render_subset_validation(result) -> str:
-    """Build the phase3 subset-validation markdown (pure; no I/O, no secrets)."""
+    """Build the phase3 subset-validation markdown (pure; no I/O, no secrets).
+
+    The title, the framing blockquote and the closing caveat are SAMPLE-AWARE:
+    a run whose cells include declared independent holdouts is a P3-7
+    independent validation and must NOT carry the P3-6 "same windows / not
+    independent confirmation" framing (it would contradict the verdict
+    section); a run with no independent cells keeps the P3-6 framing verbatim.
+    """
     cfg = result.config
+    has_independent = "independent" in (
+        getattr(result, "cell_samples", None) or {}
+    ).values()
     lines: list[str] = []
-    lines.append("# Phase 3-6 — Value+LowVol Subset Re-check + Cost Sensitivity "
-                 "(factor groups × cost scenarios)\n")
+    if has_independent:
+        lines.append("# Phase 3-7 — Independent-Sample Validation "
+                     "(factor groups × cost scenarios; screened vs "
+                     "independent holdout cells)\n")
+    else:
+        lines.append("# Phase 3-6 — Value+LowVol Subset Re-check + Cost "
+                     "Sensitivity (factor groups × cost scenarios)\n")
     lines.append(
         f"Project: **{cfg.project.name}** · source: **{cfg.data.source}** · "
         f"ran in **{result.elapsed_seconds:.1f}s**\n"
     )
-    lines.append(
-        "\n> **This is NOT a return claim and not a tuned result.** It compares "
-        "configured FACTOR GROUPS head-to-head on the same robustness matrix "
-        "(same data, same rules, equal_weight vs walk-forward ic_weighted per "
-        "group) and repeats every backtest under scaled trading-cost scenarios. "
-        "POST-HOC SELECTION applies: the value+lowvol subset was chosen AFTER "
-        "seeing the P3-5 results on these same windows — this quantifies "
-        "RELATIVE robustness and cost sensitivity, not independent confirmation.\n"
-    )
+    if has_independent:
+        lines.append(
+            "\n> **This is NOT a return claim and not a tuned result.** It "
+            "compares configured FACTOR GROUPS head-to-head (same data, same "
+            "rules, equal_weight vs walk-forward ic_weighted per group, "
+            "repeated under scaled trading-cost scenarios) on cells EXPLICITLY "
+            "labeled by sample class: **screened (post-hoc)** cells lie on the "
+            "windows the candidates were screened on (the anchor must reproduce "
+            "the prior run's numbers — no-drift), while **independent holdout** "
+            "cells postdate all factor screening and are the ONLY input to the "
+            "Independent holdout verdict section. Per-class summaries are never "
+            "averaged together.\n"
+        )
+    else:
+        lines.append(
+            "\n> **This is NOT a return claim and not a tuned result.** It compares "
+            "configured FACTOR GROUPS head-to-head on the same robustness matrix "
+            "(same data, same rules, equal_weight vs walk-forward ic_weighted per "
+            "group) and repeats every backtest under scaled trading-cost scenarios. "
+            "POST-HOC SELECTION applies: the value+lowvol subset was chosen AFTER "
+            "seeing the P3-5 results on these same windows — this quantifies "
+            "RELATIVE robustness and cost sensitivity, not independent confirmation.\n"
+        )
 
     lines.append("\n## Factor groups (compared head-to-head)\n")
     lines.append("| Group | n | factors |\n|---|---|---|\n")
@@ -1039,13 +1068,16 @@ def render_subset_validation(result) -> str:
     )
 
     lines.append("\n## Cells\n")
+    cell_samples = getattr(result, "cell_samples", None) or {}
     lines.append(
-        "| Cell (universe \\| window) | window | split | runtime |\n|---|---|---|---|\n"
+        "| Cell (universe \\| window) | sample | window | split | runtime |\n"
+        "|---|---|---|---|---|\n"
     )
     for label, cell in result.cells.items():
         runtime = result.cell_runtimes.get(label, float("nan"))
+        sample = cell_samples.get(label, "screened")
         lines.append(
-            f"| `{label}` | {_date_str(cell.train_start)} → "
+            f"| `{label}` | {sample} | {_date_str(cell.train_start)} → "
             f"{_date_str(cell.test_end)} | {_date_str(cell.split_date)} | "
             f"{runtime:.0f}s |\n"
         )
@@ -1056,10 +1088,63 @@ def render_subset_validation(result) -> str:
             f"reduced, not hidden):** {sk}\n"
         )
 
+    verdicts = getattr(result, "verdicts", None) or {}
+    if verdicts:
+        lines.append("\n## Independent holdout verdict\n")
+        lines.append(
+            "_Derived from INDEPENDENT cells ONLY (declared in "
+            "`subset_validation.independent_cells`; their data took no part in "
+            "factor screening — screened cells never enter this section). A "
+            "hypothesis HOLDS iff the factor's mean IC carries the pre-declared "
+            "expected sign in BOTH subperiods of the holdout cell (both postdate "
+            "the screening). Settled rebalances below `min_rebalances` yield "
+            "INSUFFICIENT-DATA. This is a factual IC sign check — NOT a return "
+            "claim._\n"
+        )
+        for label, v in verdicts.items():
+            lines.append(f"\n### `{label}` — **{v['status']}**\n")
+            lines.append(
+                f"- sample size: **{v['n_settled']}** settled rebalances "
+                f"(train+test) vs required minimum **{v['min_rebalances']}**\n"
+                f"- {v['reason']}\n\n"
+            )
+            lines.append(
+                "| Hypothesis factor | expected sign | train IC | test IC | "
+                "holds (train) | holds (test) | holds (BOTH) |\n"
+                "|---|---|---|---|---|---|---|\n"
+            )
+            for name, f in (v.get("factors") or {}).items():
+                lines.append(
+                    f"| `{name}` | {f['expected']} | {_fmt(f['train_ic'])} | "
+                    f"{_fmt(f['test_ic'])} | {'YES' if f['holds_train'] else 'NO'} | "
+                    f"{'YES' if f['holds_test'] else 'NO'} | "
+                    f"{'**YES**' if f['holds'] else 'NO'} |\n"
+                )
+
     lines.append("\n## Cross-cell summary by group\n")
-    lines.append(f"- cells aggregated: **{int(result.summary.get('n_cells', 0))}**\n")
-    for glabel, gsum in (result.summary.get("groups") or {}).items():
-        lines.append(_subset_group_summary_block(glabel, gsum))
+    sample_summaries = getattr(result, "sample_summaries", None) or {}
+    if "independent" in sample_summaries:
+        lines.append(
+            "_Summaries are computed PER SAMPLE CLASS — independent holdout "
+            "cells are never averaged with screened (post-hoc) cells._\n"
+        )
+        for cls, title in (("independent", "Independent holdout cells"),
+                           ("screened", "Screened (post-hoc) cells")):
+            if cls not in sample_summaries:
+                continue
+            cls_summary = sample_summaries[cls]
+            lines.append(f"\n### {title}\n")
+            lines.append(
+                f"- cells aggregated: **{int(cls_summary.get('n_cells', 0))}**\n"
+            )
+            for glabel, gsum in (cls_summary.get("groups") or {}).items():
+                lines.append(_subset_group_summary_block(glabel, gsum, level="####"))
+    else:
+        lines.append(
+            f"- cells aggregated: **{int(result.summary.get('n_cells', 0))}**\n"
+        )
+        for glabel, gsum in (result.summary.get("groups") or {}).items():
+            lines.append(_subset_group_summary_block(glabel, gsum))
 
     for label, cell in result.cells.items():
         lines.append(f"\n## Cell `{label}`\n")
@@ -1105,9 +1190,13 @@ def render_subset_validation(result) -> str:
     universes = sorted({label.split("|", 1)[0] for label in result.cells})
     windows = sorted({label.split("|", 1)[1] for label in result.cells})
     skipped = ", ".join(f"`{s}`" for s in result.skipped_cells) or "none"
+    samples_note = "; ".join(
+        f"`{label}` = {cell_samples.get(label, 'screened')}" for label in result.cells
+    )
     lines.append(
         f"- MATRIX SCOPE: run cells: {run_labels}; skipped cells: {skipped}; "
-        f"universes covered: {universes}; windows covered: {windows}. "
+        f"universes covered: {universes}; windows covered: {windows}; "
+        f"sample classes: {samples_note}. "
         "Universe-specific disclosures below are the UNION over all run cells.\n"
     )
     seen: set[str] = set()
@@ -1116,13 +1205,25 @@ def render_subset_validation(result) -> str:
             if item not in seen:
                 seen.add(item)
                 lines.append(f"- {item}\n")
-    lines.append(
-        "- COMPARISON CAVEAT: groups are compared on the SAME overlapping "
-        "windows the P3-5 candidates were screened on (POST-HOC selection); "
-        "per-cell metrics remain SMALL-SAMPLE. The summary shows which group "
-        "holds up RELATIVELY and how fast costs erode each — NOT a return "
-        "claim, NOT independent confirmation.\n"
-    )
+    if has_independent:
+        lines.append(
+            "- COMPARISON CAVEAT: screened (post-hoc) cells lie on the windows "
+            "the value+lowvol subset was selected on — their conclusions remain "
+            "post-hoc; INDEPENDENT holdout cells took no part in screening, but "
+            "each is still SMALL-SAMPLE (~21 settled rebalances) and the "
+            "holdout cells share one time window across universes (universe "
+            "robustness, not two independent time draws). The verdict is an IC "
+            "SIGN check — it confirms neither magnitude nor portfolio "
+            "profitability. NOT a return claim.\n"
+        )
+    else:
+        lines.append(
+            "- COMPARISON CAVEAT: groups are compared on the SAME overlapping "
+            "windows the P3-5 candidates were screened on (POST-HOC selection); "
+            "per-cell metrics remain SMALL-SAMPLE. The summary shows which group "
+            "holds up RELATIVELY and how fast costs erode each — NOT a return "
+            "claim, NOT independent confirmation.\n"
+        )
 
     lines.append("\n## Artifacts\n")
     lines.append(f"- report: `{result.report_path}`\n- log: `{result.log_path}`\n")

@@ -136,6 +136,18 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
     - **成本敏感性（新维度）**：base→2x→high_cost **全组全 cell 单调恶化**（无例外）；4× fee 退化 1.7~4.4pp 年化——legacy_trio CSI300 最重（−17.74%→−22.13%，高换手代价），value_lowvol 低换手（0.41~0.74/月）退化 ~1.8~2.4pp；算术年化 drag base ~0.5-0.9% / high_cost ~1.4-4.8%；turnover 跨场景不变实测 ✓。
     - ⚠️ **全组 test annual 均为负——非收益声明**；**POST-HOC 选择已披露**（子集是在同一批窗口上看完 P3-5 结果后选的，本 run 只量化相对稳健性+成本敏感性，**不是独立确认**——独立确认需真正新窗口/新 universe）。
   - secret scan 报告+日志 0 处（token 值/"token"/".config.json"）；demo 0.96/0.84 不变。
-- ✅ 质量门：`pytest` **349 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=15 / P3-5=22 / P3-6=27）；`ruff` clean；`validate-config`（旧 8 配置 + `phase3_real_subset_costs.yaml`）+ `run-phase0`（demo）均 OK。
-- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、旧三因子无信号（P3-3/P3-4 实证）;value/低波信号仍 EXPLORATORY——P3-6 为同窗口 POST-HOC 对照（子集净值不优于 full pack、成本敏感性已量化），**尚无独立窗口确认**。
-- 路线图下一步：真正独立样本确认（新窗口如 2024-07 之后 / 新 universe）/ 成本模型细化（印花税卖侧不对称、冲击成本）,或分钟级（architecture.html §11）。
+- ✅ **Phase 3-7 独立样本验证**（分支 `p3-independent-value-lowvol-validation`，**stacked 在 P3-6 分支上**——验收门要求复用 P3-6 机器；P3-6 merge 后可 rebase/顺序 PR。**EXPLORATORY**，含 review 2 HIGH 修复）：把 value/低波发现从"同窗口 POST-HOC 对照"推进到真正独立 holdout。不加因子/alpha、不调参；P3-6 group/cost 逻辑与配置不变（旧 27 测试原样通过）。
+  - **review 2 HIGH 修复**：P3-7 报告曾沿用 P3-6 标题/"not independent confirmation"开场白/"SAME overlapping windows"收尾 caveat，与自身 verdict 节矛盾 → `render_subset_validation` 标题/框架/caveat 与 `_subset_downgrades` 按是否含 independent cells 分支（P3-6 配置原文不变，回归测试锁定，+3 测试）；artifact 按用户指示**不重跑矩阵**，以确定性脚本把 5 处与数据无关的静态文案行替换为新渲染器的精确输出（新字符串从新代码路径提取、非手敲；diff 仅 5 行、全部数字未动、secret scan 0）。
+  - **机制（测试锁定）**：独立性是**人的声明**——`subset_validation.independent_cells` 显式列 cell（必须引用矩阵已声明 cell、**禁止与 skip_cells 冲突**——"声明独立验证却不跑"是配置错误；未声明一律默认 screened，保守）；`hypotheses`（因子→期望 IC 符号）**run 前固定**于 config（value_ep+/value_bp+/volatility_20−，源自 P3-5 筛选）；`min_rebalances`（默认 8）不足 → **INSUFFICIENT-DATA**（样本量必披露，绝不静默通过）。verdict=事实性符号检查（HOLDS=期望符号在 holdout **双子期**都成立；SUPPORTED/PARTIAL/NOT SUPPORTED；NaN/缺列不成立）；**分类汇总绝不混**（summarize_by_sample 按 sample class 各自聚合；verdict 节只读独立 cells）。
+  - 真实 config：screened anchor SSE50|2022-2024（必须逐数复现 P3-6=run 内不漂移锚）+ 独立 SSE50|2024-2026、CSI300|2024-2026（**2024-07-01→2026-05-31 后于全部筛选**，split 2025-07-01；数据实测到 2026-06）；CSI300|2022-2024 skip 披露。
+  - **运维实证**：两次真实 run 死于瞬时 ConnectionError（旧默认 3 次重试≈3s 容忍）→ 默认重试预算 **3→6**（≈23s 容忍，成功路径不变，测试锁定）→ 第三次 ~2.2h 跑通。⚠️ P3-7 报告与 P3-6 同名（`phase3_subset_validation.md`），后跑覆盖前跑（regenerable，数字都在进度文档）。
+  - **anchor 不漂移 ✓**：raw IC 22/22 ≡ P3-5 矩阵报告；组级 base 年化逐数 ≡ P3-6。
+  - **真实结果（3 cells/~2.2h，独立结论只来自 2 个 holdout cells）**：
+    - **独立 verdict：2/2 cells SUPPORTED**（各 21 settled rebalances vs min 8）——value_ep IC +0.0322/+0.0134（SSE50 holdout train/test）与 +0.0245/+0.0072（CSI300）；value_bp +0.0379/+0.0033 与 +0.0310/+0.0041；volatility_20 −0.0320/−0.0120 与 −0.0373/−0.0164。**P3-5 的符号假设在未参与筛选的样本上全部成立**。
+    - ⚠️ **量级显著衰减**：筛选期 |IC| 0.037~0.079 → holdout 后段 0.003~0.016（value_bp 后段≈0）——符号存活、强度衰减（部分向零回归），照实披露。
+    - combo_ic_weighted 独立 test IC **8/8 正**（4 组×2 cells，0.0060~0.0238）——walk-forward IC 加权在 holdout 上仍有效。
+    - **组合净值仍未确立**：独立 base ic test——legacy_trio **+1.15%/+8.13%**（2/2 正，恰是此前实证"无信号"的组！）、full_pack +7.30%/−1.93%、value_lowvol +1.72%/−4.68%、liq +3.53%/−0.39%——组间排名跨 cell 翻转,~21 rebalances 小样本,**IC 符号确认 ≠ 组合盈利**；成本阶梯仍全单调。非收益声明。
+  - secret scan 报告+日志 0 处；demo 0.96/0.84 不变。
+- ✅ 质量门：`pytest` **375 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=15 / P3-5=22 / P3-6=27 / P3-7=25+1 throttle）；`ruff` clean；`validate-config`（全部 10 配置）+ `run-phase0`（demo）均 OK。
+- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、旧三因子无信号（P3-3/P3-4 实证;但其组合在 2024-2026 holdout 上 2/2 正——小样本翻转的又一例证）;value/低波信号获得**独立样本符号级确认但量级衰减**（P3-7），组合级盈利能力未确立;subset 报告文件名跨 config 共用（后跑覆盖前跑）。
+- 路线图下一步：更长 holdout 积累（2026-06 之后滚动复检）/ 新 universe（中证500）/ 成本模型细化（印花税卖侧不对称、冲击成本）,或分钟级（architecture.html §11）。

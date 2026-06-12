@@ -56,3 +56,23 @@ def test_tushare_feed_call_delegates(no_sleep):
     feed = TushareFeed("x.json", rate_limit=60, max_retries=3)  # -> 1.0s spacing
     assert feed._call(lambda **_kw: "ok") == "ok"
     assert 1.0 in no_sleep
+
+
+def test_default_retry_budget_survives_transient_outage(no_sleep):
+    """The DEFAULT retry budget tolerates a multi-failure network blip.
+
+    Two real ~2h matrix runs died on ConnectionError with the old 3-attempt
+    default (~3s total backoff). The default is now 6 attempts (~23s of
+    capped exponential backoff) so a transient outage no longer kills a
+    long rate-limited pull; a genuinely dead network still fails readably.
+    """
+    calls = {"n": 0}
+
+    def flaky(**kwargs):
+        calls["n"] += 1
+        if calls["n"] < 6:
+            raise ConnectionError("transient blip")
+        return "ok"
+
+    assert request_with_retry(flaky) == "ok"  # no explicit max_retries
+    assert calls["n"] == 6
