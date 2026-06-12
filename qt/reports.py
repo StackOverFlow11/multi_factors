@@ -922,6 +922,222 @@ def write_robustness_matrix_summary(result) -> Path:
 
 
 # --------------------------------------------------------------------------- #
+# Phase 3-6 subset validation report (qt.subset_validation).
+# --------------------------------------------------------------------------- #
+def _subset_perf_table(performance: dict) -> str:
+    """Scenario × model × period performance table (with cost metrics)."""
+    header = (
+        "| Scenario | Model | Period | annual | vol | sharpe | maxDD | "
+        "avg turnover | total cost | cost drag (ann.) | rebalances |\n"
+        "|---|---|---|---|---|---|---|---|---|---|---|\n"
+    )
+    rows = ""
+    for scn, models in performance.items():
+        for model in ("equal_weight", "ic_weighted"):
+            for period in ("train", "test"):
+                p = (models.get(model) or {}).get(period) or {}
+                rows += (
+                    f"| `{scn}` | `{model}` | {period} | "
+                    f"{_fmt(p.get('annual_return', float('nan')), pct=True)} | "
+                    f"{_fmt(p.get('volatility', float('nan')), pct=True)} | "
+                    f"{_fmt(p.get('sharpe', float('nan')))} | "
+                    f"{_fmt(p.get('max_drawdown', float('nan')), pct=True)} | "
+                    f"{_fmt(p.get('avg_turnover', float('nan')))} | "
+                    f"{_fmt(p.get('total_cost', float('nan')), pct=True)} | "
+                    f"{_fmt(p.get('cost_drag_annual', float('nan')), pct=True)} | "
+                    f"{int(p.get('n_rebalances', 0))} |\n"
+                )
+    return header + rows
+
+
+def _subset_group_summary_block(glabel: str, gsum: dict) -> str:
+    """One group's cross-cell summary (combo stability + cost ladder)."""
+    n = int(gsum.get("n_cells", 0))
+    lines = [
+        f"\n### Group `{glabel}` across cells\n",
+        f"- ic_weighted beats equal_weight on TEST annual return at the BASE "
+        f"scenario in **{gsum.get('ic_beats_eq_test_base', 0)}/{n}** cells\n\n",
+        "| Combo series | test IC > 0 | train→test sign consistent | "
+        "test IC by cell |\n|---|---|---|---|\n",
+    ]
+    for series, s in (gsum.get("combo") or {}).items():
+        by_cell = ", ".join(
+            f"{label}: {_fmt(v)}"
+            for label, v in (s.get("test_ic_by_cell") or {}).items()
+        )
+        lines.append(
+            f"| `{series}` | {s.get('test_ic_positive', 0)}/{n} | "
+            f"{s.get('sign_consistent', 0)}/{n} | {by_cell} |\n"
+        )
+    ladder = gsum.get("ic_test_annual_by_scenario") or {}
+    if ladder:
+        lines.append(
+            "\nCost ladder — ic_weighted TEST annual return by scenario "
+            "(same trades, scaled fee):\n\n"
+        )
+        lines.append("| Scenario | " + " | ".join(
+            f"`{c}`" for c in next(iter(ladder.values()), {})
+        ) + " |\n")
+        lines.append("|---|" + "---|" * len(next(iter(ladder.values()), {})) + "\n")
+        for scn, by_cell in ladder.items():
+            cells_fmt = " | ".join(
+                _fmt(v, pct=True) for v in by_cell.values()
+            )
+            lines.append(f"| `{scn}` | {cells_fmt} |\n")
+    return "".join(lines)
+
+
+def render_subset_validation(result) -> str:
+    """Build the phase3 subset-validation markdown (pure; no I/O, no secrets)."""
+    cfg = result.config
+    lines: list[str] = []
+    lines.append("# Phase 3-6 — Value+LowVol Subset Re-check + Cost Sensitivity "
+                 "(factor groups × cost scenarios)\n")
+    lines.append(
+        f"Project: **{cfg.project.name}** · source: **{cfg.data.source}** · "
+        f"ran in **{result.elapsed_seconds:.1f}s**\n"
+    )
+    lines.append(
+        "\n> **This is NOT a return claim and not a tuned result.** It compares "
+        "configured FACTOR GROUPS head-to-head on the same robustness matrix "
+        "(same data, same rules, equal_weight vs walk-forward ic_weighted per "
+        "group) and repeats every backtest under scaled trading-cost scenarios. "
+        "POST-HOC SELECTION applies: the value+lowvol subset was chosen AFTER "
+        "seeing the P3-5 results on these same windows — this quantifies "
+        "RELATIVE robustness and cost sensitivity, not independent confirmation.\n"
+    )
+
+    lines.append("\n## Factor groups (compared head-to-head)\n")
+    lines.append("| Group | n | factors |\n|---|---|---|\n")
+    seen_groups: dict[str, tuple] = {}
+    for cell in result.cells.values():
+        for glabel, g in cell.groups.items():
+            seen_groups.setdefault(glabel, tuple(g.get("factors", ())))
+    for glabel, factors_t in seen_groups.items():
+        flist = ", ".join(f"`{f}`" for f in factors_t)
+        lines.append(f"| `{glabel}` | {len(factors_t)} | {flist} |\n")
+    lines.append(
+        "\n_Each group is re-processed independently from one shared raw factor "
+        "panel (drop_missing applies per group), then run through the SAME "
+        "equal_weight vs ic_weighted comparison and OOS slicing._\n"
+    )
+
+    lines.append("\n## Cost scenarios\n")
+    lines.append("| Scenario | fee multiplier | effective fee_rate |\n|---|---|---|\n")
+    multipliers = {
+        s.label: s.fee_multiplier
+        for s in (cfg.subset_validation.cost_scenarios if cfg.subset_validation else [])
+    }
+    for scn_label, fee in (result.scenario_fees or {}).items():
+        base_tag = " (base)" if scn_label == result.base_scenario else ""
+        mult = multipliers.get(scn_label, float("nan"))
+        lines.append(f"| `{scn_label}`{base_tag} | {mult:g} | {fee:.6g} |\n")
+    lines.append(
+        "\n_Scenarios scale `cost.fee_rate` ONLY: scores and fills never see the "
+        "fee, so trades and turnover are identical across scenarios — only the "
+        "cost line (and net return) changes (locked by tests)._\n"
+    )
+
+    lines.append("\n## Cells\n")
+    lines.append(
+        "| Cell (universe \\| window) | window | split | runtime |\n|---|---|---|---|\n"
+    )
+    for label, cell in result.cells.items():
+        runtime = result.cell_runtimes.get(label, float("nan"))
+        lines.append(
+            f"| `{label}` | {_date_str(cell.train_start)} → "
+            f"{_date_str(cell.test_end)} | {_date_str(cell.split_date)} | "
+            f"{runtime:.0f}s |\n"
+        )
+    if result.skipped_cells:
+        sk = ", ".join(f"`{s}`" for s in result.skipped_cells)
+        lines.append(
+            f"\n- **skipped cells (disclosed, runtime budget — coverage is "
+            f"reduced, not hidden):** {sk}\n"
+        )
+
+    lines.append("\n## Cross-cell summary by group\n")
+    lines.append(f"- cells aggregated: **{int(result.summary.get('n_cells', 0))}**\n")
+    for glabel, gsum in (result.summary.get("groups") or {}).items():
+        lines.append(_subset_group_summary_block(glabel, gsum))
+
+    for label, cell in result.cells.items():
+        lines.append(f"\n## Cell `{label}`\n")
+        lines.append(
+            f"- train: {_date_str(cell.train_start)} → {_date_str(cell.train_end)} "
+            f"({cell.n_train_days}d) · test: {_date_str(cell.test_start)} → "
+            f"{_date_str(cell.test_end)} ({cell.n_test_days}d) · split "
+            f"{_date_str(cell.split_date)}\n"
+        )
+        if cell.boundary_dates:
+            bd = ", ".join(_date_str(d) for d in cell.boundary_dates)
+            lines.append(
+                f"- boundary rebalance(s) excluded from both subperiods "
+                f"(holding window straddles the split): {bd}\n"
+            )
+        lines.append(
+            "\n### Raw factor IC (per-column, group-independent — the no-drift "
+            "cross-check vs the P3-5 report)\n"
+        )
+        lines.append(_oos_ic_table(cell.raw_ic_stats, cell.raw_sign_consistency))
+        for glabel, g in cell.groups.items():
+            flist = ", ".join(f"`{f}`" for f in g.get("factors", ()))
+            lines.append(f"\n### Group `{glabel}` — {flist}\n")
+            lines.append("\n#### Subperiod performance × cost scenarios\n")
+            lines.append(_subset_perf_table(g.get("performance") or {}))
+            lines.append("\n#### Combo IC stability\n")
+            lines.append(_oos_ic_table(
+                g.get("combo_ic_stats") or {}, g.get("combo_sign_consistency") or {}
+            ))
+            flips = ", ".join(
+                f"`{k}` {v}" for k, v in (g.get("sign_flips") or {}).items()
+            )
+            lines.append(
+                f"\n#### Weight stability (ic_weighted)\n"
+                f"- scored dates: **{g.get('n_scored', 0)}** · equal-weight "
+                f"fallbacks: **{g.get('n_fallback', 0)}**\n"
+                f"- sign flips between consecutive trained rebalance weights: "
+                f"{flips or '_n/a_'}\n"
+            )
+
+    lines.append("\n## DOWNGRADES / caveats (INV-007 — must be disclosed)\n")
+    run_labels = ", ".join(f"`{label}`" for label in result.cells)
+    universes = sorted({label.split("|", 1)[0] for label in result.cells})
+    windows = sorted({label.split("|", 1)[1] for label in result.cells})
+    skipped = ", ".join(f"`{s}`" for s in result.skipped_cells) or "none"
+    lines.append(
+        f"- MATRIX SCOPE: run cells: {run_labels}; skipped cells: {skipped}; "
+        f"universes covered: {universes}; windows covered: {windows}. "
+        "Universe-specific disclosures below are the UNION over all run cells.\n"
+    )
+    seen: set[str] = set()
+    for cell in result.cells.values():
+        for item in cell.downgrades:
+            if item not in seen:
+                seen.add(item)
+                lines.append(f"- {item}\n")
+    lines.append(
+        "- COMPARISON CAVEAT: groups are compared on the SAME overlapping "
+        "windows the P3-5 candidates were screened on (POST-HOC selection); "
+        "per-cell metrics remain SMALL-SAMPLE. The summary shows which group "
+        "holds up RELATIVELY and how fast costs erode each — NOT a return "
+        "claim, NOT independent confirmation.\n"
+    )
+
+    lines.append("\n## Artifacts\n")
+    lines.append(f"- report: `{result.report_path}`\n- log: `{result.log_path}`\n")
+    return "".join(lines)
+
+
+def write_subset_validation_summary(result) -> Path:
+    """Render and write the subset-validation report; return the path (SEC-003)."""
+    target = result.report_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_subset_validation(result), encoding="utf-8")
+    return target
+
+
+# --------------------------------------------------------------------------- #
 # Repo-root delivery docs (framework spec §10). These describe the run; they
 # carry no secrets and are regenerable.
 # --------------------------------------------------------------------------- #

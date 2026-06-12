@@ -125,6 +125,17 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
     - `combo_ic_weighted` test IC **3/3 正 + 3/3 sign consistent**(0.0253/0.0012/0.0395)——walk-forward IC 加权吃到了新信号;11 因子**等权** combo 反被翻号因子稀释(IC 0/3 正,CSI300 test **−25.2%**)——等权对因子集质量敏感。
     - 组合绩效:ic test −2.21%/−5.02%/−2.76%(**3/3 cells 跑赢等权**;CSI300 train +23.11%→test −2.76%,train→test 衰减仍显著)。
     - ⚠️ **EXPLORATORY,非收益声明**:value/低波在 2020-2024 A 股是已知强势 regime;三 cells 窗口重叠非独立样本;未调参、未做成本敏感性。下一步候选:value+lowvol 子集独立复检。
-- ✅ 质量门：`pytest` **322 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=15 / P3-5=22）；`ruff` clean；`validate-config`（旧 7 配置 + `phase3_real_factor_candidates.yaml`）+ `run-phase0`（demo）均 OK。
-- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、旧三因子无信号（P3-3/P3-4 实证）;候选 value/低波信号为 EXPLORATORY 发现,待独立窗口/成本敏感性复检（P3-5）。
-- 路线图下一步：value+lowvol 子集独立复检 / 成本敏感性,或分钟级（architecture.html §11）。
+- ✅ **Phase 3-6 value+lowvol 子集复检 + 成本敏感性**（分支 `p3-value-lowvol-subset-validation`，**EXPLORATORY**）：把 P3-5 发现的 value/低波信号做**组间对照**（同一矩阵、同 footing），并补三档交易成本场景。**report-only：不加 alpha、不调参、不动 portfolio/execution/OOS 切片/robustness 聚合；`_run_oos_cell` 一字未动**。
+  - 新 run mode `run-phase3-subset`（`qt/subset_validation.py`）+ `config/phase3_real_subset_costs.yaml`：4 组（legacy_trio / full_pack=11 因子 / value_lowvol=value_ep+value_bp+volatility_20 / value_lowvol_liq=+liquidity_20，/goal 的"可选"直接实测）× 3 成本场景（base ×1 / 2x ×2 / high_cost ×4，**必须有 multiplier=1.0 base 锚**，config 校验强制）× P3-4 矩阵 3 cells（CSI300×2020-2022 skip 照旧披露）。
+  - **机制（测试锁定）**：每 cell 一次共享加载 + raw factor panel（与 OOS cell 同调用序）→ 每组从 raw panel **独立重处理**（`drop_missing` 按组——切 processed 列会错因为 drop_missing 跨列；全列组与旧处理 bitwise 一致）→ 每组 eq vs walk-forward ic_weighted × 每场景回测。成本场景只乘 `cost.fee_rate`：scores/fills 不见 fee → **trades/turnover/gross 跨场景严格不变，只动成本线**；`_run_backtest_for` 增加 default-preserving `fee_rate` 参数（None==旧行为，bitwise 测试锁定）。
+  - **三层不漂移对账（真实 run 全过）**：① raw 因子 IC **66/66 行**（11 因子×train/test×3 cells）与 P3-5 报告逐数一致；② `legacy_trio`@base 逐数复现 P3-3/P3-4（ic test −7.85%/−2.70%/−17.74%，train +7.09%/−8.31%/+11.07%）；③ `full_pack`@base 逐数复现 P3-5（ic test −2.21%/−5.02%/−2.76%，combo IC 0.0253/0.0012/0.0395，eq test −4.30%/−6.83%/−25.16%）——按组重处理 ≡ 把该组当配置因子集单跑。
+  - **真实结果（3 cells×4 组×3 场景，~2.1h）**：
+    - **子集假设在净值层不成立**：value_lowvol ic test base **−4.49%/−8.66%/−5.84%** vs full_pack **−2.21%/−5.02%/−2.76%**——full_pack 在 **3/3 cells × 全部场景**净值更优。IC 层子集略稳：value_lowvol combo_ic test IC 3/3 正（0.0245/**0.0107**/0.0387），量级与 full_pack 相当且中间 cell 远离 0（full_pack 0.0012≈0）——**IC 稳定性与净值排序不同向**，照实披露。
+    - value_lowvol_liq（+liquidity_20）：CSI300 IC 最高（0.0427）、SSE50|2020-2022 单 cell 最佳（−2.48%），但 2022-2024 两 cell 均劣于 value_lowvol——**加 liquidity 非免费午餐**，"可选"问题用数据回答。
+    - 等权稀释复确认：full_pack eq CSI300 −25.16% vs value_lowvol eq −14.97%（子集等权耐稀释）；ic beats eq（base）：trio 2/3、full_pack 3/3、value_lowvol 3/3、liq 2/3。
+    - **成本敏感性（新维度）**：base→2x→high_cost **全组全 cell 单调恶化**（无例外）；4× fee 退化 1.7~4.4pp 年化——legacy_trio CSI300 最重（−17.74%→−22.13%，高换手代价），value_lowvol 低换手（0.41~0.74/月）退化 ~1.8~2.4pp；算术年化 drag base ~0.5-0.9% / high_cost ~1.4-4.8%；turnover 跨场景不变实测 ✓。
+    - ⚠️ **全组 test annual 均为负——非收益声明**；**POST-HOC 选择已披露**（子集是在同一批窗口上看完 P3-5 结果后选的，本 run 只量化相对稳健性+成本敏感性，**不是独立确认**——独立确认需真正新窗口/新 universe）。
+  - secret scan 报告+日志 0 处（token 值/"token"/".config.json"）；demo 0.96/0.84 不变。
+- ✅ 质量门：`pytest` **349 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=15 / P3-5=22 / P3-6=27）；`ruff` clean；`validate-config`（旧 8 配置 + `phase3_real_subset_costs.yaml`）+ `run-phase0`（demo）均 OK。
+- ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、旧三因子无信号（P3-3/P3-4 实证）;value/低波信号仍 EXPLORATORY——P3-6 为同窗口 POST-HOC 对照（子集净值不优于 full pack、成本敏感性已量化），**尚无独立窗口确认**。
+- 路线图下一步：真正独立样本确认（新窗口如 2024-07 之后 / 新 universe）/ 成本模型细化（印花税卖侧不对称、冲击成本）,或分钟级（architecture.html §11）。

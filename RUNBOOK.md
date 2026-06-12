@@ -389,6 +389,51 @@ same report. Note `drop_missing` requires ALL enabled factors per name/date
 (e.g. a loss-maker's NaN `value_ep` drops it that day) — the combo legs are
 therefore NOT the P3-4 combos; disclosed.
 
+## Phase 3-6 — value+lowvol subset re-check + cost sensitivity (EXPLORATORY)
+
+Compares configured FACTOR GROUPS head-to-head on the unchanged P3-4 matrix
+(one shared data load + raw factor panel per cell) and repeats every backtest
+under scaled trading-cost scenarios. **Report-only; no new alpha model, no
+tuning, no portfolio / execution / OOS-slicing / aggregation change;
+`_run_oos_cell` untouched.** Documented by
+`config/phase3_real_subset_costs.yaml` (4 groups × 3 cost scenarios, same
+matrix shape as P3-4/P3-5 incl. the disclosed CSI300×2020-2022 skip).
+
+```bash
+# validate (no network)
+... -m qt.cli validate-config    --config config/phase3_real_subset_costs.yaml
+# run (network + token; HEAVY ~2-2.5h — same data pulls as the P3-5 matrix)
+... -m qt.cli run-phase3-subset  --config config/phase3_real_subset_costs.yaml
+```
+
+Factor groups (config-driven; labels and lists are disclosed in the report):
+
+| Group | Factors |
+|---|---|
+| `legacy_trio` | momentum_20, roe, netprofit_yoy |
+| `full_pack` | all 11 P3-5 factors |
+| `value_lowvol` | value_ep, value_bp, volatility_20 |
+| `value_lowvol_liq` | value_lowvol + liquidity_20 (the /goal's optional variant, measured) |
+
+Cost scenarios scale `cost.fee_rate` only (`base`×1, `2x`×2, `high_cost`×4; a
+multiplier-1.0 base scenario is REQUIRED — the cost-drag anchor). Scores and
+fills never see the fee, so trades/turnover are IDENTICAL across scenarios —
+only the cost line (and net return) changes (locked by tests).
+
+Semantics worth knowing before reading the report:
+
+- **Per-group reprocessing**: each group is re-processed independently from the
+  shared raw factor panel — `drop_missing` requires completeness only across
+  the GROUP's columns (a group with every column reproduces the P3-4/P3-5
+  processing bitwise, locked by tests). The combo legs of different groups are
+  therefore NOT each other's subsets.
+- **No-drift hook**: raw-factor ICs are per-column and group-independent; the
+  per-cell raw IC table must reproduce the P3-5 report's numbers.
+- **POST-HOC selection (disclosed)**: the value+lowvol subset was chosen after
+  seeing P3-5 results on these same windows — the run quantifies RELATIVE
+  robustness + cost sensitivity, not independent confirmation; NOT a return
+  claim.
+
 ## Quality gate
 
 ```bash

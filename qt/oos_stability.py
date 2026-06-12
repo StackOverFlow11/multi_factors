@@ -274,16 +274,25 @@ def _oos_downgrades(cfg: RootConfig) -> tuple[str, ...]:
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
-def _run_backtest_for(cfg: RootConfig, panel, universe, score_panel) -> pd.DataFrame:
-    """One backtest run for a given score panel (same rules for both models)."""
+def _run_backtest_for(
+    cfg: RootConfig, panel, universe, score_panel, fee_rate: float | None = None
+) -> pd.DataFrame:
+    """One backtest run for a given score panel (same rules for both models).
+
+    ``fee_rate=None`` (the default, and the only value the OOS/robustness paths
+    pass) uses ``cfg.cost.fee_rate`` — behaviour-preserving, locked by a test.
+    The P3-6 cost scenarios pass an explicit scaled fee; scores/fills never see
+    the fee, so a scenario changes ONLY the cost line, never the trades.
+    """
+    fee = cfg.cost.fee_rate if fee_rate is None else float(fee_rate)
     driver = BacktestDriver(
         universe=universe,
         scores=_FrameScores(score_panel),
         constructor=TopNEqualWeight(cfg.portfolio.top_n, long_only=cfg.portfolio.long_only),
-        execution=SimExecution(fee_rate=cfg.cost.fee_rate),
+        execution=SimExecution(fee_rate=fee),
         prices=panel,
         rebalance=cfg.backtest.rebalance,
-        fee_rate=cfg.cost.fee_rate,
+        fee_rate=fee,
         initial_nav=cfg.backtest.initial_nav,
         cash_return=cfg.backtest.cash_return,
     )

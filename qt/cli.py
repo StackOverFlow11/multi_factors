@@ -130,6 +130,25 @@ def _cmd_run_phase3_robustness(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_phase3_subset(args: argparse.Namespace) -> int:
+    """Run the subset-validation matrix (factor groups x cost scenarios) + report."""
+    from qt.subset_validation import run_phase3_subset
+
+    try:
+        result = run_phase3_subset(args.config)
+    except (ConfigError, ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    n_groups = len(result.summary.get("groups", {}))
+    print(
+        f"OK run-phase3-subset: cells={result.summary['n_cells']}, "
+        f"groups={n_groups}, scenarios={len(result.scenario_fees)}, "
+        f"skipped={len(result.skipped_cells)} ({result.elapsed_seconds:.1f}s)\n"
+        f"report: {result.report_path}"
+    )
+    return 0
+
+
 def _cmd_fetch_data(args: argparse.Namespace) -> int:
     """Stage helper: run the spine and report the data-fetch stage."""
     return _run_pipeline_cmd(args.config, "fetch-data")
@@ -181,6 +200,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_rob.add_argument("--config", required=True, help="Path to the YAML config.")
     p_rob.set_defaults(func=_cmd_run_phase3_robustness)
+
+    p_sub = sub.add_parser(
+        "run-phase3-subset",
+        help="Run the REAL-data subset validation (factor groups x cost scenarios).",
+    )
+    p_sub.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_sub.set_defaults(func=_cmd_run_phase3_subset)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),
