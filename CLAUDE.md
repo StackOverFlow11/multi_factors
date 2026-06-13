@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）、#13（进度文档）、#14（P3-4）、#15（进度文档）、#16（P3-5）、#17（进度文档）、#18（P3-6）、#19（P3-7）、#20（进度文档）、#21（P3-8）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）、#13（进度文档）、#14（P3-4）、#15（进度文档）、#16（P3-5）、#17（进度文档）、#18（P3-6）、#19（P3-7）、#20（进度文档）、#21（P3-8）、#22（进度文档）、#23（P4-1）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -154,7 +154,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
   - **CSI500 verdict：SUPPORTED**（21 settled vs min 8）：value_ep **+0.0083/+0.0145**（train/test）、value_bp **+0.0230/+0.0127**、volatility_20 **−0.0350/−0.0272**——三假设双子期全保持。**且衰减更小**：CSI500 test 子期量级（0.0127~0.0272）明显高于 SSE50/CSI300 holdout 的后段（0.003~0.016）——value/低波信号在中盘股上更强，**P3-7 结论泛化成立（GENERALIZES，未减弱）**。
   - combo_ic_weighted CSI500 test IC 全 4 组正（0.0243/0.0294/0.0286/0.0285，为三个 holdout cells 最高）；**组合净值 CSI500 base 全组正且 4× 高成本仍全正**（trio +17.80%→+10.57% / full_pack +7.83%→+2.95% / value_lowvol +4.19%→+1.14% / liq +4.02%→+0.84%）——首个全成本阶梯为正的 cell。⚠️ 仍然诚实：trio +17.80% 又是组间排名跨 cell 翻转的例证（中盘动量 regime）；单窗口 ~21 调仓小样本；**非收益声明**。
   - **报告标题配置化**（`output.subset_report_title`，沿 `subset_report_name` 先例）：P3-8 报告 H1 自报 study 名「Phase 3-8 — CSI500 Independent Generalization Check」而非机器默认 P3-7 标签（review 同类 stale-wording 问题修复，测试断言首行非 P3-7；P3-6/P3-7 配置不设此项、保持 sample-aware 默认，回归锁定）；文案/分区检查全过（无 stale P3-6 措辞、verdict 节只含独立 cells）；secret scan 报告+日志 0 处；demo 0.96/0.84 不变。
-- ✅ **Phase 4-1 持久化 Tushare 行情缓存**（分支 `data-persistent-market-cache`，daily + adj_factor）：feed 之下的 **endpoint 级 raw 缓存**——真实 run 不再每次重抓全量日线+复权因子。**默认 disabled（向后兼容，旧配置行为一字不变）**；opt-in 后行情走 read-through，只有未覆盖的日期区间打 API。
+- ✅ **Phase 4-1 持久化 Tushare 行情缓存**（**PR #23 已 merge 到 `main`**，daily + adj_factor）：feed 之下的 **endpoint 级 raw 缓存**——真实 run 不再每次重抓全量日线+复权因子。**默认 disabled（向后兼容，旧配置行为一字不变）**；opt-in 后行情走 read-through，只有未覆盖的日期区间打 API。
   - **缓存只存 raw**（未复权 OHLCV/amount + 原始 adj_factor），绝不存 qfq、绝不存任何 secret；`front_adjust` 仍在内存跑，公式/时机零改动；`PanelStore` 仍是 per-run artifact，**不是**缓存 SoT。
   - `data/cache/`：`intervals`（闭区间日历算法做 gap 规划——按"日历区间是否抓过"而非"行是否存在"判定，正确区分"未抓"vs"源本无行"）/ `parquet_store`（按 `(endpoint,symbol)` 分文件存 `symbol_prefix` 分片，原子 upsert 按 `(date,symbol)` 去重，latest 胜）/ `coverage`（append-only ledger，11 列含 status ok/empty/failed，**只 ok/empty 算覆盖**，failed 留待重试）/ `tushare_cache`（read-through：只抓 gap、upsert、记 coverage 含空返回、再从缓存读全区间；`refresh_recent_days` 重抓近端 tail；`force_refresh` 整端点重拉；per-run 抓取计数 stats 日志）。
   - `TushareFeed.get_bars`：`cache=None` → 旧直抓路径**逐字不变**；`cache` 注入 → read-through 后用**与直抓完全相同的 join+select**，故 `front_adjust` 前面板逐字节一致（qfq 等价单测锁定）；per-symbol 限流/重试仍留在 feed 的 `_call` 闭包里。`_build_market_cache` 仅在 `data.cache.enabled` 时接线。
