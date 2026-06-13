@@ -182,12 +182,15 @@ _CAPS: tuple[EndpointCapability, ...] = (
         ("ts_code", "surv_date"), "event_date", "candidate_uncached",
         "authorized_rate_unverified", "authorized",
     ),
-    # -- throttled to near-uselessness (1 call/hour) ---------------------- #
+    # -- minute bars: the 1-call/hour cap was LIFTED (re-probe 2026-06-13,
+    #    3/3 calls in ~12s) -> now authorized + batch-plausible; the exact rate
+    #    ceiling was NOT stress-tested (no brute force).
     EndpointCapability(
         "stk_mins", "market_intraday", "EXPLORATORY minute bars (roadmap)",
         "trade_time", ("ts_code", "trade_time"), "intraday", "candidate_uncached",
-        "not_batch_viable_1_per_hour", "rate_limited",
+        "authorized_rate_unverified", "authorized",
     ),
+    # -- throttled to 1 call/hour (NOT batch-viable) ---------------------- #
     EndpointCapability(
         "hm_detail", "sentiment", "EXPLORATORY hot-money detail", "trade_date",
         ("trade_date", "ts_code", "hm_name"), "eod_postclose", "candidate_uncached",
