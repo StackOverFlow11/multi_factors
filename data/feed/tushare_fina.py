@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import pandas as pd
 
+from data.cache.tushare_cache import FINA_FIELDS
 from data.feed.secret import read_token
 from data.feed.throttle import request_with_retry
 
-# financial fields supported as P1 factors.
+# financial fields requested by default when a caller names none. The cache
+# stores the full ``FINA_FIELDS`` superset regardless (so a subset warm never
+# blocks a later different-subset request); this is only the default REQUEST set.
 DEFAULT_FIELDS: tuple[str, ...] = ("roe", "netprofit_yoy")
 
 
@@ -30,12 +33,18 @@ class TushareFinancialFeed:
         token_key: str = "tushare.token",
         rate_limit: int | None = None,
         max_retries: int = 6,
+        cache=None,
     ) -> None:
         self._secret_file = str(secret_file)
         self._token_key = token_key
         self._rate_limit = rate_limit
         self._max_retries = max(1, int(max_retries))
         self._pro = None
+        # P4-3: optional shared read-through cache. None keeps the historical
+        # direct per-symbol fetch EXACTLY; the cache stores RAW fina_indicator
+        # rows (with ann_date) only — the ann_date<=trade_date as-of alignment
+        # stays downstream, byte-identical.
+        self._cache = cache
 
     def _client(self):
         if self._pro is None:
@@ -43,6 +52,11 @@ class TushareFinancialFeed:
 
             self._pro = ts.pro_api(read_token(self._secret_file, self._token_key))
         return self._pro
+
+    def _call(self, fn, **kwargs):
+        return request_with_retry(
+            fn, max_retries=self._max_retries, rate_limit=self._rate_limit, **kwargs
+        )
 
     def get_fina_indicator(
         self,
@@ -66,19 +80,30 @@ class TushareFinancialFeed:
         """
         wanted = list(fields) if fields else list(DEFAULT_FIELDS)
         col_spec = ",".join(["ts_code", "ann_date", "end_date", *wanted])
+
+        if self._cache is not None:
+            # The cache stores the CANONICAL SUPERSET (field-set independent), so a
+            # warm for one config's fields never blocks another's. Fetch the
+            # superset; select the requested subset on read.
+            super_spec = ",".join(["ts_code", "ann_date", "end_date", *FINA_FIELDS])
+            cached = self._cache.fina_indicator(
+                symbols, start, end, self._fina_fetch(super_spec)
+            )
+            if cached.empty:
+                return self._empty(wanted)
+            cached = cached.copy()
+            cached["symbol"] = cached["symbol"].astype(str)
+            keep = ["symbol", "ann_date", "end_date", *wanted]
+            return cached[[c for c in keep if c in cached.columns]].reset_index(drop=True)
+
         pro = self._client()
         s = pd.Timestamp(start).strftime("%Y%m%d")
         e = pd.Timestamp(end).strftime("%Y%m%d")
 
         frames: list[pd.DataFrame] = []
         for sym in symbols:
-            df = request_with_retry(
-                pro.fina_indicator,
-                max_retries=self._max_retries,
-                rate_limit=self._rate_limit,
-                ts_code=sym,
-                start_date=s,
-                end_date=e,
+            df = self._call(
+                pro.fina_indicator, ts_code=sym, start_date=s, end_date=e,
                 fields=col_spec,
             )
             if df is not None and len(df) > 0:
@@ -91,6 +116,22 @@ class TushareFinancialFeed:
         out["symbol"] = out["symbol"].astype(str)
         keep = ["symbol", "ann_date", "end_date", *wanted]
         return out[[c for c in keep if c in out.columns]]
+
+    def _fina_fetch(self, col_spec: str):
+        """`(symbol, s_compact, e_compact) -> raw fina_indicator frame` (period range).
+
+        The client is built lazily inside the closure, so a fully-covered warm run
+        reads no token and constructs no client. ``start_date``/``end_date`` filter
+        by the REPORT PERIOD (end_date), matching the direct path exactly.
+        """
+
+        def fetch(symbol, start_compact, end_compact):
+            return self._call(
+                self._client().fina_indicator, ts_code=symbol,
+                start_date=start_compact, end_date=end_compact, fields=col_spec,
+            )
+
+        return fetch
 
     @staticmethod
     def _empty(fields: list[str]) -> pd.DataFrame:

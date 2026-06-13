@@ -1,21 +1,29 @@
-"""Read-through cache for tushare endpoints (P4-1 market bars + P4-2 universe/tradability).
+"""Read-through cache for tushare endpoints (P4-1 market bars + P4-2 universe/
+tradability + P4-3 factor-support: daily_basic / fina_indicator / index_member_all).
 
 ``TushareCache`` turns a requested range into ONLY the uncovered gaps (or a
 stale snapshot), fetches those via a caller-supplied ``fetch`` callable (the
 feed wraps its own retry/throttle there, so the cache stays transport-agnostic),
-upserts the raw rows, records coverage (including empty returns), then returns
-the full requested data read back from the cache.
+upserts the raw rows, records coverage (including empty / not-ready returns),
+then returns the full requested data read back from the cache.
 
 Three planning shapes share one engine:
   * dense per-symbol date-range (``market_daily``, ``adj_factor``, ``suspend_d``,
-    ``stk_limit``): coverage key = symbol, gaps subtracted per symbol, a recent
-    tail refetched within ``refresh_recent_days``;
+    ``stk_limit``, ``daily_basic``, ``fina_indicator``): coverage key = symbol,
+    gaps subtracted per symbol, a trailing tail refetched (today-based
+    ``refresh_recent_days``, or a per-endpoint range-trailing override — fina
+    refetches recent report periods to catch LATE disclosures);
   * index-keyed date-range (``index_weight``): coverage key = index_code, gaps
     subtracted over the whole index, each uncovered gap paged in <=90-day
     windows (tushare's per-call row cap), raw snapshots stored;
-  * snapshot / dimension (``namechange`` per-symbol, ``stock_basic`` global):
-    no date range — refetched only when never fetched, stale beyond
-    ``refresh_dimension_days``, or force-refreshed.
+  * snapshot / dimension (``namechange`` per-symbol, ``index_member_all``
+    per-symbol, ``stock_basic`` global): no date range — refetched only when
+    never fetched, stale beyond ``refresh_dimension_days``, or force-refreshed.
+
+``fina_indicator`` is field-set dependent and ALWAYS stores the canonical
+``FINA_FIELDS`` superset (one schema, one coverage), so a warm for one config's
+fields never blocks another's. P4-3 also adds a ``not_ready`` pending window
+(today's unpublished data is not frozen as covered).
 
 Behaviour the acceptance pins down (each endpoint):
   * full cache miss  -> fetch the uncovered range, populate cache;
@@ -53,12 +61,16 @@ SUSPEND_D = "suspend_d"
 NAMECHANGE = "namechange"
 STK_LIMIT = "stk_limit"
 STOCK_BASIC = "stock_basic"
+# P4-3 factor-support endpoints.
+DAILY_BASIC = "daily_basic"          # dense per-symbol date-range (pe/pb/total_mv)
+FINA_INDICATOR = "fina_indicator"    # per-symbol, report-period range, carries ann_date
+INDEX_MEMBER_ALL = "index_member_all"  # per-symbol dimension (SW in/out intervals)
 
 # every endpoint this cache knows (fetch_counts is seeded with all of them so a
 # warm run reports an explicit 0 for an endpoint it never had to touch).
 ALL_ENDPOINTS = (
     MARKET_DAILY, ADJ_FACTOR, INDEX_WEIGHT, SUSPEND_D, NAMECHANGE,
-    STK_LIMIT, STOCK_BASIC,
+    STK_LIMIT, STOCK_BASIC, DAILY_BASIC, FINA_INDICATOR, INDEX_MEMBER_ALL,
 )
 
 # sentinel key for a global (whole-market) snapshot endpoint (stock_basic).
@@ -83,6 +95,32 @@ _NAMECHANGE_KEY = ["symbol", "start_date", "end_date", "name"]
 
 _STOCK_BASIC_COLUMNS = ["symbol", "list_date"]
 _STOCK_BASIC_KEY = ["symbol"]
+
+# P4-3 endpoints. daily_basic is a dense per-symbol date-range (like market bars);
+# the stored ``date`` is the trade_date. fina_indicator's stored ``date`` is the
+# REPORT-PERIOD end_date (the axis tushare filters on); ann_date is kept as a raw
+# column for the downstream PIT as-of (ann_date <= trade_date) — never as the
+# coverage axis. index_member_all is a per-symbol dimension of SW in/out intervals.
+_DAILY_BASIC_COLUMNS = ["date", "symbol", "pe", "pb", "total_mv"]
+_DAILY_BASIC_KEY = ["date", "symbol"]
+
+# fina_indicator is field-set dependent: a per-(symbol) parquet keyed by
+# (symbol, end_date, ann_date) CANNOT hold two different field sets for the same
+# report (a later subset upsert would overwrite an earlier one and a covered
+# interval would be reused with the wrong columns). So the cache ALWAYS fetches +
+# stores the CANONICAL SUPERSET of every financial field the project supports; a
+# caller (the feed) selects its requested subset on read. Coverage is therefore
+# uniform (one field set) and a subset warm never blocks a later different-subset
+# request. Must stay a superset of factors.compute.financial.SUPPORTED_FIELDS
+# (guarded by a drift test).
+FINA_FIELDS: tuple[str, ...] = ("roe", "netprofit_yoy", "grossprofit_margin")
+_FINA_COLUMNS = ["date", "symbol", "ann_date", "end_date", *FINA_FIELDS]
+_FINA_KEY = ["symbol", "end_date", "ann_date"]
+
+_INDEX_MEMBER_COLUMNS = [
+    "symbol", "l1_name", "l2_name", "l3_name", "in_date", "out_date"
+]
+_INDEX_MEMBER_KEY = ["symbol", "in_date", "out_date", "l1_name", "l2_name", "l3_name"]
 
 # tushare per-call row cap forces index_weight to be paged in <=90-day windows.
 _INDEX_WINDOW_DAYS = 90
@@ -225,6 +263,75 @@ def _parse_stock_basic(raw: pd.DataFrame | None) -> pd.DataFrame:
     return df[_STOCK_BASIC_COLUMNS]
 
 
+def _parse_daily_basic(raw: pd.DataFrame | None) -> pd.DataFrame:
+    """tushare ``daily_basic`` frame -> canonical-raw rows (or empty).
+
+    Stores pe / pb / total_mv RAW (published same-day, PIT-safe by construction);
+    the value-ratio inversion and log-market-cap stay downstream, unchanged.
+    """
+    if raw is None or len(raw) == 0:
+        return pd.DataFrame(columns=_DAILY_BASIC_COLUMNS)
+    df = raw.rename(columns={"ts_code": "symbol", "trade_date": "date"}).copy()
+    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
+    df["symbol"] = df["symbol"].astype(str)
+    for col in ("pe", "pb", "total_mv"):
+        if col not in df.columns:
+            df[col] = float("nan")
+    return df[_DAILY_BASIC_COLUMNS]
+
+
+def _parse_fina(raw: pd.DataFrame | None) -> pd.DataFrame:
+    """tushare ``fina_indicator`` frame -> canonical-raw SUPERSET rows (or empty).
+
+    The stored ``date`` is the report-period ``end_date`` (the coverage axis);
+    ``ann_date`` (disclosure) and ``end_date`` are kept RAW so the downstream
+    ``ann_date <= trade_date`` as-of alignment is byte-identical to the direct
+    path. ALL of :data:`FINA_FIELDS` are stored (missing -> NaN) so the schema is
+    field-set independent.
+    """
+    if raw is None or len(raw) == 0:
+        return pd.DataFrame(columns=_FINA_COLUMNS)
+    df = raw.rename(columns={"ts_code": "symbol"}).copy()
+    df["symbol"] = df["symbol"].astype(str)
+    df["ann_date"] = df["ann_date"].astype(str) if "ann_date" in df.columns else None
+    df["end_date"] = df["end_date"].astype(str) if "end_date" in df.columns else None
+    df["date"] = pd.to_datetime(df["end_date"], format="%Y%m%d", errors="coerce")
+    for f in FINA_FIELDS:
+        if f not in df.columns:
+            df[f] = float("nan")
+    return df[_FINA_COLUMNS]
+
+
+def _parse_index_member(raw: pd.DataFrame | None, symbol: str) -> pd.DataFrame:
+    """tushare ``index_member_all`` frame -> canonical-raw SW interval rows (or empty).
+
+    Stores the L1/L2/L3 names + ``in_date``/``out_date`` (out NaT for an active
+    membership). The level-name selection and the as-of interval lookup stay
+    downstream (the feed builds {symbol: [(name, in, out)]}, unchanged).
+    """
+    if raw is None or len(raw) == 0:
+        return pd.DataFrame(columns=_INDEX_MEMBER_COLUMNS)
+    df = raw.copy()
+    df["symbol"] = (
+        df["ts_code"].astype(str) if "ts_code" in df.columns else str(symbol)
+    )
+    for col in ("l1_name", "l2_name", "l3_name"):
+        if col not in df.columns:
+            df[col] = None
+        else:
+            df[col] = df[col].astype(object)
+    df["in_date"] = pd.to_datetime(
+        df["in_date"].astype(str), format="%Y%m%d", errors="coerce"
+    )
+    if "out_date" in df.columns:
+        df["out_date"] = pd.to_datetime(
+            df["out_date"].astype(str), format="%Y%m%d", errors="coerce"
+        )
+    else:
+        df["out_date"] = pd.NaT
+    return df[_INDEX_MEMBER_COLUMNS]
+
+
 class TushareCache:
     """Endpoint-level read-through cache (market bars + universe/tradability)."""
 
@@ -239,6 +346,8 @@ class TushareCache:
         today: pd.Timestamp | None = None,
         clock: Callable[[], pd.Timestamp] | None = None,
         source_version: str | None = None,
+        not_ready_days: int = 0,
+        recent_tail_overrides: dict[str, int] | None = None,
     ) -> None:
         self._store = store
         self._ledger = ledger
@@ -248,16 +357,42 @@ class TushareCache:
         self._today = pd.Timestamp(today).normalize() if today is not None else None
         self._clock = clock or pd.Timestamp.now
         self._source_version = source_version
+        # P4-3: how many trailing calendar days (ending today) are treated as
+        # "may not be published yet". An EMPTY return inside this pending window is
+        # recorded as ``not_ready`` (NOT coverage) so it is retried on a later run
+        # — a 21:00 updater must not freeze today's unpublished row as covered.
+        # 0 (default) disables this, keeping every existing endpoint's behaviour
+        # byte-identical.
+        self._not_ready_days = max(0, int(not_ready_days))
+        # P4-3: per-endpoint override of the trailing-refetch window over the
+        # REQUESTED range (not today-based) — e.g. fina_indicator refetches a long
+        # trailing window of recent report periods to catch LATE disclosures.
+        self._recent_tail_overrides = dict(recent_tail_overrides or {})
         # per-instance endpoint fetch counters (cache stats; one increment per
         # gap/window/snapshot actually sent to the API). A fully-covered repeat
         # run leaves these at zero — the read-through hit rate is observable from
         # the run log. Seeded with every known endpoint so a warm run reports an
         # explicit 0 even for endpoints it never had to touch.
         self.fetch_counts: dict[str, int] = {ep: 0 for ep in ALL_ENDPOINTS}
+        # P4-3 summary counters (for the data-update summary): rows upserted and
+        # not-ready (pending) records, per endpoint.
+        self.written_counts: dict[str, int] = {ep: 0 for ep in ALL_ENDPOINTS}
+        self.not_ready_counts: dict[str, int] = {ep: 0 for ep in ALL_ENDPOINTS}
 
     def stats(self) -> dict[str, int]:
         """Endpoint -> number of gap fetches sent to the API this instance."""
         return dict(self.fetch_counts)
+
+    def update_summary(self) -> dict[str, dict[str, int]]:
+        """Per-endpoint {requests, rows_written, not_ready} for the data updater."""
+        return {
+            ep: {
+                "requests": int(self.fetch_counts.get(ep, 0)),
+                "rows_written": int(self.written_counts.get(ep, 0)),
+                "not_ready": int(self.not_ready_counts.get(ep, 0)),
+            }
+            for ep in ALL_ENDPOINTS
+        }
 
     # -- dense per-symbol date-range endpoints ----------------------------- #
     def daily_bars(
@@ -293,6 +428,77 @@ class TushareCache:
             STK_LIMIT, symbols, start, end, fetch, _parse_stk_limit,
             _STK_LIMIT_COLUMNS, _STK_LIMIT_KEY,
         )
+
+    # -- P4-3 factor-support endpoints ------------------------------------- #
+    def daily_basic(
+        self, symbols: list[str], start: str, end: str, fetch: FetchOne
+    ) -> pd.DataFrame:
+        """Canonical-raw daily_basic rows [date, symbol, pe, pb, total_mv].
+
+        Dense per-symbol date-range over the trade_date, exactly like the market
+        bars (recent-tail refetch + not-ready pending window apply). The feed's
+        ``market_cap`` / ``value_ratios`` select their columns from this one cache.
+        """
+        return self._read_through(
+            DAILY_BASIC, symbols, start, end, fetch, _parse_daily_basic,
+            _DAILY_BASIC_COLUMNS, _DAILY_BASIC_KEY,
+        )
+
+    def fina_indicator(
+        self,
+        symbols: list[str],
+        start: str,
+        end: str,
+        fetch: FetchOne,
+    ) -> pd.DataFrame:
+        """Canonical-raw fina_indicator rows [symbol, ann_date, end_date, *FINA_FIELDS].
+
+        ALWAYS the SUPERSET (``FINA_FIELDS``) — the ``fetch`` closure MUST request
+        every superset field, so a subset warm never blocks a later different-subset
+        request (the caller selects its subset on read). Coverage is planned over
+        the REPORT-PERIOD (``end_date``) range; to catch LATE disclosures of recent
+        periods, a long trailing window is always refetched
+        (``recent_tail_overrides[fina_indicator]``). ``ann_date`` is stored raw for
+        the downstream as-of and is NEVER the coverage axis.
+        """
+        out = self._read_through(
+            FINA_INDICATOR, symbols, start, end, fetch, _parse_fina,
+            _FINA_COLUMNS, _FINA_KEY,
+        )
+        keep = ["symbol", "ann_date", "end_date", *FINA_FIELDS]
+        present = [c for c in keep if c in out.columns]
+        return out[present].reset_index(drop=True)
+
+    def index_member_all(
+        self, symbols: list[str], fetch: FetchSnapshot
+    ) -> pd.DataFrame:
+        """Canonical-raw SW interval rows for ``symbols`` (per-symbol dimension).
+
+        Each symbol's membership history is refetched only when never fetched,
+        stale beyond ``refresh_dimension_days``, or force-refreshed (slow-moving,
+        like namechange). Returns the stored rows for the requested symbols; the
+        level-name selection + as-of interval lookup stay the feed's job.
+        """
+        forced = INDEX_MEMBER_ALL in self._force_refresh
+        fields_hash = _fields_hash(_INDEX_MEMBER_COLUMNS)
+        out: list[pd.DataFrame] = []
+        for sym in symbols:
+            if forced or self._snapshot_stale(INDEX_MEMBER_ALL, sym):
+                self._fetch_snapshot(
+                    INDEX_MEMBER_ALL, sym, "symbol", lambda s=sym: fetch(s),
+                    lambda raw, s=sym: _parse_index_member(raw, s),
+                    _INDEX_MEMBER_KEY, fields_hash,
+                )
+            cached = self._store.read_symbol(INDEX_MEMBER_ALL, sym)
+            if not cached.empty:
+                out.append(cached[_INDEX_MEMBER_COLUMNS])
+        _LOGGER.info(
+            "cache %s: %d symbols (api calls=%d)",
+            INDEX_MEMBER_ALL, len(symbols), self.fetch_counts[INDEX_MEMBER_ALL],
+        )
+        if not out:
+            return pd.DataFrame(columns=_INDEX_MEMBER_COLUMNS)
+        return pd.concat(out, ignore_index=True)
 
     # -- index-keyed date-range endpoint (index_weight, 90-day paged) ------- #
     def index_weight(
@@ -422,15 +628,30 @@ class TushareCache:
         return pd.concat(out, ignore_index=True).reset_index(drop=True)
 
     def _gaps_for(self, endpoint, symbol, req_start, req_end, forced):
-        """The uncovered sub-intervals to fetch (+ a forced recent tail)."""
+        """The uncovered sub-intervals to fetch (+ a forced trailing tail)."""
         if forced:
             return [(req_start, req_end)]
         covered = self._ledger.covered_intervals(endpoint, symbol)
         gaps = subtract_intervals(req_start, req_end, covered)
-        recent = self._recent_tail(req_start, req_end)
-        if recent is not None:
-            gaps = merge_intervals(gaps + [recent])
+        tail = self._tail_for(endpoint, req_start, req_end)
+        if tail is not None:
+            gaps = merge_intervals(gaps + [tail])
         return gaps
+
+    def _tail_for(self, endpoint, req_start, req_end):
+        """The trailing window always refetched for ``endpoint``.
+
+        A per-endpoint override (``recent_tail_overrides``) refetches the trailing
+        N days of the REQUESTED range — used by fina_indicator to catch LATE
+        disclosures of recent report periods, independent of today. Otherwise the
+        today-based recent tail (``refresh_recent_days``) applies.
+        """
+        override = self._recent_tail_overrides.get(endpoint)
+        if override is not None:
+            if override <= 0:
+                return None
+            return (max(req_start, req_end - pd.Timedelta(days=override - 1)), req_end)
+        return self._recent_tail(req_start, req_end)
 
     def _recent_tail(self, req_start, req_end):
         """Force-refetch the recent tail within ``refresh_recent_days`` of today."""
@@ -442,25 +663,75 @@ class TushareCache:
             return None  # whole request is safely historical
         return (max(req_start, threshold), req_end)
 
+    def _pending_start(self):
+        """First calendar day treated as 'may not be published yet' (or None)."""
+        if self._not_ready_days <= 0:
+            return None
+        today = self._today if self._today is not None else self._clock().normalize()
+        return today - pd.Timedelta(days=self._not_ready_days - 1)
+
     def _fetch_gap(
         self, endpoint, symbol, gap_start, gap_end, fetch, parse, key_cols, fields_hash
     ):
-        """Fetch one gap, upsert raw rows, record coverage (incl. empty)."""
+        """Fetch one gap, upsert raw rows, record coverage (incl. empty/not-ready)."""
         raw = fetch(symbol, _compact(gap_start), _compact(gap_end))
         self.fetch_counts[endpoint] = self.fetch_counts.get(endpoint, 0) + 1
         parsed = parse(raw)
-        row_count = len(parsed)
-        if row_count:
+        if len(parsed):
             self._store.upsert_symbol(endpoint, symbol, parsed, key_cols)
+            self.written_counts[endpoint] = (
+                self.written_counts.get(endpoint, 0) + len(parsed)
+            )
+        self._record_gap_coverage(
+            endpoint, symbol, gap_start, gap_end, parsed, fields_hash
+        )
+
+    def _record_gap_coverage(
+        self, endpoint, symbol, gap_start, gap_end, parsed, fields_hash
+    ):
+        """Record coverage for a fetched gap, carving out a not-ready pending tail.
+
+        With ``not_ready_days == 0`` (default) this records ONE row for the whole
+        gap (ok if any row else empty) — byte-identical to the historical
+        behaviour. Otherwise the gap is split at the pending boundary: the
+        historical part records ok/empty; the pending part records ``not_ready``
+        when it returned no row (so a 21:00 updater never freezes today's
+        unpublished data as covered).
+        """
+        pending_start = self._pending_start()
+        if pending_start is None or gap_end < pending_start:
+            self._record_one(endpoint, symbol, gap_start, gap_end, parsed,
+                             "empty", fields_hash)
+            return
+        has_date = "date" in parsed.columns
+        hist_end = pending_start - pd.Timedelta(days=1)
+        if gap_start <= hist_end:
+            hist = parsed[parsed["date"] <= hist_end] if has_date else parsed.iloc[0:0]
+            self._record_one(endpoint, symbol, gap_start, hist_end, hist,
+                             "empty", fields_hash)
+        pend = parsed[parsed["date"] >= pending_start] if has_date else parsed
+        self._record_one(endpoint, symbol, pending_start, gap_end, pend,
+                         "not_ready", fields_hash)
+
+    def _record_one(
+        self, endpoint, symbol, start, end, rows, empty_status, fields_hash
+    ):
+        """Append one coverage row; ``empty_status`` is used when ``rows`` is empty."""
+        n = len(rows)
+        status = "ok" if n else empty_status
+        if status == "not_ready":
+            self.not_ready_counts[endpoint] = (
+                self.not_ready_counts.get(endpoint, 0) + 1
+            )
         self._ledger.record(
             endpoint=endpoint,
             key_type="symbol",
             key=symbol,
-            start_date=gap_start,
-            end_date=gap_end,
+            start_date=start,
+            end_date=end,
             fields_hash=fields_hash,
-            row_count=row_count,
-            status="ok" if row_count else "empty",
+            row_count=n,
+            status=status,
             fetched_at=self._clock(),
             source_version=self._source_version,
         )
@@ -526,6 +797,9 @@ class TushareCache:
         row_count = len(parsed)
         if row_count:
             self._store.upsert_symbol(endpoint, key, parsed, key_cols)
+            self.written_counts[endpoint] = (
+                self.written_counts.get(endpoint, 0) + row_count
+            )
         self._ledger.record(
             endpoint=endpoint,
             key_type=key_type,

@@ -48,8 +48,9 @@ class CacheCfg(_Strict):
     downstream transforms (``front_adjust``, raw price-limit checks, PIT as-of
     membership / industry / financials) still run in memory, unchanged.
 
-    P4-2 caches: index_weight, suspend_d, namechange, stk_limit, stock_basic.
-    Not yet cached (P4-3): daily_basic, fina_indicator, index_member_all.
+    Cached: market bars (P4-1); index_weight / suspend_d / namechange / stk_limit
+    / stock_basic (P4-2); daily_basic / fina_indicator / index_member_all (P4-3).
+    The 21:00 ``data-update`` job warms these incrementally (see DataUpdateCfg).
     """
 
     enabled: bool = False
@@ -480,6 +481,64 @@ class SubsetValidationCfg(_Strict):
         return self
 
 
+_DATA_UPDATE_ENDPOINTS = frozenset({
+    "market_daily", "adj_factor", "index_weight", "suspend_d", "namechange",
+    "stk_limit", "stock_basic", "daily_basic", "fina_indicator",
+    "index_member_all", "stk_mins_1min",
+})
+
+
+class DataUpdateCfg(_Strict):
+    """Standalone data-updater section (P4-3) — consumed ONLY by ``data-update``.
+
+    Declares the daily 21:00 (Asia/Shanghai) incremental warm: which endpoints to
+    refresh, the lookback/tail policy, the not-ready pending window, and a
+    conservative rate limit. Scheduling is external (systemd timer / cron calls
+    the CLI); this is purely the job's parameters. Optional on RootConfig, so
+    every existing config still validates unchanged.
+    """
+
+    timezone: str = "Asia/Shanghai"
+    scheduled_start: str = "21:00:00"
+    endpoints: list[str] = Field(default_factory=list)
+    index_codes: list[str] = Field(default_factory=list)
+    lookback_days: int = 400
+    tail_refresh_days: int = 14
+    not_ready_days: int = 1
+    fina_tail_days: int = 400
+    fina_fields: list[str] = Field(default_factory=lambda: ["roe", "netprofit_yoy"])
+    rate_limit_per_min: int = 450
+    force_refresh: list[str] = Field(default_factory=list)
+
+    @field_validator("endpoints", "force_refresh")
+    @classmethod
+    def _check_endpoints(cls, v: list[str]) -> list[str]:
+        unknown = [e for e in v if e not in _DATA_UPDATE_ENDPOINTS]
+        if unknown:
+            raise ValueError(
+                f"data_update endpoint(s) {unknown} unknown; "
+                f"must be in {sorted(_DATA_UPDATE_ENDPOINTS)}."
+            )
+        return v
+
+    @field_validator(
+        "lookback_days", "tail_refresh_days", "not_ready_days",
+        "fina_tail_days", "rate_limit_per_min",
+    )
+    @classmethod
+    def _check_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"data_update integer fields must be >= 0; got {v}.")
+        return v
+
+    @field_validator("rate_limit_per_min")
+    @classmethod
+    def _check_rate_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError(f"data_update.rate_limit_per_min must be > 0; got {v}.")
+        return v
+
+
 class RootConfig(_Strict):
     """Top-level config composing every section.
 
@@ -505,6 +564,8 @@ class RootConfig(_Strict):
     robustness: RobustnessCfg | None = None
     # P3-6 subset validation (consumed only by run-phase3-subset).
     subset_validation: SubsetValidationCfg | None = None
+    # P4-3 data updater (consumed only by data-update).
+    data_update: DataUpdateCfg | None = None
 
     @model_validator(mode="after")
     def _check_subset_groups_reference_enabled_factors(self) -> "RootConfig":

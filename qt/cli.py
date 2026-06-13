@@ -156,6 +156,23 @@ def _cmd_run_phase3_subset(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_data_update(args: argparse.Namespace) -> int:
+    """Warm/update the tushare caches (P4-3); never runs a backtest."""
+    from qt.data_updater import format_summary, run_data_update
+
+    try:
+        result = run_data_update(args.config)
+    except (ConfigError, ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"OK data-update: {len(result.endpoints)} endpoints, "
+        f"{len(result.symbols)} symbols ({result.elapsed_seconds:.1f}s)\n"
+        f"{format_summary(result)}"
+    )
+    return 0
+
+
 def _cmd_fetch_data(args: argparse.Namespace) -> int:
     """Stage helper: run the spine and report the data-fetch stage."""
     return _run_pipeline_cmd(args.config, "fetch-data")
@@ -214,6 +231,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sub.add_argument("--config", required=True, help="Path to the YAML config.")
     p_sub.set_defaults(func=_cmd_run_phase3_subset)
+
+    p_du = sub.add_parser(
+        "data-update",
+        help="Warm/update the tushare raw caches (P4-3); no backtest.",
+    )
+    p_du.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_du.set_defaults(func=_cmd_data_update)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),

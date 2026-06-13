@@ -46,9 +46,9 @@
 | `namechange` | P2-2 ST 区间 | ts | authorized (8) | ✅ | **已证** | dimension（in/out 区间）| P4-2 已缓存 |
 | `stock_basic` | P2-2 list_date（min_listing_days）| ts | authorized (1) | ✅ | **已证** | dimension（全局快照）| P4-2 已缓存 |
 | `stk_limit` | P2-2 **raw** 涨跌停价 | ts+d | authorized (1) | ✅ | **已证** | T 日 **raw 价**（front-adjust 前比对）| P4-2 已缓存 |
-| `daily_basic` | P2-3/P3-5 pe/pb/total_mv | ts+d | authorized (1) | ✅ | **已证** | **当日发布，same-day PIT-safe** | P4-3 待缓存 |
-| `fina_indicator` | P3-1 roe/np_yoy（ann_date as-of）| ts+period | authorized (1) | ✅ | **已证** | **按 ann_date 披露后才可用** | 单次最多 100 行；P4-3 待缓存 |
-| `index_member_all` | P2-3 PIT SW 行业 | ts | authorized (1) | ✅ | **已证** | in/out 区间 as-of | P4-3 待缓存 |
+| `daily_basic` | P2-3/P3-5 pe/pb/total_mv | ts+d | authorized (1) | ✅ | **已证** | **当日发布，same-day PIT-safe** | P4-3 已缓存 |
+| `fina_indicator` | P3-1 roe/np_yoy（ann_date as-of）| ts+period | authorized (1) | ✅ | **已证** | **按 ann_date 披露后才可用** | 单次最多 100 行；P4-3 已缓存 |
+| `index_member_all` | P2-3 PIT SW 行业 | ts | authorized (1) | ✅ | **已证** | in/out 区间 as-of | P4-3 已缓存 |
 | `income` | 财务源（ann_date）| ts+period | authorized (1) | ✅ | 同 fina | 按 ann_date 披露 | 目前未进因子，留作财务源 |
 
 ### EXPLORATORY 候选源（权限有，但**批量额度未核实**——接入前各自限频体检）

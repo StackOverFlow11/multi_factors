@@ -1,0 +1,126 @@
+# P4-3 data updater config — the daily 21:00 (Asia/Shanghai) incremental warm.
+#
+# Used ONLY by:  python -m qt.cli data-update --config config/data_update.yaml
+# It warms/updates the read-through caches and runs NOTHING else (no factors,
+# no alpha, no portfolio, no backtest, no PanelStore). Scheduling is external:
+# a systemd timer / cron fires the CLI at 21:00 Asia/Shanghai (see the
+# stage_p4_3 acceptance doc for an example unit).
+#
+# The factors/alpha/portfolio/backtest/cost/output sections below are present
+# ONLY to satisfy the shared RootConfig schema (so `validate-config` accepts this
+# file); the data-update command ignores them.
+
+project:
+  name: quantitative_trading_data_update
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2024-01-01"
+  end: "2024-12-31"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: data_update
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+
+universe:
+  type: index
+  index_code: "000300.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+# The actual data-update job parameters.
+data_update:
+  timezone: Asia/Shanghai
+  scheduled_start: "21:00:00"
+  endpoints:
+    - market_daily
+    - adj_factor
+    - index_weight
+    - suspend_d
+    - namechange
+    - stk_limit
+    - stock_basic
+    - daily_basic
+    - fina_indicator
+    - index_member_all
+  index_codes:
+    - "000300.SH"
+  lookback_days: 400        # dense endpoints: re-warm [today - lookback, today]
+  tail_refresh_days: 14     # recent-tail always refetched (corrections/delays)
+  not_ready_days: 1         # today may be unpublished at 21:00 -> not_ready, not covered
+  fina_tail_days: 400       # refetch recent report periods to catch LATE disclosures
+  # NOTE: the cache ALWAYS stores the canonical fina superset (roe / netprofit_yoy
+  # / grossprofit_margin) regardless of this list, so a warm here never blocks a
+  # later config that needs a different field. grossprofit_margin is listed
+  # explicitly anyway (real configs use it) for a self-documenting summary.
+  fina_fields:
+    - roe
+    - netprofit_yoy
+    - grossprofit_margin
+  rate_limit_per_min: 450   # conservative (official stk_mins ceiling is 500/min)
+  force_refresh: []
+
+# --- unused by data-update (schema-only stubs) ------------------------------- #
+factors:
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+
+alpha:
+  model: equal_weight
+  params: {}
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 30
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
