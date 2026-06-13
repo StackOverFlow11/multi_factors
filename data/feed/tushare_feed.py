@@ -120,6 +120,19 @@ class TushareFeed(DataFeed):
             **kwargs,
         )
 
+    # -- cache stats -------------------------------------------------------- #
+    def cache_stats(self) -> dict[str, int] | None:
+        """Per-endpoint gap-fetch counts since this feed's cache was built.
+
+        ``None`` when caching is disabled (no cache wired in). The counts are
+        the read-through cache's API-call tally — a warm rerun over a covered
+        historical window reports zeros. Returns endpoint metadata only; no
+        token, secret path, or per-symbol detail.
+        """
+        if self._cache is None:
+            return None
+        return self._cache.stats()
+
     # -- DataFeed API ------------------------------------------------------- #
     def get_bars(
         self,

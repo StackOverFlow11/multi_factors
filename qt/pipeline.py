@@ -622,6 +622,26 @@ def _build_universe(
     raise ValueError(f"Unsupported universe.type {cfg.universe.type!r}.")
 
 
+def _log_cache_stats(feed, logger: logging.Logger) -> None:
+    """Log the market cache's per-endpoint gap-fetch counts (P4-1), if any.
+
+    No-op unless the feed exposes ``cache_stats()`` returning a dict (i.e. the
+    persistent cache is enabled). Emits a single concise line through the
+    run-scoped logger — endpoint counts only, never a token or secret path.
+    """
+    getter = getattr(feed, "cache_stats", None)
+    if getter is None:
+        return
+    stats = getter()
+    if not stats:
+        return
+    logger.info(
+        "data cache: market_daily_gap_fetches=%d adj_factor_gap_fetches=%d",
+        int(stats.get("market_daily", 0)),
+        int(stats.get("adj_factor", 0)),
+    )
+
+
 def _load_panel(
     cfg: RootConfig, symbols: list[str], logger: logging.Logger
 ) -> pd.DataFrame:
@@ -630,6 +650,11 @@ def _load_panel(
         raise ValueError("No symbols to load; the universe produced an empty set.")
     feed = _build_feed(cfg)
     panel = feed.get_bars(symbols, cfg.data.start, cfg.data.end, freq=cfg.data.freq)
+    # P4-1: when the persistent market cache is on, surface its gap-fetch counts
+    # in the run log so the read-through hit rate is directly observable (a warm
+    # historical rerun shows 0/0). No-op when caching is off or the feed has no
+    # cache (DemoFeed); the stats carry endpoint counts only, never a secret.
+    _log_cache_stats(feed, logger)
     if panel.empty:
         raise ValueError(
             "No market data returned for the configured window "

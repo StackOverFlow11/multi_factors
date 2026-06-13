@@ -165,6 +165,82 @@ def test_full_miss_then_full_hit(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# feed exposes cache stats (review follow-up: visible warm-hit evidence)
+# --------------------------------------------------------------------------- #
+def test_feed_exposes_cache_stats_cold_then_warm(tmp_path, monkeypatch):
+    pro = FakePro()
+    feed, root = _feed_with_cache(tmp_path, monkeypatch, pro)
+    symbols = ["000001.SZ", "000002.SZ"]
+
+    # cold run: gap-fetches == one per symbol per endpoint.
+    feed.get_bars(symbols, "2024-01-01", "2024-01-31")
+    assert feed.cache_stats() == {"market_daily": 2, "adj_factor": 2}
+
+    # warm rerun on a fresh feed + fresh cache over the SAME root -> 0 gap-fetches.
+    pro2 = FakePro()
+    import tushare as ts
+    monkeypatch.setattr(ts, "pro_api", lambda token=None: pro2)
+    warm_cache = TushareCache(
+        CacheParquetStore(root), CoverageLedger(root),
+        refresh_recent_days=14, today=pd.Timestamp("2024-12-31"),
+    )
+    warm_feed = TushareFeed(secret_file=str(_write_fake_config(tmp_path)),
+                            cache=warm_cache)
+    warm_feed.get_bars(symbols, "2024-01-01", "2024-01-31")
+    assert warm_feed.cache_stats() == {"market_daily": 0, "adj_factor": 0}
+    assert pro2.daily_calls == 0 and pro2.adj_calls == 0
+
+
+def test_feed_cache_stats_none_without_cache(tmp_path, monkeypatch):
+    pro = FakePro()
+    import tushare as ts
+    monkeypatch.setattr(ts, "pro_api", lambda token=None: pro)
+    feed = TushareFeed(secret_file=str(_write_fake_config(tmp_path)))  # no cache
+    feed.get_bars(["000001.SZ"], "2024-01-01", "2024-01-05")
+    assert feed.cache_stats() is None
+
+
+# --------------------------------------------------------------------------- #
+# pipeline logs the cache stats line through the run-scoped logger
+# --------------------------------------------------------------------------- #
+def test_load_panel_logs_cache_stats_line(caplog):
+    import logging
+
+    from qt.pipeline import _log_cache_stats
+
+    class _FeedWithStats:
+        def cache_stats(self):
+            return {"market_daily": 3, "adj_factor": 0}
+
+    logger = logging.getLogger("qt.test_cache_stats")
+    with caplog.at_level(logging.INFO, logger="qt.test_cache_stats"):
+        _log_cache_stats(_FeedWithStats(), logger)
+    assert (
+        "data cache: market_daily_gap_fetches=3 adj_factor_gap_fetches=0"
+        in caplog.text
+    )
+
+
+def test_load_panel_no_cache_line_when_cache_absent(caplog):
+    import logging
+
+    from qt.pipeline import _log_cache_stats
+
+    class _DemoFeedNoStats:  # DemoFeed has no cache_stats attribute
+        pass
+
+    class _FeedCacheDisabled:
+        def cache_stats(self):
+            return None  # cache wired off
+
+    logger = logging.getLogger("qt.test_cache_stats_off")
+    with caplog.at_level(logging.INFO, logger="qt.test_cache_stats_off"):
+        _log_cache_stats(_DemoFeedNoStats(), logger)
+        _log_cache_stats(_FeedCacheDisabled(), logger)
+    assert "data cache:" not in caplog.text
+
+
+# --------------------------------------------------------------------------- #
 # partial gap
 # --------------------------------------------------------------------------- #
 def test_partial_gap_fetches_only_missing_range(tmp_path, monkeypatch):
