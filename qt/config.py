@@ -187,6 +187,12 @@ class OutputCfg(_Strict):
     # own name so different studies sharing the run mode never overwrite each
     # other's report (P3-8; the same precedent as baseline_report_name).
     subset_report_name: str | None = None
+    # H1 title for the subset-validation report (run-phase3-subset). None keeps
+    # the renderer's sample-aware default (P3-7 independent / P3-6 post-hoc); a
+    # config that reuses the run mode for a DIFFERENT study (e.g. the P3-8 CSI500
+    # generalization check) sets its own title so the report header names the
+    # actual study instead of the machinery's default phase label (P3-8).
+    subset_report_title: str | None = None
 
 
 class OOSCfg(_Strict):

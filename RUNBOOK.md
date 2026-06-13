@@ -491,9 +491,11 @@ Documented by `config/phase3_real_csi500_generalization.yaml`.
   study its own report file (`phase3_csi500_generalization.md`), so the run no
   longer clobbers the accepted P3-7 artifact; configs without the key keep the
   historical filename bitwise (locked by tests).
-- The report title carries the REPORT TYPE (the P3-7 independent-validation
-  machinery); the study is identified by the project name line and the cell
-  labels. CSI500|2022-2024 is skip_cells-listed (runtime budget) and disclosed.
+- `output.subset_report_title` sets the report's H1 so it names THIS study
+  ("Phase 3-8 — CSI500 Independent Generalization Check") instead of the
+  machinery's default phase label; configs without it keep the renderer's
+  sample-aware default (P3-7 independent / P3-6 post-hoc), locked by tests.
+  CSI500|2022-2024 is skip_cells-listed (runtime budget) and disclosed.
 
 ## Quality gate
 

@@ -150,6 +150,10 @@ output:
   log_dir: artifacts/logs
   overwrite: true
   subset_report_name: phase3_csi500_generalization.md
+  # The report reuses the P3-7 independent-validation machinery, so its H1 must
+  # name THIS study (not the default P3-7 phase label) — config owns the study
+  # identity, the same precedent as subset_report_name.
+  subset_report_title: "Phase 3-8 — CSI500 Independent Generalization Check (value/lowvol, screened vs independent holdout cells)"
 
 oos:
   split_date: "2023-07-01"   # base-config validation only; per-cell splits below
