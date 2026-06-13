@@ -527,9 +527,10 @@ Read-through behaviour (`TushareFeed.get_bars`, cache enabled):
 - a partial window extension fetches only the new tail;
 - raw rows are upserted per `(symbol, date)` (latest wins; no duplicates);
 - the cache + ledger never store a token or secret-file content;
-- the run log shows the hit rate directly — `_load_panel` emits
-  `data cache: market_daily_gap_fetches=<N> adj_factor_gap_fetches=<M>`
-  (cold run nonzero; a warm historical rerun shows 0/0).
+- the run log shows the hit rate directly — after data loading the run emits one
+  `data cache: market_daily_gap_fetches=<N> adj_factor_gap_fetches=<M> ...` line
+  (cold run nonzero; a warm historical rerun shows 0). Since P4-2 the same line
+  also carries the universe/tradability endpoints (see below).
 
 Cache layout (per-symbol parquet under a symbol_prefix shard):
 
@@ -548,10 +549,60 @@ Real smoke (small real config; metrics must equal the non-cached run):
 ... -m qt.cli run-phase2-baseline --config config/phase2_real_baseline_cached.yaml
 ```
 
-Scope note: P4-1 caches market bars ONLY. `index_weight`, `daily_basic`,
-`fina_indicator`, `stk_limit`, `suspend_d`, `namechange`, `stock_basic`,
-`index_member_all` are still fetched live (cached in P4-2/P4-3); the warm run
-therefore saves the market-bar calls, not those.
+Scope note: P4-1 caches market bars (`market_daily` + `adj_factor`). The
+universe / tradability endpoints `index_weight`, `suspend_d`, `namechange`,
+`stk_limit`, and `stock_basic` are cached by **P4-2** (below). `daily_basic`,
+`fina_indicator`, and `index_member_all` are still fetched live (P4-3).
+
+## Phase 4-2 — persistent universe + tradability cache
+
+Extends the same read-through cache to five more endpoints so a real run stops
+refetching constituents / suspensions / ST names / price limits / listing dates:
+`index_weight`, `suspend_d`, `namechange`, `stk_limit`, `stock_basic`. **Still
+disabled by default**; opt in with the same `data.cache` block (P4-2 adds
+`refresh_dimension_days: 30` for the snapshot endpoints).
+
+Semantics are unchanged — the cache only stores RAW endpoint facts, never a
+derived flag as source of truth:
+
+- `index_weight` stays PIT/as-of (the 370-day pre-start lookback flows into the
+  cached request; the latest-snapshot-on-or-before membership stays in the
+  universe layer). Coverage is keyed by `index_code`; each uncovered gap is paged
+  in ≤90-day windows, exactly as the direct feed did.
+- `stk_limit` stays RAW price (the limit checks still run before front-adjust).
+- `stock_basic` feeds only `list_date` (`min_listing_days`); the current-tag
+  `industry` is never cached or used.
+- `suspend_d` / `namechange` keep their suspension-set / ST-interval shapes.
+- `suspend_d` / `stk_limit` plan by date range (like the market bars);
+  `namechange` (per-symbol) and `stock_basic` (one global snapshot) are
+  dimension endpoints refreshed by a staleness policy (`refresh_dimension_days`)
+  or `force_refresh`. Empty returns count as coverage; a failed fetch records
+  none (retried next run).
+
+The run log emits ONE combined line after all cached endpoints have run:
+
+```text
+data cache: market_daily_gap_fetches=<N> adj_factor_gap_fetches=<N> \
+  index_weight_gap_fetches=<N> suspend_d_gap_fetches=<N> \
+  namechange_gap_fetches=<N> stk_limit_gap_fetches=<N> stock_basic_gap_fetches=<N>
+```
+
+Cache layout adds (alongside the P4-1 `market_daily/` + `adj_factor/`):
+
+```text
+artifacts/cache/tushare/v1/
+  index_weight/symbol_prefix=000/000016.SH.parquet   # keyed by index_code
+  suspend_d/symbol_prefix=600/600519.SH.parquet
+  stk_limit/symbol_prefix=600/600519.SH.parquet
+  namechange/symbol_prefix=600/600519.SH.parquet
+  stock_basic/symbol_prefix=__a/__all__.parquet      # one global snapshot
+```
+
+Real smoke (same `config/phase2_real_baseline_cached.yaml`; run twice): the cold
+run populates all seven endpoints (line all non-zero), the warm rerun shows
+**all seven `=0`** with the coverage ledger unchanged and report metrics
+byte-identical to the non-cached / P4-1 baseline. `daily_basic` /
+`index_member_all` are still fetched live on the warm run (P4-3).
 
 ## Quality gate
 
