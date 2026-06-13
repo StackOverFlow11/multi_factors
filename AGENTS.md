@@ -164,7 +164,8 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
     - **warm 轮零市场端点调用**：cold 后 coverage ledger = 68 market_daily + 68 adj_factor 行（68 成分全 ok）；warm 后**仍 68+68 不变**（零新 coverage 行 = 零 gap-fetch = 零 daily/adj 调用）。
     - wall：ref 998s / cold 1025s / warm **734s**（暖跑省 ~290s = 行情抓取部分；index_weight/财务/covariates 仍 live——P4-1 只缓存行情，诚实标注）。
     - secret scan：缓存 parquet + ledger 0 处 token / `.config.json`；ledger 列只有端点元数据。
-  - **不变量守住**：factor/alpha/portfolio/execution/OOS 切片/report 全不动；`artifacts/data/{output_name}.parquet` 不当 SoT。范围克制：P4-1 只 market_daily+adj_factor，其余端点（index_weight/daily_basic/fina_indicator/...）P4-2/P4-3 再缓存。
-- ✅ 质量门：`pytest` **407 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=15 / P3-5=22 / P3-6=27 / P3-7=25+1 throttle / P3-8=8 / P4-1=24）；`ruff` clean；`validate-config`（全部 12 配置）+ `run-phase0`（demo）均 OK。
+  - **缓存命中直接可见（review follow-up）**：`TushareFeed.cache_stats()` 暴露各端点 gap-fetch 计数，`_load_panel` 经 run-scoped logger 打 `data cache: market_daily_gap_fetches=N adj_factor_gap_fetches=M`——冷跑非零、暖跑 0/0（warm rerun 实证 run_phase2_baseline.log 含 `0/0`，secret scan 0）。
+- **不变量守住**：factor/alpha/portfolio/execution/OOS 切片/report 全不动；`artifacts/data/{output_name}.parquet` 不当 SoT。范围克制：P4-1 只 market_daily+adj_factor，其余端点（index_weight/daily_basic/fina_indicator/...）P4-2/P4-3 再缓存。
+- ✅ 质量门：`pytest` **411 passed**（P0=97 / P1=78 / P2-1=22 / P2-2=22 / P2-3=14 / P2-4=8 / P3-1=10 / P3-2=18 / P3-3=16 / P3-4=15 / P3-5=22 / P3-6=27 / P3-7=25+1 throttle / P3-8=8 / P4-1=28）；`ruff` clean；`validate-config`（全部 12 配置）+ `run-phase0`（demo）均 OK。
 - ⚠️ 剩余（已显式披露）：日线 only、demo 路径非真数据、旧三因子无信号（P3-3/P3-4 实证;但其组合在 2024-2026 holdout 上 SSE50/CSI300/CSI500 全正、CSI500 高达 +17.8%——小样本/regime 翻转的持续例证）;value/低波信号获得**独立样本符号级确认**（P3-7 SSE50/CSI300 量级衰减;P3-8 CSI500 泛化成立且更强），组合级盈利能力仍未确立（排名跨 cell 翻转）;subset 报告文件名已可配置（P3-8 起不再互覆盖）。
 - 路线图下一步：**P4-2 universe/tradability 缓存**（index_weight/suspend_d/namechange/stk_limit/stock_basic）→ **P4-3 因子支撑端点缓存**（fina_indicator/daily_basic/index_member_all）；研究侧：更长 holdout 滚动复检 / 中证1000 / 成本模型细化,或分钟级（architecture.html §11）。

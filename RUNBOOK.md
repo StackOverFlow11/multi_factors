@@ -526,7 +526,10 @@ Read-through behaviour (`TushareFeed.get_bars`, cache enabled):
   `adj_factor` API calls;
 - a partial window extension fetches only the new tail;
 - raw rows are upserted per `(symbol, date)` (latest wins; no duplicates);
-- the cache + ledger never store a token or secret-file content.
+- the cache + ledger never store a token or secret-file content;
+- the run log shows the hit rate directly — `_load_panel` emits
+  `data cache: market_daily_gap_fetches=<N> adj_factor_gap_fetches=<M>`
+  (cold run nonzero; a warm historical rerun shows 0/0).
 
 Cache layout (per-symbol parquet under a symbol_prefix shard):
 

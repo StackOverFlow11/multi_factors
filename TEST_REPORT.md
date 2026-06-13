@@ -26,12 +26,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **407 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **411 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml` + `phase3_real_subset_costs.yaml` + `phase3_real_independent_validation.yaml` + `phase3_real_csi500_generalization.yaml` + `phase2_real_baseline_cached.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 407).
+Counts below are the actual per-file `pytest` numbers (sum = 411).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -163,8 +163,8 @@ Counts below are the actual per-file `pytest` numbers (sum = 407).
 | Test file | Tests | Red-line / feature |
 |---|---|---|
 | `test_cache_config.py` | 17 | `data.cache` defaults disabled (backward compatible); fields + defaults; rejects negative refresh window / empty root / unknown key; **every existing config still validates** (parametrized over all `config/*.yaml`) |
-| `test_tushare_cache_market.py` | 7 | interval subtraction (full/partial/none); **full miss populates daily+adj cache, full hit = ZERO endpoint calls**; partial gap fetches only the missing tail; empty endpoint return still records coverage (no refetch); duplicate upsert keeps one row per (symbol,date); **cached panel == direct-fetch panel byte-for-byte after `front_adjust()`**; no token / secret-path in any cache file or ledger column |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-8 + P4-1)** | **407** | |
+| `test_tushare_cache_market.py` | 11 | interval subtraction (full/partial/none); **full miss populates daily+adj cache, full hit = ZERO endpoint calls**; partial gap fetches only the missing tail; empty endpoint return still records coverage (no refetch); duplicate upsert keeps one row per (symbol,date); **cached panel == direct-fetch panel byte-for-byte after `front_adjust()`**; no token / secret-path in any cache file or ledger column; **`TushareFeed.cache_stats()` exposes cold {2,2}→warm {0,0} gap-fetch counts** and `pipeline._log_cache_stats` logs `data cache: market_daily_gap_fetches=N adj_factor_gap_fetches=M` through the run-scoped logger (review follow-up: warm-hit evidence is now directly visible in the run log) |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-8 + P4-1)** | **411** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
