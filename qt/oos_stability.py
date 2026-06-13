@@ -41,12 +41,14 @@ from qt.pipeline import (
     _FrameScores,
     _alpha_disclosure,
     _build_alpha,
+    _build_cache,
     _build_factors,
     _build_scores,
     _build_universe,
     _collect_downgrades,
     _compute_factor_panel,
     _load_panel,
+    _log_run_cache_stats,
     _make_logger,
     _maybe_enrich_covariates,
     _maybe_enrich_financials,
@@ -365,13 +367,15 @@ def _run_oos_cell(
     logger.info("phase3 oos start: project=%s split=%s", cfg.project.name, split.date())
 
     # --- ONE shared data load / factor panel (identical inputs for both) ----- #
-    universe, symbols = _build_universe(cfg, logger)
-    panel = _load_panel(cfg, symbols, logger)
+    cache = _build_cache(cfg)
+    universe, symbols = _build_universe(cfg, logger, cache)
+    panel = _load_panel(cfg, symbols, logger, cache)
     factors = _build_factors(cfg)
     panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_value(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
-    panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
+    panel = _maybe_enrich_listing(cfg, panel, symbols, logger, cache)
+    _log_run_cache_stats(cache, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
     processed = _process_factors(cfg, factor_panel, panel)
 

@@ -40,6 +40,7 @@ from qt.pipeline import (
     _alpha_disclosure,
     _alpha_forward_returns,
     _build_alpha,
+    _build_cache,
     _build_factors,
     _build_scores,
     _build_universe,
@@ -48,6 +49,7 @@ from qt.pipeline import (
     _factor_analytics,
     _standard_analytics,
     _load_panel,
+    _log_run_cache_stats,
     _make_logger,
     _maybe_enrich_covariates,
     _maybe_enrich_financials,
@@ -359,14 +361,17 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     logger.info("phase2 baseline start: project=%s", cfg.project.name)
 
     # --- reuse the exact P0/P1 spine ------------------------------------- #
-    universe, symbols = _build_universe(cfg, logger)
-    panel = _load_panel(cfg, symbols, logger)
+    cache = _build_cache(cfg)
+    universe, symbols = _build_universe(cfg, logger, cache)
+    panel = _load_panel(cfg, symbols, logger, cache)
     factors = _build_factors(cfg)
     primary = factors[0]
     panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_value(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
-    panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
+    panel = _maybe_enrich_listing(cfg, panel, symbols, logger, cache)
+    # P4-1/P4-2: one cache-stats line after every cached endpoint has run.
+    _log_run_cache_stats(cache, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
     processed = _process_factors(cfg, factor_panel, panel)
     alpha = _build_alpha(cfg)

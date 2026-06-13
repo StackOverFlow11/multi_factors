@@ -54,9 +54,10 @@ def test_index_universe_fetches_pre_start_snapshot_for_asof(monkeypatch):
     calls: list[tuple[str, str, str]] = []
 
     class _FakeIndexFeed:
-        def __init__(self, secret_file, token_key="tushare.token"):
+        def __init__(self, secret_file, token_key="tushare.token", cache=None):
             self.secret_file = secret_file
             self.token_key = token_key
+            self.cache = cache
 
         def get_constituents(self, index_code: str, start: str, end: str) -> pd.DataFrame:
             calls.append((index_code, start, end))

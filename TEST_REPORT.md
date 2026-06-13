@@ -26,12 +26,12 @@ Run from the repo root with the project python (env `quant_mf`):
 
 | Gate | Command | Result |
 |---|---|---|
-| Unit + integration | `pytest -q` | **411 passed, 0 failed** |
+| Unit + integration | `pytest -q` | **428 passed, 0 failed** |
 | Lint | `ruff check .` | **All checks passed** |
 | Config validation | `validate-config` (demo + `example_tushare.yaml` + `phase2_real_baseline.yaml` + `phase3_real_multifactor.yaml` + `phase3_real_ic_weighted.yaml` + `phase3_real_oos_stability.yaml` + `phase3_real_robustness_matrix.yaml` + `phase3_real_factor_candidates.yaml` + `phase3_real_subset_costs.yaml` + `phase3_real_independent_validation.yaml` + `phase3_real_csi500_generalization.yaml` + `phase2_real_baseline_cached.yaml`) | exit `0`, prints `OK` |
 | End-to-end run | `run-phase0` (demo) | exit `0`, writes `artifacts/reports/phase0_summary.md` |
 
-Counts below are the actual per-file `pytest` numbers (sum = 411).
+Counts below are the actual per-file `pytest` numbers (sum = 428).
 
 ## Per-file breakdown — Phase 0 core (97)
 
@@ -158,13 +158,19 @@ Counts below are the actual per-file `pytest` numbers (sum = 411).
 | `test_csi500_generalization.py` | 8 | CSI500 config validates with the expected cell roles (screened anchor SSE50|2022-2024; independent SSE50|2024-2026 + 000905.SH|2024-2026; CSI500|2022-2024 skipped+disclosed; same groups/scenarios/hypotheses as P3-7 — no tuning); sample classes labeled correctly; **`output.subset_report_name`** lets each subset-validation study own its report file (default None keeps the historical `phase3_subset_validation.md` bitwise — the P3-6/P3-7 configs are locked unchanged), so a P3-8 run never clobbers the accepted P3-7 artifact; **`output.subset_report_title`** config-drives the report H1 so the CSI500 study names itself ("Phase 3-8 — CSI500 Independent Generalization Check", asserted NOT to start with Phase 3-7) while the P3-6/P3-7 configs leave it unset and keep the renderer's sample-aware default title (regression-locked) |
 | **Total through P3-8** | **383** | |
 
-## Per-file breakdown — Phase 4-1 persistent market cache (24)
+## Per-file breakdown — Phase 4-1 persistent market cache (28)
 
 | Test file | Tests | Red-line / feature |
 |---|---|---|
 | `test_cache_config.py` | 17 | `data.cache` defaults disabled (backward compatible); fields + defaults; rejects negative refresh window / empty root / unknown key; **every existing config still validates** (parametrized over all `config/*.yaml`) |
 | `test_tushare_cache_market.py` | 11 | interval subtraction (full/partial/none); **full miss populates daily+adj cache, full hit = ZERO endpoint calls**; partial gap fetches only the missing tail; empty endpoint return still records coverage (no refetch); duplicate upsert keeps one row per (symbol,date); **cached panel == direct-fetch panel byte-for-byte after `front_adjust()`**; no token / secret-path in any cache file or ledger column; **`TushareFeed.cache_stats()` exposes cold {2,2}→warm {0,0} gap-fetch counts** and `pipeline._log_cache_stats` logs `data cache: market_daily_gap_fetches=N adj_factor_gap_fetches=M` through the run-scoped logger (review follow-up: warm-hit evidence is now directly visible in the run log) |
-| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-8 + P4-1)** | **411** | |
+
+## Per-file breakdown — Phase 4-2 universe + tradability cache (17)
+
+| Test file | Tests | Red-line / feature |
+|---|---|---|
+| `test_tushare_cache_universe.py` | 17 | for each new endpoint (`index_weight`/`suspend_d`/`namechange`/`stk_limit`/`stock_basic`): **cold miss populates, warm rerun on a fresh cache over the same root = ZERO endpoint calls**; **cached feed output == direct feed output** (index_weight `assert_frame_equal` + PIT cross-section, suspend set, ST-interval sets incl. open `None` end, stk_limit frame in RAW price terms, listing-date dict); empty endpoint/snapshot return records coverage (no refetch); **FAILED fetch records NO coverage** (a later good fetch retries) — dense + snapshot; duplicate upsert keeps one row per natural key (index_weight `(date,symbol)`, suspend_d `(date,symbol,suspend_type)`); `force_refresh` re-pulls a fresh dimension snapshot; **cache-disabled path never touches the cache tree**; `pipeline._format_cache_stats` / `_log_run_cache_stats` name all five new endpoints in one line (None → no line); no token / secret-path in any cache file or ledger column across all five endpoints |
+| **Total (P0 + P1 + P2-1..P2-4 + P3-1..P3-8 + P4-1 + P4-2)** | **428** | |
 
 ## Real-data validation (manual, not in CI — TEST-002 keeps the suite network-free)
 
@@ -195,6 +201,21 @@ Counts below are the actual per-file `pytest` numbers (sum = 411).
   ledger unchanged between cold and warm); cache files + ledger carry no token /
   secret. Market bars only — index/financial endpoints still fetch live (P4-2/3). Two earlier run attempts died
   on transient ConnectionError → default retry budget hardened 3→6 attempts.
+- **P4-2** universe + tradability cache (real smoke = phase2 baseline on a fresh
+  temp cache root, cold → warm; the merged P4-1 `v1` cache left untouched):
+  **cold** run-log line `data cache: market_daily=68 adj_factor=68
+  index_weight=9 suspend_d=68 namechange=68 stk_limit=68 stock_basic=1` (all
+  non-zero); coverage = 68 ok each for market/adj/namechange/stk_limit, 1 ok for
+  index_weight (one gap, paged in 9 windows) and stock_basic, and **68 empty for
+  suspend_d** (SSE50 large-caps had no suspensions in the window — empty-as-
+  coverage). **warm** line shows **all seven endpoints = 0**, coverage ledger
+  unchanged (zero new rows), and report metrics byte-identical to cold and to the
+  P4-1 cached baseline (IC 0.0083 / annual −10.19% / maxDD −16.52% / vol 16.59% /
+  sharpe −0.5703 / turnover 1.0818 / cost 1.19%). Wall: cold 960s → warm 366s
+  (the ~594 s saved is the universe + tradability + market fetches now served from
+  cache; `daily_basic` / `index_member_all` still fetch live — P4-3). Secret scan:
+  0 token-value / `.config.json` occurrences across cache parquet, ledger, run
+  log, and report.
 
 ## Notes
 
