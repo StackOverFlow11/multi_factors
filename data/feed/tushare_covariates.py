@@ -48,9 +48,9 @@ class TushareCovariatesFeed:
         self._rate_limit = rate_limit
         self._max_retries = max(1, int(max_retries))
         self._pro = None
-        # P4-2: optional shared read-through cache. Only ``listing_dates``
-        # (stock_basic.list_date, for min_listing_days) reads through it; the
-        # daily_basic / index_member_all covariates are P4-3 and stay direct.
+        # Optional shared read-through cache: ``listing_dates`` (stock_basic, P4-2),
+        # ``market_cap`` / ``value_ratios`` (daily_basic, P4-3) and
+        # ``pit_sw_intervals`` (index_member_all, P4-3) all read through it.
         # None keeps the historical direct fetch EXACTLY.
         self._cache = cache
 
@@ -141,6 +141,9 @@ class TushareCovariatesFeed:
             raise ValueError(
                 f"industry level must be one of {list(self._SW_LEVEL_COLUMN)}; got {level!r}."
             )
+        if self._cache is not None:
+            frame = self._cache.index_member_all(symbols, self._index_member_fetch())
+            return self._intervals_from_member(frame, col)
         pro = self._client()
         out: dict[str, list[tuple]] = {}
         for sym in symbols:
@@ -161,6 +164,39 @@ class TushareCovariatesFeed:
                 out[str(sym)] = rows
         return out
 
+    def _index_member_fetch(self):
+        """`(symbol) -> raw index_member_all frame` (per-symbol dimension)."""
+
+        def fetch(symbol):
+            return self._call(self._client().index_member_all, ts_code=symbol)
+
+        return fetch
+
+    def _intervals_from_member(
+        self, frame: pd.DataFrame, col: str
+    ) -> dict[str, list[tuple]]:
+        """Build {symbol: [(name, in_date, out_date|None)]} from cached raw rows.
+
+        Same shape as the direct path: ``out_date`` NaT -> None, a symbol with no
+        usable row is simply absent. The cached rows already carry datetime
+        in_date/out_date, so the per-symbol interval set is identical to a direct
+        per-symbol fetch.
+        """
+        out: dict[str, list[tuple]] = {}
+        if frame is None or frame.empty or col not in frame.columns:
+            return out
+        for sym, sub in frame.groupby(frame["symbol"].astype(str), sort=False):
+            rows: list[tuple] = []
+            for r in sub.itertuples():
+                name = getattr(r, col)
+                in_d = pd.Timestamp(r.in_date) if pd.notna(r.in_date) else None
+                out_raw = getattr(r, "out_date", None)
+                out_d = pd.Timestamp(out_raw) if pd.notna(out_raw) else None
+                rows.append((name, in_d, out_d))
+            if rows:
+                out[str(sym)] = rows
+        return out
+
     def value_ratios(self, symbols: list[str], start: str, end: str) -> pd.DataFrame:
         """Return DataFrame[date, symbol, pe, pb] from daily_basic (P3-5).
 
@@ -168,6 +204,13 @@ class TushareCovariatesFeed:
         inversion to value_ep / value_bp (with non-positive guards) happens in
         the pipeline's value enrichment, not here.
         """
+        if self._cache is not None:
+            df = self._cache.daily_basic(symbols, start, end, self._daily_basic_fetch())
+            if df.empty:
+                return self._empty_value_ratios()
+            df = df.copy()
+            df["symbol"] = df["symbol"].astype(str)
+            return df[["date", "symbol", "pe", "pb"]].reset_index(drop=True)
         pro = self._client()
         s = pd.Timestamp(start).strftime("%Y%m%d")
         e = pd.Timestamp(end).strftime("%Y%m%d")
@@ -183,12 +226,7 @@ class TushareCovariatesFeed:
             if df is not None and len(df) > 0:
                 frames.append(df)
         if not frames:
-            return pd.DataFrame(
-                {"date": pd.Series([], dtype="datetime64[ns]"),
-                 "symbol": pd.Series([], dtype=object),
-                 "pe": pd.Series([], dtype=float),
-                 "pb": pd.Series([], dtype=float)}
-            )
+            return self._empty_value_ratios()
         out = pd.concat(frames, ignore_index=True).rename(columns={"ts_code": "symbol"})
         out["date"] = pd.to_datetime(out["trade_date"].astype(str), format="%Y%m%d")
         out["symbol"] = out["symbol"].astype(str)
@@ -196,6 +234,13 @@ class TushareCovariatesFeed:
 
     def market_cap(self, symbols: list[str], start: str, end: str) -> pd.DataFrame:
         """Return DataFrame[date, symbol, market_cap] from daily_basic.total_mv."""
+        if self._cache is not None:
+            df = self._cache.daily_basic(symbols, start, end, self._daily_basic_fetch())
+            if df.empty:
+                return self._empty_market_cap()
+            df = df.rename(columns={"total_mv": "market_cap"}).copy()
+            df["symbol"] = df["symbol"].astype(str)
+            return df[["date", "symbol", "market_cap"]].reset_index(drop=True)
         pro = self._client()
         s = pd.Timestamp(start).strftime("%Y%m%d")
         e = pd.Timestamp(end).strftime("%Y%m%d")
@@ -211,14 +256,43 @@ class TushareCovariatesFeed:
             if df is not None and len(df) > 0:
                 frames.append(df)
         if not frames:
-            return pd.DataFrame(
-                {"date": pd.Series([], dtype="datetime64[ns]"),
-                 "symbol": pd.Series([], dtype=object),
-                 "market_cap": pd.Series([], dtype=float)}
-            )
+            return self._empty_market_cap()
         out = pd.concat(frames, ignore_index=True).rename(
             columns={"ts_code": "symbol", "total_mv": "market_cap"}
         )
         out["date"] = pd.to_datetime(out["trade_date"].astype(str), format="%Y%m%d")
         out["symbol"] = out["symbol"].astype(str)
         return out[["date", "symbol", "market_cap"]]
+
+    def _daily_basic_fetch(self):
+        """`(symbol, s_compact, e_compact) -> raw daily_basic frame` (pe/pb/total_mv).
+
+        One cached daily_basic call serves BOTH value_ratios (pe/pb) and
+        market_cap (total_mv); the client is built lazily inside the closure.
+        """
+
+        def fetch(symbol, start_compact, end_compact):
+            return self._call(
+                self._client().daily_basic, ts_code=symbol,
+                start_date=start_compact, end_date=end_compact,
+                fields="ts_code,trade_date,pe,pb,total_mv",
+            )
+
+        return fetch
+
+    @staticmethod
+    def _empty_value_ratios() -> pd.DataFrame:
+        return pd.DataFrame(
+            {"date": pd.Series([], dtype="datetime64[ns]"),
+             "symbol": pd.Series([], dtype=object),
+             "pe": pd.Series([], dtype=float),
+             "pb": pd.Series([], dtype=float)}
+        )
+
+    @staticmethod
+    def _empty_market_cap() -> pd.DataFrame:
+        return pd.DataFrame(
+            {"date": pd.Series([], dtype="datetime64[ns]"),
+             "symbol": pd.Series([], dtype=object),
+             "market_cap": pd.Series([], dtype=float)}
+        )

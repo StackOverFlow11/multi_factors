@@ -12,8 +12,11 @@ Design invariants (see tmp/context/tushare_cache_architecture.md):
   * PanelStore remains a per-run artifact layer, NOT the cache source of truth;
   * the cache and its ledger never store a token or any secret-file content.
 
-P4-1 implements ``market_daily`` and ``adj_factor`` only. Universe/tradability
-(P4-2) and factor-support endpoints (P4-3) are deliberately out of scope here.
+Cached endpoints: ``market_daily`` / ``adj_factor`` (P4-1); ``index_weight`` /
+``suspend_d`` / ``namechange`` / ``stk_limit`` / ``stock_basic`` (P4-2);
+``daily_basic`` / ``fina_indicator`` / ``index_member_all`` (P4-3, factor
+support). The separate intraday 1min cache (``stk_mins``) lives in
+``data.cache.intraday_*`` with its own timestamp-interval ledger.
 """
 
 from __future__ import annotations

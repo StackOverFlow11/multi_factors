@@ -440,9 +440,9 @@ def run_phase0(config_path: str) -> Phase0Result:
     panel = _load_panel(cfg, symbols, logger, cache)
     factors = _build_factors(cfg)
     primary = factors[0]
-    panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
-    panel = _maybe_enrich_value(cfg, panel, symbols, factors, logger)
-    panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
+    panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger, cache)
+    panel = _maybe_enrich_value(cfg, panel, symbols, factors, logger, cache)
+    panel = _maybe_enrich_covariates(cfg, panel, symbols, logger, cache)
     panel = _maybe_enrich_listing(cfg, panel, symbols, logger, cache)
     # P4-1/P4-2: one concise cache-stats line after every cached endpoint has run
     # (market bars + universe/tradability). A warm historical rerun shows all 0s.
@@ -640,6 +640,7 @@ def _build_universe(
 _CACHED_ENDPOINTS: tuple[str, ...] = (
     "market_daily", "adj_factor", "index_weight", "suspend_d",
     "namechange", "stk_limit", "stock_basic",
+    "daily_basic", "fina_indicator", "index_member_all",
 )
 
 
@@ -826,6 +827,7 @@ def _maybe_enrich_financials(
     symbols: list[str],
     factors: list,
     logger: logging.Logger,
+    cache=None,
 ) -> pd.DataFrame:
     """Attach ann_date-aligned columns for ALL financial factors (single fetch).
 
@@ -844,7 +846,9 @@ def _maybe_enrich_financials(
             f"data (data.source='tushare'); they cannot run on demo data."
         )
     feed = TushareFinancialFeed(
-        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+        cfg.data.external_secret_file,
+        token_key=cfg.data.tushare_token_key,
+        cache=cache,
     )
     # Look back before start so the prior already-disclosed report is fetched and
     # can be as-of carried forward onto the early trade dates (no NaN gap).
@@ -869,6 +873,7 @@ def _maybe_enrich_value(
     symbols: list[str],
     factors: list,
     logger: logging.Logger,
+    cache=None,
 ) -> pd.DataFrame:
     """Attach value_ep / value_bp columns when value factors are enabled (P3-5).
 
@@ -886,7 +891,9 @@ def _maybe_enrich_value(
             "they cannot run on demo data."
         )
     feed = TushareCovariatesFeed(
-        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+        cfg.data.external_secret_file,
+        token_key=cfg.data.tushare_token_key,
+        cache=cache,
     )
     ratios = feed.value_ratios(symbols, cfg.data.start, cfg.data.end)
     enriched = panel.copy()
@@ -1000,7 +1007,8 @@ def _process_factors(
 
 
 def _maybe_enrich_covariates(
-    cfg: RootConfig, panel: pd.DataFrame, symbols: list[str], logger: logging.Logger
+    cfg: RootConfig, panel: pd.DataFrame, symbols: list[str],
+    logger: logging.Logger, cache=None,
 ) -> pd.DataFrame:
     """Attach industry + market_cap when neutralization is enabled (tushare only)."""
     if not cfg.processing.neutralize.enabled:
@@ -1011,7 +1019,9 @@ def _maybe_enrich_covariates(
             "industry + market_cap need real data (demo has neither)."
         )
     feed = TushareCovariatesFeed(
-        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+        cfg.data.external_secret_file,
+        token_key=cfg.data.tushare_token_key,
+        cache=cache,
     )
     market_cap = feed.market_cap(symbols, cfg.data.start, cfg.data.end)
     panel = enrich_covariates(panel, market_cap=market_cap)
