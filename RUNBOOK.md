@@ -497,6 +497,62 @@ Documented by `config/phase3_real_csi500_generalization.yaml`.
   sample-aware default (P3-7 independent / P3-6 post-hoc), locked by tests.
   CSI500|2022-2024 is skip_cells-listed (runtime budget) and disclosed.
 
+## Phase 4-1 — persistent Tushare market-data cache (daily + adj_factor)
+
+A persistent endpoint-level RAW cache below the feeds so real runs stop
+refetching full daily bars + adj_factor every time. **Disabled by default**
+(backward compatible — an existing config runs exactly as before). The cache
+stores RAW rows only (unadjusted OHLCV/amount, raw adj_factor); `front_adjust`
+still runs in memory downstream, unchanged. `PanelStore` stays a per-run
+artifact, NOT the cache source of truth.
+
+Opt in via `data.cache`:
+
+```yaml
+data:
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1   # gitignored
+    refresh_recent_days: 14                 # refetch a recent tail near today
+    force_refresh: []                       # e.g. ["market_daily","adj_factor"]
+```
+
+Read-through behaviour (`TushareFeed.get_bars`, cache enabled):
+
+- the coverage ledger (`<root>/manifest/coverage.parquet`) records which
+  `(endpoint, symbol, [start,end])` ranges were fetched (status ok/empty/failed)
+  — so the planner fetches ONLY uncovered date gaps;
+- a second identical run over a historical window makes **zero** `daily` /
+  `adj_factor` API calls;
+- a partial window extension fetches only the new tail;
+- raw rows are upserted per `(symbol, date)` (latest wins; no duplicates);
+- the cache + ledger never store a token or secret-file content;
+- the run log shows the hit rate directly — `_load_panel` emits
+  `data cache: market_daily_gap_fetches=<N> adj_factor_gap_fetches=<M>`
+  (cold run nonzero; a warm historical rerun shows 0/0).
+
+Cache layout (per-symbol parquet under a symbol_prefix shard):
+
+```text
+artifacts/cache/tushare/v1/
+  manifest/coverage.parquet
+  market_daily/symbol_prefix=600/600519.SH.parquet
+  adj_factor/symbol_prefix=600/600519.SH.parquet
+```
+
+Real smoke (small real config; metrics must equal the non-cached run):
+
+```bash
+# populate, then re-run: the second run hits cache for market bars
+... -m qt.cli run-phase2-baseline --config config/phase2_real_baseline_cached.yaml
+... -m qt.cli run-phase2-baseline --config config/phase2_real_baseline_cached.yaml
+```
+
+Scope note: P4-1 caches market bars ONLY. `index_weight`, `daily_basic`,
+`fina_indicator`, `stk_limit`, `suspend_d`, `namechange`, `stock_basic`,
+`index_member_all` are still fetched live (cached in P4-2/P4-3); the warm run
+therefore saves the market-bar calls, not those.
+
 ## Quality gate
 
 ```bash
