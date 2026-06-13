@@ -35,12 +35,18 @@ class IndexConstituentsFeed:
         token_key: str = "tushare.token",
         rate_limit: int | None = None,
         max_retries: int = 6,
+        cache=None,
     ) -> None:
         self._secret_file = str(secret_file)
         self._token_key = token_key
         self._rate_limit = rate_limit
         self._max_retries = max(1, int(max_retries))
         self._pro = None  # lazily built
+        # P4-2: optional shared read-through cache. None keeps the historical
+        # direct-fetch (paged) behaviour EXACTLY; only an opted-in config injects
+        # one. The cache stores RAW snapshots; the as-of membership stays
+        # downstream, unchanged.
+        self._cache = cache
 
     # -- secret handling (token never logged) ------------------------------- #
     def _read_token(self) -> str:
@@ -81,9 +87,18 @@ class IndexConstituentsFeed:
         (date, symbol), de-duplicated across window boundaries. Empty
         (schema-shaped) frame if tushare returns nothing — not an error.
         """
+        if self._cache is not None:
+            # Read-through: the cache plans gaps by index_code and pages each
+            # uncovered gap in <=90-day windows (same cap rule). It returns the
+            # canonical [date, symbol, weight] snapshots; the as-of/dedupe/sort
+            # finalizer below is shared with the direct path (cached == direct).
+            df = self._cache.index_weight(
+                index_code, start, end, self._index_weight_fetch()
+            )
+            return self._finalize_constituents(df)
+
         pro = self._client()
         start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
-
         frames: list[pd.DataFrame] = []
         win_start = start_ts
         while win_start <= end_ts:
@@ -107,8 +122,40 @@ class IndexConstituentsFeed:
         df = df.rename(columns={"con_code": "symbol", "trade_date": "date"})
         df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
         df["symbol"] = df["symbol"].astype(str)
-        df = df[list(CONSTITUENT_COLUMNS)].drop_duplicates(["date", "symbol"])
-        return df.sort_values(["date", "symbol"]).reset_index(drop=True)
+        return self._finalize_constituents(df)
+
+    def _index_weight_fetch(self):
+        """A ``(index_code, start_compact, end_compact) -> raw frame`` closure.
+
+        The per-call retry/throttle stays HERE (the cache is transport-agnostic);
+        the cache calls this once per uncovered <=90-day window. The client is
+        built lazily inside the closure, so a fully-covered warm run reads no
+        token and constructs no client.
+        """
+
+        def fetch(index_code: str, start_compact: str, end_compact: str):
+            return request_with_retry(
+                self._client().index_weight,
+                max_retries=self._max_retries,
+                rate_limit=self._rate_limit,
+                index_code=index_code,
+                start_date=start_compact,
+                end_date=end_compact,
+            )
+
+        return fetch
+
+    def _finalize_constituents(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Canonicalize: select [date, symbol, weight], dedup, sort, reset index.
+
+        Shared by the cache and direct paths so both produce a byte-identical
+        frame. ``df`` is already canonical ([date, symbol, weight] present);
+        an empty frame returns the schema-shaped empty.
+        """
+        if df is None or df.empty:
+            return self._empty()
+        out = df[list(CONSTITUENT_COLUMNS)].drop_duplicates(["date", "symbol"])
+        return out.sort_values(["date", "symbol"]).reset_index(drop=True)
 
     @staticmethod
     def _empty() -> pd.DataFrame:

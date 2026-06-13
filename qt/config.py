@@ -36,22 +36,35 @@ class ProjectCfg(_Strict):
 
 
 class CacheCfg(_Strict):
-    """P4-1 persistent endpoint-level raw cache (market_daily + adj_factor).
+    """Persistent endpoint-level raw cache (P4-1 market bars + P4-2 universe/tradability).
 
     Disabled by DEFAULT for backward compatibility — an existing real config
-    runs exactly as before until it opts in. When enabled, ``TushareFeed`` reads
-    market bars through the cache (read-through: only uncovered date ranges hit
-    the API). The cache stores RAW endpoint facts (unadjusted OHLCV/amount and
-    raw adj_factor) only — never qfq prices, never any secret. ``front_adjust``
-    still runs in memory downstream, unchanged.
+    runs exactly as before until it opts in. When enabled the tushare-backed
+    feeds read through the cache (read-through: only uncovered date ranges /
+    stale snapshots hit the API). The cache stores RAW endpoint facts only
+    (unadjusted OHLCV/amount, raw adj_factor, raw index_weight / suspend_d /
+    stk_limit / namechange / stock_basic rows) — never qfq prices, never a
+    derived tradability flag as source of truth, never any secret. The
+    downstream transforms (``front_adjust``, raw price-limit checks, PIT as-of
+    membership / industry / financials) still run in memory, unchanged.
+
+    P4-2 caches: index_weight, suspend_d, namechange, stk_limit, stock_basic.
+    Not yet cached (P4-3): daily_basic, fina_indicator, index_member_all.
     """
 
     enabled: bool = False
     root_dir: str = "artifacts/cache/tushare/v1"
     # Any requested range whose end is within this many days of "today" has its
     # recent tail refetched (recent rows can be corrected/delayed upstream).
+    # Applies to the dense date-range endpoints (market bars, suspend_d,
+    # stk_limit, index_weight).
     refresh_recent_days: int = 14
-    # Endpoint names (e.g. "market_daily", "adj_factor") to always refetch in
+    # Snapshot / dimension endpoints (stock_basic, namechange) carry no date
+    # range; they are refetched once their last successful fetch is older than
+    # this many days (a slow-moving freshness policy). 0 disables staleness
+    # refresh (only force_refresh re-pulls them).
+    refresh_dimension_days: int = 30
+    # Endpoint names (e.g. "market_daily", "index_weight") to always refetch in
     # full, ignoring coverage — for forcing a clean re-pull of one endpoint.
     force_refresh: list[str] = Field(default_factory=list)
 
@@ -61,6 +74,15 @@ class CacheCfg(_Strict):
         if v < 0:
             raise ValueError(
                 f"data.cache.refresh_recent_days must be >= 0; got {v}."
+            )
+        return v
+
+    @field_validator("refresh_dimension_days")
+    @classmethod
+    def _check_dimension_days(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(
+                f"data.cache.refresh_dimension_days must be >= 0; got {v}."
             )
         return v
 

@@ -92,6 +92,27 @@ class CoverageLedger:
             for s, e in zip(sub["start_date"], sub["end_date"])
         ]
 
+    def snapshot_fetched_at(self, endpoint: str, key: str) -> pd.Timestamp | None:
+        """Latest successful fetch time for a snapshot/dimension ``(endpoint, key)``.
+
+        For the dimension endpoints (``stock_basic``, ``namechange``) coverage is
+        not a date range but a freshness timestamp: the most recent ``ok``/
+        ``empty`` ``fetched_at``. ``None`` means never fetched (must fetch). The
+        caller compares against ``refresh_dimension_days`` to decide staleness.
+        """
+        ledger = self.read()
+        if ledger.empty:
+            return None
+        mask = (
+            (ledger["endpoint"] == endpoint)
+            & (ledger["key"] == str(key))
+            & (ledger["status"].isin(_COVERING_STATUSES))
+        )
+        sub = ledger[mask]
+        if sub.empty:
+            return None
+        return pd.Timestamp(sub["fetched_at"].max())
+
     # -- write -------------------------------------------------------------- #
     def record(
         self,

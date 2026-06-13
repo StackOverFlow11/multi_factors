@@ -172,9 +172,11 @@ def test_feed_exposes_cache_stats_cold_then_warm(tmp_path, monkeypatch):
     feed, root = _feed_with_cache(tmp_path, monkeypatch, pro)
     symbols = ["000001.SZ", "000002.SZ"]
 
-    # cold run: gap-fetches == one per symbol per endpoint.
+    # cold run: gap-fetches == one per symbol per endpoint. stats() seeds every
+    # known endpoint (P4-2) so the run-log line always shows explicit 0s.
     feed.get_bars(symbols, "2024-01-01", "2024-01-31")
-    assert feed.cache_stats() == {"market_daily": 2, "adj_factor": 2}
+    cold = feed.cache_stats()
+    assert cold["market_daily"] == 2 and cold["adj_factor"] == 2
 
     # warm rerun on a fresh feed + fresh cache over the SAME root -> 0 gap-fetches.
     pro2 = FakePro()
@@ -187,7 +189,8 @@ def test_feed_exposes_cache_stats_cold_then_warm(tmp_path, monkeypatch):
     warm_feed = TushareFeed(secret_file=str(_write_fake_config(tmp_path)),
                             cache=warm_cache)
     warm_feed.get_bars(symbols, "2024-01-01", "2024-01-31")
-    assert warm_feed.cache_stats() == {"market_daily": 0, "adj_factor": 0}
+    warm = warm_feed.cache_stats()
+    assert warm["market_daily"] == 0 and warm["adj_factor"] == 0
     assert pro2.daily_calls == 0 and pro2.adj_calls == 0
 
 

@@ -41,12 +41,18 @@ class TushareCovariatesFeed:
         token_key: str = "tushare.token",
         rate_limit: int | None = None,
         max_retries: int = 6,
+        cache=None,
     ) -> None:
         self._secret_file = str(secret_file)
         self._token_key = token_key
         self._rate_limit = rate_limit
         self._max_retries = max(1, int(max_retries))
         self._pro = None
+        # P4-2: optional shared read-through cache. Only ``listing_dates``
+        # (stock_basic.list_date, for min_listing_days) reads through it; the
+        # daily_basic / index_member_all covariates are P4-3 and stay direct.
+        # None keeps the historical direct fetch EXACTLY.
+        self._cache = cache
 
     def _client(self):
         if self._pro is None:
@@ -77,6 +83,18 @@ class TushareCovariatesFeed:
         ``stock_basic`` simply does not appear in the map (the caller treats an
         unknown listing date as a disclosed data gap, never as a young name).
         """
+        if self._cache is not None:
+            df = self._cache.stock_basic(self._stock_basic_fetch())
+            if df.empty:
+                return {}
+            wanted = set(map(str, symbols))
+            df = df[df["symbol"].astype(str).isin(wanted)]
+            out: dict[str, pd.Timestamp] = {}
+            for r in df.itertuples():
+                out[str(r.symbol)] = pd.to_datetime(
+                    str(r.list_date), format="%Y%m%d", errors="coerce"
+                )
+            return out
         pro = self._client()
         df = self._call(pro.stock_basic, fields="ts_code,list_date")
         if df is None or len(df) == 0:
@@ -89,6 +107,18 @@ class TushareCovariatesFeed:
                 str(r.list_date), format="%Y%m%d", errors="coerce"
             )
         return out
+
+    def _stock_basic_fetch(self):
+        """`() -> raw stock_basic frame` (ts_code, list_date) — global snapshot.
+
+        The client is built lazily inside the closure, so a fully-covered warm
+        run reads no token and constructs no client.
+        """
+
+        def fetch():
+            return self._call(self._client().stock_basic, fields="ts_code,list_date")
+
+        return fetch
 
     _SW_LEVEL_COLUMN = {"L1": "l1_name", "L2": "l2_name", "L3": "l3_name"}
 

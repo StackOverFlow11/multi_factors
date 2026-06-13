@@ -435,14 +435,18 @@ def run_phase0(config_path: str) -> Phase0Result:
     logger = _make_logger(log_path)
     logger.info("phase0 start: project=%s source=%s", cfg.project.name, cfg.data.source)
 
-    universe, symbols = _build_universe(cfg, logger)
-    panel = _load_panel(cfg, symbols, logger)
+    cache = _build_cache(cfg)
+    universe, symbols = _build_universe(cfg, logger, cache)
+    panel = _load_panel(cfg, symbols, logger, cache)
     factors = _build_factors(cfg)
     primary = factors[0]
     panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_value(cfg, panel, symbols, factors, logger)
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
-    panel = _maybe_enrich_listing(cfg, panel, symbols, logger)
+    panel = _maybe_enrich_listing(cfg, panel, symbols, logger, cache)
+    # P4-1/P4-2: one concise cache-stats line after every cached endpoint has run
+    # (market bars + universe/tradability). A warm historical rerun shows all 0s.
+    _log_run_cache_stats(cache, logger)
     factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
 
     processed = _process_factors(cfg, factor_panel, panel)
@@ -514,13 +518,14 @@ def run_phase0(config_path: str) -> Phase0Result:
 # --------------------------------------------------------------------------- #
 # Step helpers (each small + single-purpose; orchestration stays linear above).
 # --------------------------------------------------------------------------- #
-def _build_feed(cfg: RootConfig) -> DataFeed:
+def _build_feed(cfg: RootConfig, cache=None) -> DataFeed:
     """Construct the DataFeed for the configured source (``demo`` | ``tushare``).
 
     Dispatches on ``cfg.data.source`` so a ``tushare`` config is NOT silently
     served demo data. The tushare branch requires ``external_secret_file`` (the
     token never lives in the repo); constructing the feed performs no network /
-    token read — that is deferred to first ``get_bars`` (SEC-001/004).
+    token read — that is deferred to first ``get_bars`` (SEC-001/004). The shared
+    read-through ``cache`` (or None) is injected by the runner.
     """
     if cfg.data.source == "demo":
         return DemoFeed(calendar_start=cfg.data.start)
@@ -535,19 +540,23 @@ def _build_feed(cfg: RootConfig) -> DataFeed:
         return TushareFeed(
             secret_file=secret_file,
             token_key=cfg.data.tushare_token_key,
-            cache=_build_market_cache(cfg),
+            cache=cache,
         )
     raise ValueError(
         f"Unsupported data.source {cfg.data.source!r}; expected 'demo' or 'tushare'."
     )
 
 
-def _build_market_cache(cfg: RootConfig):
-    """Build the read-through market cache when ``data.cache.enabled`` (P4-1).
+def _build_cache(cfg: RootConfig):
+    """Build the ONE shared read-through cache when ``data.cache.enabled``.
 
-    Returns ``None`` when caching is off — the feed then behaves EXACTLY as
-    before (backward compatible). The cache stores RAW market_daily + adj_factor
-    only; ``front_adjust`` still runs in memory downstream, unchanged.
+    Returns ``None`` when caching is off — every feed then behaves EXACTLY as
+    before (backward compatible). A single instance is threaded through every
+    tushare-backed feed in a run so coverage/store stay one consistent
+    source-of-truth and the per-endpoint gap-fetch counts aggregate into one
+    run-log line. The cache stores RAW endpoint facts only (P4-1 market bars +
+    P4-2 index_weight / suspend_d / namechange / stk_limit / stock_basic);
+    front_adjust, raw price-limit checks, and PIT as-of logic stay downstream.
     """
     cache_cfg = cfg.data.cache
     if not cache_cfg.enabled:
@@ -559,12 +568,13 @@ def _build_market_cache(cfg: RootConfig):
         CacheParquetStore(root),
         CoverageLedger(root),
         refresh_recent_days=cache_cfg.refresh_recent_days,
+        refresh_dimension_days=cache_cfg.refresh_dimension_days,
         force_refresh=tuple(cache_cfg.force_refresh),
     )
 
 
 def _build_universe(
-    cfg: RootConfig, logger: logging.Logger
+    cfg: RootConfig, logger: logging.Logger, cache=None
 ) -> tuple[Universe, list[str]]:
     """Construct the universe and the symbol set whose market data must be loaded.
 
@@ -597,7 +607,9 @@ def _build_universe(
                 "(token for index_weight)."
             )
         feed = IndexConstituentsFeed(
-            cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+            cfg.data.external_secret_file,
+            token_key=cfg.data.tushare_token_key,
+            cache=cache,
         )
         # As-of membership at cfg.data.start needs the latest snapshot *before*
         # the backtest window too. Pulling only [start, end] can leave early
@@ -622,12 +634,28 @@ def _build_universe(
     raise ValueError(f"Unsupported universe.type {cfg.universe.type!r}.")
 
 
-def _log_cache_stats(feed, logger: logging.Logger) -> None:
-    """Log the market cache's per-endpoint gap-fetch counts (P4-1), if any.
+# Endpoints surfaced in the run-log cache-stats line, in a fixed order. Market
+# bars (P4-1) come first so the historical "data cache: market_daily_gap_fetches=
+# N adj_factor_gap_fetches=M ..." prefix is preserved; P4-2 endpoints follow.
+_CACHED_ENDPOINTS: tuple[str, ...] = (
+    "market_daily", "adj_factor", "index_weight", "suspend_d",
+    "namechange", "stk_limit", "stock_basic",
+)
 
-    No-op unless the feed exposes ``cache_stats()`` returning a dict (i.e. the
-    persistent cache is enabled). Emits a single concise line through the
-    run-scoped logger — endpoint counts only, never a token or secret path.
+
+def _format_cache_stats(stats: dict) -> str:
+    """One concise line of per-endpoint gap-fetch counts (endpoint counts only)."""
+    return "data cache: " + " ".join(
+        f"{ep}_gap_fetches={int(stats.get(ep, 0))}" for ep in _CACHED_ENDPOINTS
+    )
+
+
+def _log_cache_stats(feed, logger: logging.Logger) -> None:
+    """Log a feed's per-endpoint cache gap-fetch counts (P4-1/P4-2), if any.
+
+    No-op unless ``feed`` exposes ``cache_stats()`` returning a dict (i.e. the
+    persistent cache is enabled). Emits one concise line through the run-scoped
+    logger — endpoint counts only, never a token, secret path, or symbol dump.
     """
     getter = getattr(feed, "cache_stats", None)
     if getter is None:
@@ -635,26 +663,33 @@ def _log_cache_stats(feed, logger: logging.Logger) -> None:
     stats = getter()
     if not stats:
         return
-    logger.info(
-        "data cache: market_daily_gap_fetches=%d adj_factor_gap_fetches=%d",
-        int(stats.get("market_daily", 0)),
-        int(stats.get("adj_factor", 0)),
-    )
+    logger.info("%s", _format_cache_stats(stats))
+
+
+def _log_run_cache_stats(cache, logger: logging.Logger) -> None:
+    """Log the SHARED run cache's aggregated gap-fetch counts (P4-1/P4-2).
+
+    Called once after all tushare-backed feeds in a run have used the shared
+    cache, so the counts cover every cached endpoint (market bars + universe /
+    tradability). No-op when caching is disabled (``cache`` is None). Endpoint
+    counts only — never a token, secret path, or per-symbol detail.
+    """
+    if cache is None:
+        return
+    stats = cache.stats()
+    if not stats:
+        return
+    logger.info("%s", _format_cache_stats(stats))
 
 
 def _load_panel(
-    cfg: RootConfig, symbols: list[str], logger: logging.Logger
+    cfg: RootConfig, symbols: list[str], logger: logging.Logger, cache=None
 ) -> pd.DataFrame:
     """Fetch the market panel for ``symbols``, persist it, and read it back."""
     if not symbols:
         raise ValueError("No symbols to load; the universe produced an empty set.")
-    feed = _build_feed(cfg)
+    feed = _build_feed(cfg, cache)
     panel = feed.get_bars(symbols, cfg.data.start, cfg.data.end, freq=cfg.data.freq)
-    # P4-1: when the persistent market cache is on, surface its gap-fetch counts
-    # in the run log so the read-through hit rate is directly observable (a warm
-    # historical rerun shows 0/0). No-op when caching is off or the feed has no
-    # cache (DemoFeed); the stats carry endpoint counts only, never a secret.
-    _log_cache_stats(feed, logger)
     if panel.empty:
         raise ValueError(
             "No market data returned for the configured window "
@@ -668,7 +703,7 @@ def _load_panel(
     # the UNADJUSTED close against the raw stk_limit (limits are quoted in raw
     # price terms). front-adjust below only scales OHLC and leaves the boolean
     # flags intact, so factors/backtest see qfq prices while limit flags stay right.
-    panel = _enrich_tradability(cfg, panel, symbols, logger)
+    panel = _enrich_tradability(cfg, panel, symbols, logger, cache)
     # Store stays RAW (+ adj_factor, incremental-safe); front-adjust in memory so
     # factors / backtest see continuous qfq prices. Identity for demo (adj=1.0).
     panel = front_adjust(panel)
@@ -681,7 +716,11 @@ def _load_panel(
 
 
 def _enrich_tradability(
-    cfg: RootConfig, panel: pd.DataFrame, symbols: list[str], logger: logging.Logger
+    cfg: RootConfig,
+    panel: pd.DataFrame,
+    symbols: list[str],
+    logger: logging.Logger,
+    cache=None,
 ) -> pd.DataFrame:
     """Add suspended / ST / price-limit flags when filters need them (tushare only).
 
@@ -693,7 +732,9 @@ def _enrich_tradability(
     if cfg.data.source != "tushare" or not (flt.suspended or flt.st or flt.limit_up_down):
         return panel
     feed = TushareFlagsFeed(
-        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+        cfg.data.external_secret_file,
+        token_key=cfg.data.tushare_token_key,
+        cache=cache,
     )
     suspended = feed.suspended(symbols, cfg.data.start, cfg.data.end) if flt.suspended else None
     st = feed.st_intervals(symbols) if flt.st else None
@@ -871,7 +912,11 @@ def _maybe_enrich_value(
 
 
 def _maybe_enrich_listing(
-    cfg: RootConfig, panel: pd.DataFrame, symbols: list[str], logger: logging.Logger
+    cfg: RootConfig,
+    panel: pd.DataFrame,
+    symbols: list[str],
+    logger: logging.Logger,
+    cache=None,
 ) -> pd.DataFrame:
     """Attach a per-symbol ``list_date`` column when min_listing_days is enforced.
 
@@ -885,7 +930,9 @@ def _maybe_enrich_listing(
     if cfg.data.source != "tushare":
         return panel  # demo: no listing dates -> filter is a disclosed no-op
     feed = TushareCovariatesFeed(
-        cfg.data.external_secret_file, token_key=cfg.data.tushare_token_key
+        cfg.data.external_secret_file,
+        token_key=cfg.data.tushare_token_key,
+        cache=cache,
     )
     listing = feed.listing_dates(symbols)
     panel = enrich_listing(panel, listing)
