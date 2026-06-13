@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）、#13（进度文档）、#14（P3-4）、#15（进度文档）、#16（P3-5）、#17（进度文档）、#18（P3-6）、#19（P3-7）、#20（进度文档）、#21（P3-8）、#22（进度文档）、#23（P4-1）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）、#13（进度文档）、#14（P3-4）、#15（进度文档）、#16（P3-5）、#17（进度文档）、#18（P3-6）、#19（P3-7）、#20（进度文档）、#21（P3-8）、#22（进度文档）、#23（P4-1）、#24（进度文档）、#25（P4-2）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -166,7 +166,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
     - secret scan：缓存 parquet + ledger 0 处 token / `.config.json`；ledger 列只有端点元数据。
   - **缓存命中直接可见（review follow-up）**：`TushareFeed.cache_stats()` 暴露各端点 gap-fetch 计数，`_load_panel` 经 run-scoped logger 打 `data cache: market_daily_gap_fetches=N adj_factor_gap_fetches=M`——冷跑非零、暖跑 0/0（warm rerun 实证 run_phase2_baseline.log 含 `0/0`，secret scan 0）。
 - **不变量守住**：factor/alpha/portfolio/execution/OOS 切片/report 全不动；`artifacts/data/{output_name}.parquet` 不当 SoT。范围克制：P4-1 只 market_daily+adj_factor，其余端点（index_weight/daily_basic/fina_indicator/...）P4-2/P4-3 再缓存。
-- ✅ **Phase 4-2 持久化 Tushare universe + tradability 缓存**（**分支 `data-cache-universe-tradability`**，index_weight + suspend_d + namechange + stk_limit + stock_basic）：把 P4-1 端点级 raw 缓存扩到 universe/可交易性端点——真实 run 不再每次重抓成分股/停牌/ST/涨跌停/上市日。**默认仍 disabled（向后兼容，旧配置行为一字不变）**；opt-in 后这五端点走 read-through。
+- ✅ **Phase 4-2 持久化 Tushare universe + tradability 缓存**（**PR #25 已 merge 到 `main`**，index_weight + suspend_d + namechange + stk_limit + stock_basic）：把 P4-1 端点级 raw 缓存扩到 universe/可交易性端点——真实 run 不再每次重抓成分股/停牌/ST/涨跌停/上市日。**默认仍 disabled（向后兼容，旧配置行为一字不变）**；opt-in 后这五端点走 read-through。
   - **三种规划形态共用一引擎**：① dense per-symbol 日期区间（`suspend_d`/`stk_limit`，复用 P4-1 gap + recent-tail）；② index_code 维日期区间（`index_weight`，coverage key=index_code，gap 内仍 **90 天分页**，raw 快照入库）；③ snapshot 维度（`namechange` per-symbol、`stock_basic` 全局 sentinel），用 `refresh_dimension_days`（默认 30）staleness + force_refresh（`CoverageLedger.snapshot_fetched_at` 给新鲜度判定）。
   - **语义全保**：`index_weight` 仍 PIT/as-of（370 天 pre-start lookback 进缓存请求区间，latest-snapshot-on-or-before 仍在 feed/universe）；`stk_limit` 仍 **raw price**（限价检查在 front-adjust 前，不碰 qfq）；`stock_basic` 只取 list_date 供 `min_listing_days`（缺失仍 kept+披露），current-tag `industry` 绝不入缓存/中性化；`suspend_d`/`namechange`/ST 区间形状不变；**缓存只存 raw 端点事实，不存派生 flag 作 SoT**。
   - **三 feed 接线**：`IndexConstituentsFeed`/`TushareFlagsFeed`/`TushareCovariatesFeed` 各加 `cache=None` 注入；cache present → read-through + **共享 finalizer**（cached==direct，限价 frame `assert_frame_equal`、ST 区间集合相等、suspend set / listing dict 相等单测锁定）；`cache=None` → 直抓路径**逐字不变**（旧 feed 测试原样过）。per-symbol 限流/重试仍在各 feed 的 `_call` 闭包里（缓存 transport-agnostic）。
