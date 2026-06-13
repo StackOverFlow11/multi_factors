@@ -57,7 +57,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 开发约定
 - **交流中文**；代码/注释/commit message 用**英文**。
-- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）、#13（进度文档）、#14（P3-4）、#15（进度文档）、#16（P3-5）、#17（进度文档）、#18（P3-6）、#19（P3-7）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
+- **Git**：feature 分支 + PR。**PR #1（P0+P1）、#2（P2-1）、#3（P2-2）、#4（进度文档）、#5（P2-3）、#6（进度文档）、#7（P2-4）、#8（进度文档）、#9（P3-1）、#10（进度文档）、#11（P3-2）、#12（P3-3）、#13（进度文档）、#14（P3-4）、#15（进度文档）、#16（P3-5）、#17（进度文档）、#18（P3-6）、#19（P3-7）、#20（进度文档）、#21（P3-8）均已 merge 到 `main`**。commit 用 conventional 格式，**无 attribution**（不加 Co-Authored-By）。
 - **不过度设计**：按路线图 MVP 先打通一条端到端链路，再加层（architecture.html §11，Phase 0→3）。
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
@@ -148,7 +148,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
     - combo_ic_weighted 独立 test IC **8/8 正**（4 组×2 cells，0.0060~0.0238）——walk-forward IC 加权在 holdout 上仍有效。
     - **组合净值仍未确立**：独立 base ic test——legacy_trio **+1.15%/+8.13%**（2/2 正，恰是此前实证"无信号"的组！）、full_pack +7.30%/−1.93%、value_lowvol +1.72%/−4.68%、liq +3.53%/−0.39%——组间排名跨 cell 翻转,~21 rebalances 小样本,**IC 符号确认 ≠ 组合盈利**；成本阶梯仍全单调。非收益声明。
   - secret scan 报告+日志 0 处；demo 0.96/0.84 不变。
-- ✅ **Phase 3-8 CSI500 独立泛化检验**（分支 `p3-csi500-value-lowvol-generalization`，**EXPLORATORY**）：P3-7 的符号级结论是否泛化到筛选 universe 之外——新增独立 cell **CSI500（000905.SH）|2024-2026**（universe+时间双独立）。**机器零改动**复用 P3-7 层（同组/同成本场景/同假设，不加因子不调参）；唯一代码变更 `output.subset_report_name`（沿 `baseline_report_name` 先例，默认 None 保持旧文件名 bitwise，测试锁定）——P3-8 报告独立成文件，**不再覆盖已验收的 P3-7 artifact**。
+- ✅ **Phase 3-8 CSI500 独立泛化检验**（**PR #21 已 merge 到 `main`**，**EXPLORATORY**）：P3-7 的符号级结论是否泛化到筛选 universe 之外——新增独立 cell **CSI500（000905.SH）|2024-2026**（universe+时间双独立）。**机器零改动**复用 P3-7 层（同组/同成本场景/同假设，不加因子不调参）；唯一代码变更 `output.subset_report_name`（沿 `baseline_report_name` 先例，默认 None 保持旧文件名 bitwise，测试锁定）——P3-8 报告独立成文件，**不再覆盖已验收的 P3-7 artifact**。
   - cell 设计：SSE50|2022-2024（screened 锚，须 ≡P3-6/P3-7）+ SSE50|2024-2026（independent 锚，须 ≡P3-7 verdict 数字）+ CSI500|2024-2026（主问题）；CSI500|2022-2024 skip 披露（~645 名×2y 再加 ~3h 不值）。数据可行性先实测：index_weight 月度 500 名快照到 2026-05-29 含 2024-06-28 pre-start 锚。
   - **真实 run（3 cells/~3.55h，CSI500 735 distinct 名主导；一次跑通）双锚对账 ✓**：screened raw IC 22/22 ≡ P3-5 报告；independent SSE50 verdict IC 逐数 ≡ P3-7（+0.0322/+0.0134、+0.0379/+0.0033、−0.0320/−0.0120）——复现性二度确认。
   - **CSI500 verdict：SUPPORTED**（21 settled vs min 8）：value_ep **+0.0083/+0.0145**（train/test）、value_bp **+0.0230/+0.0127**、volatility_20 **−0.0350/−0.0272**——三假设双子期全保持。**且衰减更小**：CSI500 test 子期量级（0.0127~0.0272）明显高于 SSE50/CSI300 holdout 的后段（0.003~0.016）——value/低波信号在中盘股上更强，**P3-7 结论泛化成立（GENERALIZES，未减弱）**。
