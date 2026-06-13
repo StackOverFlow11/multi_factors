@@ -196,14 +196,18 @@ def test_phase0_tushare_source_routes_to_tushare_feed(
     captured: dict[str, object] = {}
 
     class _FakeTushareFeed:
-        def __init__(self, secret_file: str, token_key: str = "tushare.token"):
+        def __init__(self, secret_file: str, token_key: str = "tushare.token",
+                     cache=None):
             captured["secret_file"] = secret_file
             captured["token_key"] = token_key
+            captured["cache"] = cache  # P4-1: None unless data.cache.enabled
 
     monkeypatch.setattr(pipeline, "TushareFeed", _FakeTushareFeed)
 
     feed = _build_feed(cfg)
     assert isinstance(feed, _FakeTushareFeed)
+    # cache disabled by default -> feed built without a cache (unchanged path).
+    assert captured["cache"] is None
     assert captured["secret_file"] == str(tmp_path / "fake.config.json")
     # The demo source must still route to the offline DemoFeed.
     demo_cfg = load_config(

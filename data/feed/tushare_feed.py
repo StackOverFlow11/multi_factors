@@ -69,6 +69,7 @@ class TushareFeed(DataFeed):
         token_key: str = "tushare.token",
         rate_limit: int | None = None,
         max_retries: int = 6,
+        cache=None,
     ) -> None:
         self._secret_file = str(secret_file)
         self._token_key = token_key
@@ -76,6 +77,11 @@ class TushareFeed(DataFeed):
         self._rate_limit = rate_limit
         self._max_retries = max(1, int(max_retries))
         self._pro = None  # lazily built tushare pro client
+        # P4-1: optional persistent market cache (read-through). None keeps the
+        # historical direct-fetch behaviour EXACTLY; only an opted-in config
+        # passes one in. The cache stores RAW rows only; front_adjust still runs
+        # downstream, unchanged.
+        self._cache = cache
 
     # -- secret handling ---------------------------------------------------- #
     def _read_token(self) -> str:
@@ -132,6 +138,9 @@ class TushareFeed(DataFeed):
             raise ValueError("TushareFeed.get_bars requires a non-empty symbol list.")
 
         pro = self._client()
+        if self._cache is not None:
+            return self._get_bars_cached(pro, symbols, start, end)
+
         start_compact = pd.Timestamp(start).strftime("%Y%m%d")
         end_compact = pd.Timestamp(end).strftime("%Y%m%d")
 
@@ -154,6 +163,42 @@ class TushareFeed(DataFeed):
 
         combined = pd.concat(frames, ignore_index=True)
         return normalize_panel(combined)
+
+    # -- read-through cache path (P4-1) ------------------------------------- #
+    def _get_bars_cached(self, pro, symbols, start, end) -> pd.DataFrame:
+        """Build the canonical panel from the read-through market cache.
+
+        The cache fetches only uncovered date ranges (the second identical run
+        makes zero ``daily`` / ``adj_factor`` calls); the per-symbol throttle +
+        retry stay HERE via ``self._call`` closures. The cache returns RAW
+        canonical rows; the join + select below mirror ``_to_canonical`` so the
+        result is byte-identical to the direct path before ``front_adjust``.
+        """
+        adj_getter = getattr(pro, "adj_factor", None)
+
+        def fetch_daily(symbol, s_compact, e_compact):
+            return self._call(
+                pro.daily, ts_code=symbol, start_date=s_compact, end_date=e_compact
+            )
+
+        def fetch_adj(symbol, s_compact, e_compact):
+            if adj_getter is None:
+                return None
+            return self._call(
+                adj_getter, ts_code=symbol, start_date=s_compact, end_date=e_compact
+            )
+
+        daily = self._cache.daily_bars(symbols, start, end, fetch_daily)
+        if daily.empty:
+            return self._empty_panel()
+        adjf = self._cache.adj_factor(symbols, start, end, fetch_adj)
+        merged = daily.merge(adjf, on=["symbol", "date"], how="left")
+        if "adj_factor" not in merged.columns:
+            merged["adj_factor"] = 1.0
+        merged["adj_factor"] = merged["adj_factor"].fillna(1.0)
+        keep = ["date", "symbol", *CORE_COLUMNS]
+        present = [c for c in keep if c in merged.columns]
+        return normalize_panel(merged[present])
 
     # -- mapping helpers ---------------------------------------------------- #
     def _fetch_adj_factor(self, pro, symbol: str, start_compact: str, end_compact: str):

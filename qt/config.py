@@ -35,6 +35,43 @@ class ProjectCfg(_Strict):
     timezone: str = "Asia/Shanghai"
 
 
+class CacheCfg(_Strict):
+    """P4-1 persistent endpoint-level raw cache (market_daily + adj_factor).
+
+    Disabled by DEFAULT for backward compatibility — an existing real config
+    runs exactly as before until it opts in. When enabled, ``TushareFeed`` reads
+    market bars through the cache (read-through: only uncovered date ranges hit
+    the API). The cache stores RAW endpoint facts (unadjusted OHLCV/amount and
+    raw adj_factor) only — never qfq prices, never any secret. ``front_adjust``
+    still runs in memory downstream, unchanged.
+    """
+
+    enabled: bool = False
+    root_dir: str = "artifacts/cache/tushare/v1"
+    # Any requested range whose end is within this many days of "today" has its
+    # recent tail refetched (recent rows can be corrected/delayed upstream).
+    refresh_recent_days: int = 14
+    # Endpoint names (e.g. "market_daily", "adj_factor") to always refetch in
+    # full, ignoring coverage — for forcing a clean re-pull of one endpoint.
+    force_refresh: list[str] = Field(default_factory=list)
+
+    @field_validator("refresh_recent_days")
+    @classmethod
+    def _check_recent_days(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(
+                f"data.cache.refresh_recent_days must be >= 0; got {v}."
+            )
+        return v
+
+    @field_validator("root_dir")
+    @classmethod
+    def _check_root_dir(cls, v: str) -> str:
+        if not v or not str(v).strip():
+            raise ValueError("data.cache.root_dir must be a non-empty path.")
+        return v
+
+
 class DataCfg(_Strict):
     source: Literal["demo", "tushare"] = "demo"
     freq: str = "D"
@@ -43,6 +80,7 @@ class DataCfg(_Strict):
     external_secret_file: str | None = None
     tushare_token_key: str = "tushare.token"
     output_name: str = "daily"
+    cache: CacheCfg = Field(default_factory=CacheCfg)
 
     @field_validator("start", "end", mode="before")
     @classmethod

@@ -535,9 +535,31 @@ def _build_feed(cfg: RootConfig) -> DataFeed:
         return TushareFeed(
             secret_file=secret_file,
             token_key=cfg.data.tushare_token_key,
+            cache=_build_market_cache(cfg),
         )
     raise ValueError(
         f"Unsupported data.source {cfg.data.source!r}; expected 'demo' or 'tushare'."
+    )
+
+
+def _build_market_cache(cfg: RootConfig):
+    """Build the read-through market cache when ``data.cache.enabled`` (P4-1).
+
+    Returns ``None`` when caching is off — the feed then behaves EXACTLY as
+    before (backward compatible). The cache stores RAW market_daily + adj_factor
+    only; ``front_adjust`` still runs in memory downstream, unchanged.
+    """
+    cache_cfg = cfg.data.cache
+    if not cache_cfg.enabled:
+        return None
+    from data.cache import CacheParquetStore, CoverageLedger, TushareCache
+
+    root = cache_cfg.root_dir
+    return TushareCache(
+        CacheParquetStore(root),
+        CoverageLedger(root),
+        refresh_recent_days=cache_cfg.refresh_recent_days,
+        force_refresh=tuple(cache_cfg.force_refresh),
     )
 
 
