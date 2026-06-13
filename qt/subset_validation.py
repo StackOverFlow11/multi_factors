@@ -67,7 +67,8 @@ from qt.robustness import cell_label, derive_cell_config, iter_cells, skipped_ce
 __all__ = ["SubsetCellResult", "SubsetValidationResult", "run_phase3_subset",
            "render_subset_validation", "check_subset_preconditions",
            "process_group", "subperiod_cost", "summarize_subset_matrix",
-           "sample_class", "independent_verdict", "summarize_by_sample"]
+           "sample_class", "independent_verdict", "summarize_by_sample",
+           "subset_report_filename"]
 
 _LOGGER_NAME = "qt.run_phase3_subset"
 
@@ -355,6 +356,16 @@ def summarize_by_sample(
         cls: summarize_subset_matrix(class_cells, base_scenario=base_scenario)
         for cls, class_cells in by_class.items()
     }
+
+
+def subset_report_filename(cfg: RootConfig) -> str:
+    """The subset-validation report filename for this config (P3-8).
+
+    ``output.subset_report_name`` lets each study own its report file; None
+    keeps the historical default — behaviour-preserving for the P3-6/P3-7
+    configs (locked by tests), so old runs' paths never silently change.
+    """
+    return cfg.output.subset_report_name or "phase3_subset_validation.md"
 
 
 def check_subset_preconditions(
@@ -651,7 +662,7 @@ def run_phase3_subset(config_path: str) -> SubsetValidationResult:
         cell_runtimes=runtimes,
         skipped_cells=skipped,
         summary=summarize_subset_matrix(plain, base_scenario=base_scenario),
-        report_path=Path(cfg.output.report_dir) / "phase3_subset_validation.md",
+        report_path=Path(cfg.output.report_dir) / subset_report_filename(cfg),
         log_path=log_path,
         cell_samples=cell_samples,
         sample_summaries=summarize_by_sample(

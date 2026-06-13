@@ -990,18 +990,26 @@ def _subset_group_summary_block(glabel: str, gsum: dict, level: str = "###") -> 
 def render_subset_validation(result) -> str:
     """Build the phase3 subset-validation markdown (pure; no I/O, no secrets).
 
-    The title, the framing blockquote and the closing caveat are SAMPLE-AWARE:
-    a run whose cells include declared independent holdouts is a P3-7
+    The H1 title, the framing blockquote and the closing caveat are
+    SAMPLE-AWARE: a run whose cells include declared independent holdouts is an
     independent validation and must NOT carry the P3-6 "same windows / not
     independent confirmation" framing (it would contradict the verdict
     section); a run with no independent cells keeps the P3-6 framing verbatim.
+    The H1 title is additionally CONFIG-DRIVEN: ``output.subset_report_title``
+    overrides it so a config that reuses this run mode for a DIFFERENT study
+    (e.g. the P3-8 CSI500 generalization check) names the actual study instead
+    of the machinery's default phase label. The body framing stays sample-aware
+    (it describes screened-vs-independent mechanics, correct for any such study).
     """
     cfg = result.config
     has_independent = "independent" in (
         getattr(result, "cell_samples", None) or {}
     ).values()
     lines: list[str] = []
-    if has_independent:
+    configured_title = getattr(cfg.output, "subset_report_title", None)
+    if configured_title:
+        lines.append(f"# {configured_title}\n")
+    elif has_independent:
         lines.append("# Phase 3-7 — Independent-Sample Validation "
                      "(factor groups × cost scenarios; screened vs "
                      "independent holdout cells)\n")

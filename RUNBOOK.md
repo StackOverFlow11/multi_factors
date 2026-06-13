@@ -471,6 +471,32 @@ Semantics worth knowing before reading the report:
   `artifacts/reports/phase3_subset_validation.md` — a P3-7 run overwrites a
   P3-6 report (regenerable; numbers live in CLAUDE.md/TEST_REPORT).
 
+## Phase 3-8 — CSI500 independent generalization check (EXPLORATORY)
+
+Asks whether the P3-7 sign-level conclusion generalizes OUTSIDE the screened
+universes: the same `run-phase3-subset` machinery (unchanged) with a NEW
+independent cell `000905.SH|2024-2026` (CSI500 — independent in BOTH universe
+and time), plus the two SSE50 anchors (screened 2022-2024 must reproduce
+P3-6/P3-7; independent 2024-2026 must reproduce the P3-7 verdict numbers).
+Documented by `config/phase3_real_csi500_generalization.yaml`.
+
+```bash
+# validate (no network)
+... -m qt.cli validate-config    --config config/phase3_real_csi500_generalization.yaml
+# run (network + token; HEAVY ~3.5h — the 735-name CSI500 cell dominates)
+... -m qt.cli run-phase3-subset  --config config/phase3_real_csi500_generalization.yaml
+```
+
+- `output.subset_report_name` (the `baseline_report_name` precedent) gives this
+  study its own report file (`phase3_csi500_generalization.md`), so the run no
+  longer clobbers the accepted P3-7 artifact; configs without the key keep the
+  historical filename bitwise (locked by tests).
+- `output.subset_report_title` sets the report's H1 so it names THIS study
+  ("Phase 3-8 — CSI500 Independent Generalization Check") instead of the
+  machinery's default phase label; configs without it keep the renderer's
+  sample-aware default (P3-7 independent / P3-6 post-hoc), locked by tests.
+  CSI500|2022-2024 is skip_cells-listed (runtime budget) and disclosed.
+
 ## Quality gate
 
 ```bash

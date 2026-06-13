@@ -1,0 +1,207 @@
+# Phase 3-8 — REAL CSI500 independent generalization check (EXPLORATORY).
+#
+# Asks whether the P3-7 conclusion (value_ep/value_bp positive, volatility_20
+# negative — sign-level SUPPORTED on the independent 2024-07..2026-05 window
+# over SSE50/CSI300) GENERALIZES outside the screened universes, specifically
+# to CSI500 (000905.SH, mid-caps): a cell that is independent in BOTH universe
+# and time. Machinery is the unchanged P3-7 independent-validation layer; same
+# factor groups, same cost scenarios, no new factors, no tuning.
+#
+# Cell roles (explicitly labeled, never averaged together):
+#   * 000016.SH|2022-2024 -> SCREENED anchor: must reproduce P3-6/P3-7 exactly.
+#   * 000016.SH|2024-2026 -> INDEPENDENT anchor: must reproduce the P3-7
+#     verdict numbers exactly (in-run reproducibility check).
+#   * 000905.SH|2024-2026 -> INDEPENDENT, NEW universe — the P3-8 question.
+#   * 000905.SH|2022-2024 -> skipped (runtime budget; ~645 names x 2y through
+#     the rate-limited SDK would add ~3h; disclosed in the report).
+#
+# Data feasibility (probed 2026-06-12): index_weight 000905.SH has monthly
+# 500-name snapshots through 2026-05-29 incl. a 2024-06-28 pre-start snapshot;
+# 645 distinct constituents in-window. Expected runtime ~3.5h total
+# (CSI500 cell ~3h dominates).
+#
+# output.subset_report_name keeps this run from clobbering the accepted P3-7
+# artifact (both runs share the run-phase3-subset mode).
+#
+# Run:  python -m qt.cli run-phase3-subset --config config/phase3_real_csi500_generalization.yaml
+# (report: artifacts/reports/phase3_csi500_generalization.md; needs the
+# tushare token; HEAVY ~3.5h.)
+
+project:
+  name: quantitative_trading_phase3_csi500_generalization
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2022-07-01"
+  end: "2026-05-31"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: phase3cg_daily
+
+universe:
+  type: index
+  index_code: "000016.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+factors:
+  # FULL 11-factor pack (P3-5..P3-7, verbatim — factor math unchanged).
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+  - name: roe
+    enabled: true
+    params: {}
+  - name: netprofit_yoy
+    enabled: true
+    params: {}
+  - name: reversal_5
+    enabled: true
+    params:
+      window: 5
+  - name: reversal_20
+    enabled: true
+    params:
+      window: 20
+  - name: volatility_20
+    enabled: true
+    params:
+      window: 20
+  - name: liquidity_20
+    enabled: true
+    params:
+      window: 20
+  - name: overnight_mom_20
+    enabled: true
+    params:
+      window: 20
+  - name: value_ep
+    enabled: true
+    params: {}
+  - name: value_bp
+    enabled: true
+    params: {}
+  - name: grossprofit_margin
+    enabled: true
+    params: {}
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+
+alpha:
+  model: ic_weighted
+  params:
+    window: 60
+    min_periods: 20
+    mode: rolling
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 20
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+analytics:
+  forward_return_periods:
+    - 1
+    - 5
+    - 20
+  quantiles: 5
+  benchmark: null
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+  subset_report_name: phase3_csi500_generalization.md
+  # The report reuses the P3-7 independent-validation machinery, so its H1 must
+  # name THIS study (not the default P3-7 phase label) — config owns the study
+  # identity, the same precedent as subset_report_name.
+  subset_report_title: "Phase 3-8 — CSI500 Independent Generalization Check (value/lowvol, screened vs independent holdout cells)"
+
+oos:
+  split_date: "2023-07-01"   # base-config validation only; per-cell splits below
+
+robustness:
+  universes:
+    - "000016.SH"   # SSE50 (anchors: screened 2022-2024 + independent 2024-2026)
+    - "000905.SH"   # CSI500 (the NEW independent universe)
+  windows:
+    - label: "2022-2024"     # SCREENED window (P3-3..P3-6 all used it)
+      start: "2022-07-01"
+      end: "2024-06-30"
+      split: "2023-07-01"
+    - label: "2024-2026"     # INDEPENDENT window: postdates all screening
+      start: "2024-07-01"
+      end: "2026-05-31"
+      split: "2025-07-01"
+  skip_cells:
+    - universe: "000905.SH"
+      window: "2022-2024"    # runtime budget (~645 names x 2y); disclosed
+
+subset_validation:
+  # P3-6/P3-7 group comparison reused VERBATIM (groups/cost logic unchanged).
+  groups:
+    - label: legacy_trio
+      factors: [momentum_20, roe, netprofit_yoy]
+    - label: full_pack
+      factors: [momentum_20, roe, netprofit_yoy, reversal_5, reversal_20,
+                volatility_20, liquidity_20, overnight_mom_20, value_ep,
+                value_bp, grossprofit_margin]
+    - label: value_lowvol
+      factors: [value_ep, value_bp, volatility_20]
+    - label: value_lowvol_liq
+      factors: [value_ep, value_bp, volatility_20, liquidity_20]
+  cost_scenarios:
+    - label: base
+      fee_multiplier: 1.0
+    - label: 2x
+      fee_multiplier: 2.0
+    - label: high_cost
+      fee_multiplier: 4.0
+  independent_cells:
+    - universe: "000016.SH"
+      window: "2024-2026"    # P3-7 reproducibility anchor
+    - universe: "000905.SH"
+      window: "2024-2026"    # the P3-8 generalization cell
+  hypotheses:
+    value_ep: positive
+    value_bp: positive
+    volatility_20: negative
+  min_rebalances: 8
