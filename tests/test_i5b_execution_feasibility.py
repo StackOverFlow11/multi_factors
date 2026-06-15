@@ -396,8 +396,8 @@ def test_i5b_report_name_default_keeps_i5a_basename():
 def test_i5b_report_heading_names_the_actual_study():
     # The report H1 must not stay frozen at the I5a label when the limit check is on.
     from qt.intraday_tail_framework import _report_heading
-    i5a_title, _ = _report_heading(False)
-    i5b_title, i5b_intro = _report_heading(True)
+    i5a_title, _ = _report_heading("ret", False)
+    i5b_title, i5b_intro = _report_heading("ret", True)
     assert i5a_title.startswith("# Phase I5a")
     assert i5b_title.startswith("# Phase I5b")
     assert "execution-feasibility hardening" in i5b_intro.lower()
