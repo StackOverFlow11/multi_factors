@@ -70,6 +70,10 @@ class I5aResult:
     feasibility_log: pd.DataFrame
     holdings_log: pd.DataFrame
     blocked_fill_counts: dict[str, int]
+    # per rebalance date -> (earliest, latest) ACTUAL execution-bar time among the
+    # non-blocked fills (so a 14:52 fill when 14:51 was missing is auditable, vs
+    # the planned execution_ts). Empty tuple key absent -> no fill that date.
+    actual_exec_by_date: dict[pd.Timestamp, tuple[pd.Timestamp, pd.Timestamp]]
     report_path: Path
     log_path: Path
 
@@ -113,17 +117,31 @@ def _load_minute_bars_cache_only(
         (uncovered if gaps else covered).append(sym)
 
     require_cov = cfg.intraday is not None and cfg.intraday.require_cache_coverage
-    if require_cov and not covered:
+    if require_cov and uncovered:
+        # require_cache_coverage=true must NOT silently drop uncovered names: that
+        # would bias the realized universe. Fail loudly so the operator shrinks the
+        # window (or opts into lenient mode). Matches the goal: coverage missing ->
+        # change the window or stop, never warm.
+        shown = ", ".join(uncovered[:10])
+        more = "" if len(uncovered) <= 10 else f" (+{len(uncovered) - 10} more)"
         raise ValueError(
-            "intraday smoke blocked: NONE of the requested symbols are fully "
-            f"covered in the minute cache for [{cfg.data.start}, {cfg.data.end}]. "
-            "Shrink/move the window to covered SH/SZ data — this runner refuses to "
-            "warm missing minute history."
+            "intraday smoke blocked: require_cache_coverage=true but "
+            f"{len(uncovered)}/{len(symbols)} requested symbols are NOT fully covered "
+            f"in the minute cache for [{cfg.data.start}, {cfg.data.end}]: {shown}{more}. "
+            "Shrink/move the window to fully-covered SH/SZ data, or set "
+            "intraday.require_cache_coverage=false to drop the uncovered names "
+            "(disclosed). This runner refuses to warm missing minute history."
         )
     if uncovered:
         logger.info(
-            "intraday cache: %d/%d symbols covered; %d excluded (uncovered)",
+            "intraday cache: %d/%d symbols covered; %d excluded (uncovered, "
+            "require_cache_coverage=false)",
             len(covered), len(symbols), len(uncovered),
+        )
+    if not covered:
+        raise ValueError(
+            "intraday smoke blocked: no requested symbol is covered in the minute "
+            f"cache for [{cfg.data.start}, {cfg.data.end}]."
         )
 
     def _no_warm(sym: str, start_dt: str, end_dt: str):
@@ -210,6 +228,21 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
     for f in blocked:
         blocked_counts[f.reason or "unknown"] = blocked_counts.get(f.reason or "unknown", 0) + 1
 
+    # ACTUAL execution-bar time range per rebalance date (non-blocked fills): a fill
+    # later than the planned execution_ts (e.g. 14:52 when 14:51 was missing) is
+    # auditable here, distinct from the planned anchor in the event log.
+    actual_exec: dict[pd.Timestamp, tuple[pd.Timestamp, pd.Timestamp]] = {}
+    rebalance_dates = {pd.Timestamp(d).normalize() for d in nav_table.index}
+    for f in model.fills():
+        if f.blocked or f.exec_time is None:
+            continue
+        d = pd.Timestamp(f.date).normalize()
+        if d not in rebalance_dates:
+            continue  # exit-only anchors are not rebalance rows
+        t = pd.Timestamp(f.exec_time)
+        lo, hi = actual_exec.get(d, (t, t))
+        actual_exec[d] = (min(lo, t), max(hi, t))
+
     report_path = Path(cfg.output.report_dir) / "phase_i5a_intraday_tail_framework.md"
     result = I5aResult(
         config=cfg,
@@ -225,6 +258,7 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
         feasibility_log=engine.feasibility_log(),
         holdings_log=engine.holdings_log(),
         blocked_fill_counts=blocked_counts,
+        actual_exec_by_date=actual_exec,
         report_path=report_path,
         log_path=log_path,
     )
@@ -309,16 +343,34 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
     lines.append("")
     lines.append("## Event table (decision / execution / exit anchors)")
     lines.append("")
+    lines.append(
+        "`exec_ts(planned)` is the window start; `exec_bar(actual)` is the actual "
+        "fill-bar time range used across the held names (e.g. `14:52:00` would show "
+        "if 14:51 was missing). `exit_exec_ts` is the planned exit fill time at "
+        "`exit_date` — the holding period runs `exec_ts -> exit_exec_ts`."
+    )
+    lines.append("")
     if result.event_log.empty:
         lines.append("_no settled periods_")
     else:
-        lines.append("| date | decision_ts | execution_ts | exit_date | next_decision_ts |")
-        lines.append("|---|---|---|---|---|")
+        lines.append(
+            "| date | decision_ts | exec_ts(planned) | exec_bar(actual) | "
+            "exit_date | exit_exec_ts |"
+        )
+        lines.append("|---|---|---|---|---|---|")
         for date, row in result.event_log.iterrows():
+            actual = result.actual_exec_by_date.get(pd.Timestamp(date).normalize())
+            if actual is None:
+                actual_str = "—"
+            else:
+                lo, hi = actual
+                actual_str = (
+                    f"{lo.time()}" if lo == hi else f"{lo.time()}–{hi.time()}"
+                )
             lines.append(
                 f"| {pd.Timestamp(date).date()} | {row['decision_ts']} | "
-                f"{row['execution_ts']} | {pd.Timestamp(row['exit_date']).date()} | "
-                f"{row['next_decision_ts']} |"
+                f"{row['execution_ts']} | {actual_str} | "
+                f"{pd.Timestamp(row['exit_date']).date()} | {row['exit_execution_ts']} |"
             )
     lines.append("")
     lines.append("## NAV / turnover / cost / cash")

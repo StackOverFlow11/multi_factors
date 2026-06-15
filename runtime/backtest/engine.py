@@ -35,7 +35,8 @@ from runtime.execution import BacktestExecution
 
 _NAV_COLUMNS = ["nav", "gross_return", "cost", "turnover", "net_return"]
 _EVENT_COLUMNS = [
-    "date", "decision_ts", "execution_ts", "exit_date", "next_decision_ts",
+    "date", "decision_ts", "execution_ts", "exit_date", "exit_execution_ts",
+    "next_decision_ts", "next_execution_ts",
 ]
 
 
@@ -126,10 +127,12 @@ class BacktestEngine:
                     "net_return": net,
                 }
             )
-            next_decision = (
-                periods[i + 1].decision_ts if i + 1 < len(periods) else pd.NaT
+            nxt = periods[i + 1] if i + 1 < len(periods) else None
+            self._record_event(
+                period,
+                next_decision_ts=nxt.decision_ts if nxt else pd.NaT,
+                next_execution_ts=nxt.execution_ts if nxt else pd.NaT,
             )
-            self._record_event(period, next_decision)
         out = pd.DataFrame(rows, columns=["date", *_NAV_COLUMNS])
         return out.set_index("date")
 
@@ -215,7 +218,11 @@ class BacktestEngine:
 
     # -- event log (I5a auditability) ------------------------------------- #
     def _record_event(
-        self, period: HoldingPeriod, next_decision_ts: pd.Timestamp
+        self,
+        period: HoldingPeriod,
+        *,
+        next_decision_ts: pd.Timestamp,
+        next_execution_ts: pd.Timestamp,
     ) -> None:
         self._event_log.append(
             {
@@ -223,7 +230,9 @@ class BacktestEngine:
                 "decision_ts": period.decision_ts,
                 "execution_ts": period.execution_ts,
                 "exit_date": period.exit_date,
+                "exit_execution_ts": period.exit_execution_ts,
                 "next_decision_ts": next_decision_ts,
+                "next_execution_ts": next_execution_ts,
             }
         )
 

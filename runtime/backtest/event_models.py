@@ -56,6 +56,7 @@ class DailyCloseEventModel:
                 exit_date=exit_date,
                 decision_ts=date,
                 execution_ts=date,
+                exit_execution_ts=exit_date,  # priced at the exit date's close
             )
             for date, exit_date in pairs
         ]
@@ -155,6 +156,7 @@ class IntradayTailEventModel:
         out: list[HoldingPeriod] = []
         for date, exit_date in self._pairs:
             day = pd.Timestamp(date).normalize()
+            exit_day = pd.Timestamp(exit_date).normalize()
             out.append(
                 HoldingPeriod(
                     date=date,
@@ -162,6 +164,9 @@ class IntradayTailEventModel:
                     exit_date=exit_date,
                     decision_ts=day + decision,
                     execution_ts=day + execution,
+                    # the book is priced out at the exit date's execution-window
+                    # start (the planned exit fill time), NOT close-to-close.
+                    exit_execution_ts=exit_day + execution,
                 )
             )
         return out

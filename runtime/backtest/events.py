@@ -35,8 +35,12 @@ class HoldingPeriod:
     """One settled holding period with an explicit, auditable time basis.
 
     ``entry_date`` / ``exit_date`` are the price anchors (a pricing provider maps
-    ``(anchor_date, symbol) -> price``); ``decision_ts`` / ``execution_ts`` are
-    timestamps recorded for auditability (they may carry intra-day precision).
+    ``(anchor_date, symbol) -> price``); ``decision_ts`` / ``execution_ts`` are the
+    entry timestamps recorded for auditability, and ``exit_execution_ts`` is the
+    (planned) timestamp at which the book is priced out at ``exit_date`` — so the
+    holding period's time basis is fully explicit (``execution_ts`` ->
+    ``exit_execution_ts``), with no need to infer it from the next period (which
+    does not exist for the final period). They may carry intra-day precision.
     ``date`` is the rebalance label used for scores, universe selection, and the
     NAV index — for the daily model it equals ``entry_date``.
     """
@@ -46,6 +50,7 @@ class HoldingPeriod:
     exit_date: pd.Timestamp
     decision_ts: pd.Timestamp
     execution_ts: pd.Timestamp
+    exit_execution_ts: pd.Timestamp | None = None
 
 
 def trading_calendar(prices: pd.DataFrame) -> pd.DatetimeIndex:

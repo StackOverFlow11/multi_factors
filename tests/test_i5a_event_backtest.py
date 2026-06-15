@@ -17,6 +17,7 @@ Covers the goal's four test groups:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -25,6 +26,9 @@ import yaml
 from pandas.testing import assert_frame_equal
 from pydantic import ValidationError
 
+from data.cache.intraday_cache import TushareIntradayCache
+from data.cache.intraday_coverage import IntradayCoverageLedger
+from data.cache.intraday_parquet_store import IntradayParquetStore
 from data.clean.intraday_schema import normalize_intraday_bars
 from data.clean.schema import normalize_panel
 from portfolio.construct import TopNEqualWeight
@@ -355,3 +359,84 @@ def test_invalid_execution_window_fails_readably():
     d["intraday"]["execution_window"] = ["14:49:00", "14:56:59"]  # before decision
     with pytest.raises(ValidationError, match="execution_window"):
         RootConfig(**d)
+
+
+# --------------------------------------------------------------------------- #
+# 5. Partial cache coverage (require_cache_coverage semantics) + event audit
+# --------------------------------------------------------------------------- #
+def _synthetic_stk_mins(symbol, start_dt, end_dt):
+    """Raw stk_mins-shaped 1min bars for [start_dt, end_dt] (one bar at 14:51/day)."""
+    rows = []
+    day = pd.Timestamp(start_dt).normalize()
+    end = pd.Timestamp(end_dt).normalize()
+    while day <= end:
+        for clock in ("09:31:00", "14:51:00"):
+            ts = day + pd.Timedelta(clock)
+            rows.append(
+                {"ts_code": symbol, "trade_time": str(ts), "open": 10.0,
+                 "high": 10.0, "low": 10.0, "close": 10.0, "vol": 1.0, "amount": 10.0}
+            )
+        day += pd.Timedelta(days=1)
+    return pd.DataFrame(rows)
+
+
+def _cfg_with_cache(tmp_path, start, end, *, require: bool) -> RootConfig:
+    d = _i5a_dict()
+    d["data"]["cache"]["root_dir"] = str(tmp_path)
+    d["data"]["start"] = start
+    d["data"]["end"] = end
+    d["intraday"]["require_cache_coverage"] = require
+    return RootConfig(**d)
+
+
+def _warm_one_symbol(tmp_path, symbol, start, end):
+    cache = TushareIntradayCache(IntradayParquetStore(str(tmp_path)), IntradayCoverageLedger(str(tmp_path)))
+    cache.stk_mins_1min(
+        [symbol], f"{start} 00:00:00", f"{end} 23:59:59", _synthetic_stk_mins, freq="1min"
+    )
+
+
+def test_partial_coverage_required_fails(tmp_path):
+    from qt.intraday_tail_framework import _load_minute_bars_cache_only
+
+    start, end = "2024-01-02", "2024-01-03"
+    _warm_one_symbol(tmp_path, "AAA.SH", start, end)  # only AAA is covered
+    cfg = _cfg_with_cache(tmp_path, start, end, require=True)
+    log = logging.getLogger("test.i5a")
+    # require_cache_coverage=true + one uncovered symbol -> hard blocker (no silent drop).
+    with pytest.raises(ValueError, match="require_cache_coverage=true"):
+        _load_minute_bars_cache_only(cfg, ["AAA.SH", "BBB.SH"], log)
+
+
+def test_partial_coverage_lenient_drops_uncovered(tmp_path):
+    from qt.intraday_tail_framework import _load_minute_bars_cache_only
+
+    start, end = "2024-01-02", "2024-01-03"
+    _warm_one_symbol(tmp_path, "AAA.SH", start, end)
+    cfg = _cfg_with_cache(tmp_path, start, end, require=False)
+    log = logging.getLogger("test.i5a")
+    bars, covered, uncovered, live = _load_minute_bars_cache_only(cfg, ["AAA.SH", "BBB.SH"], log)
+    assert covered == ["AAA.SH"]
+    assert uncovered == ["BBB.SH"]
+    assert live == 0                 # read-only: zero live stk_mins calls
+    assert not bars.empty
+
+
+def test_event_log_exposes_exit_and_next_execution_anchors():
+    panel, universe, scores = _daily_inputs()
+    engine = BacktestEngine(
+        model=DailyCloseEventModel(panel), universe=universe, scores=scores,
+        constructor=TopNEqualWeight(2), execution=SimExecution(), selection_panel=panel,
+    )
+    engine.run()
+    ev = engine.event_log()
+    for col in ("exit_execution_ts", "next_decision_ts", "next_execution_ts"):
+        assert col in ev.columns
+    # daily: the exit execution anchor is the exit date's close.
+    assert (ev["exit_execution_ts"] == ev["exit_date"]).all()
+    # consecutive periods chain: next_execution_ts == the following row's execution_ts.
+    execs = list(ev["execution_ts"])
+    nexts = list(ev["next_execution_ts"])
+    for i in range(len(execs) - 1):
+        assert nexts[i] == execs[i + 1]
+    assert pd.isna(nexts[-1])  # last settled period has no successor
