@@ -142,6 +142,7 @@ class IntradayTailEventModel:
         price_limit_check: bool = False,
         limit_tolerance: float = 1e-6,
         require_price_limit_coverage: bool = True,
+        precomputed_prices: tuple[pd.DataFrame, list[ExecutionFill]] | None = None,
     ) -> None:
         self._calendar_panel = calendar_panel
         self._cfg = cfg or IntradayExecutionConfig()
@@ -154,7 +155,17 @@ class IntradayTailEventModel:
         )
         symbols = sorted({str(s) for s in bars.index.get_level_values("symbol")})
         self._symbols = symbols
-        if anchor_dates and symbols:
+        # The execution-price matrix + fills are a PURE function of
+        # (bars, anchor_dates, symbols, cfg). When several models share the SAME
+        # bars/cfg (e.g. one fresh model per quantile group in I5d), the caller may
+        # pass ``precomputed_prices`` — the exact ``(prices, fills)`` returned by
+        # ``build_execution_prices`` over those same inputs — so the heavy matrix is
+        # built ONCE and reused, while each model keeps its OWN fresh mutable
+        # feasibility diagnostics. Default None reproduces the original build
+        # in-place (byte-identical I5a/I5b behaviour, locked by tests).
+        if precomputed_prices is not None:
+            prices, fills = precomputed_prices
+        elif anchor_dates and symbols:
             prices, fills = build_execution_prices(
                 bars, anchor_dates, symbols, self._cfg
             )
