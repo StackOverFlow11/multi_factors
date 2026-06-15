@@ -216,8 +216,74 @@ class PortfolioCfg(_Strict):
 class BacktestCfg(_Strict):
     initial_nav: float = 1.0
     rebalance: Literal["monthly"] = "monthly"
-    event_order: str = "close_to_next_period"
+    # ``close_to_next_period`` = the daily close-to-close model (default, unchanged).
+    # ``intraday_tail_rebalance`` = the I5a 14:50-decision / 14:51-execution model,
+    # which requires ``intraday.enabled=true`` (enforced on RootConfig).
+    event_order: Literal["close_to_next_period", "intraday_tail_rebalance"] = (
+        "close_to_next_period"
+    )
     cash_return: float = 0.0
+
+
+# Execution models the intraday tail event model can price (I5a: just the
+# conservative first one). Coarser/auction proxies are future work and rejected
+# readably so a config can never silently fall back to a wrong model.
+_SUPPORTED_INTRADAY_EXECUTION_MODELS: tuple[str, ...] = ("next_minute_close",)
+
+
+def _parse_hms(value: str) -> int:
+    """Parse an ``HH:MM:SS`` clock string to seconds-since-midnight (validation only)."""
+    parts = str(value).split(":")
+    if len(parts) != 3:
+        raise ValueError(f"expected HH:MM:SS, got {value!r}")
+    h, m, s = (int(p) for p in parts)
+    if not (0 <= h < 24 and 0 <= m < 60 and 0 <= s < 60):
+        raise ValueError(f"out-of-range clock value {value!r}")
+    return h * 3600 + m * 60 + s
+
+
+class IntradayCfg(_Strict):
+    """Opt-in intraday tail-rebalance event model declaration (I5a).
+
+    Off by default; all daily configs validate unchanged. When the backtest's
+    ``event_order`` is ``intraday_tail_rebalance`` this section must have
+    ``enabled=true`` (enforced on RootConfig). ``decision_time`` is the signal
+    cutoff (features must satisfy ``available_time <= decision_time``);
+    ``execution_window`` is where the fill bar is taken; the window must start
+    strictly after the decision and be non-empty.
+    """
+
+    enabled: bool = False
+    decision_time: str = "14:50:00"
+    data_lag: str = "1min"
+    session_open: str = "09:30:00"
+    execution_model: str = "next_minute_close"
+    execution_window: tuple[str, str] = ("14:51:00", "14:56:59")
+    require_cache_coverage: bool = True
+    missing_execution: Literal["block"] = "block"
+
+    @model_validator(mode="after")
+    def _check_execution(self) -> "IntradayCfg":
+        if self.execution_model not in _SUPPORTED_INTRADAY_EXECUTION_MODELS:
+            raise ValueError(
+                f"intraday.execution_model {self.execution_model!r} is not "
+                f"supported; choose one of {_SUPPORTED_INTRADAY_EXECUTION_MODELS}."
+            )
+        try:
+            decision = _parse_hms(self.decision_time)
+            start = _parse_hms(self.execution_window[0])
+            end = _parse_hms(self.execution_window[1])
+        except ValueError as exc:
+            raise ValueError(
+                f"intraday time fields must be HH:MM:SS clock strings: {exc}"
+            ) from exc
+        if not (start > decision and start <= end):
+            raise ValueError(
+                "intraday.execution_window must satisfy "
+                "decision_time < window_start <= window_end (got "
+                f"decision={self.decision_time}, window={list(self.execution_window)})."
+            )
+        return self
 
 
 class CostCfg(_Strict):
@@ -559,6 +625,9 @@ class RootConfig(_Strict):
     cost: CostCfg
     analytics: AnalyticsCfg = Field(default_factory=AnalyticsCfg)
     output: OutputCfg
+    # P-I5a intraday tail event model (consumed only by run-phase-i5a-intraday and
+    # any backtest with event_order='intraday_tail_rebalance'). Off by default.
+    intraday: IntradayCfg | None = None
     oos: OOSCfg | None = None
     # P3-4 robustness matrix (consumed only by run-phase3-robustness).
     robustness: RobustnessCfg | None = None
@@ -566,6 +635,24 @@ class RootConfig(_Strict):
     subset_validation: SubsetValidationCfg | None = None
     # P4-3 data updater (consumed only by data-update).
     data_update: DataUpdateCfg | None = None
+
+    @model_validator(mode="after")
+    def _check_intraday_event_order(self) -> "RootConfig":
+        """``intraday_tail_rebalance`` requires an enabled ``intraday`` section.
+
+        The daily default (``close_to_next_period``) needs no intraday section, so
+        every existing config validates unchanged. Selecting the intraday event
+        model without ``intraday.enabled=true`` is a configuration error (it would
+        otherwise silently run the daily model).
+        """
+        if self.backtest.event_order == "intraday_tail_rebalance":
+            if self.intraday is None or not self.intraday.enabled:
+                raise ValueError(
+                    "backtest.event_order='intraday_tail_rebalance' requires an "
+                    "'intraday' section with enabled=true; got "
+                    f"intraday={'None' if self.intraday is None else 'enabled=false'}."
+                )
+        return self
 
     @model_validator(mode="after")
     def _check_subset_groups_reference_enabled_factors(self) -> "RootConfig":
