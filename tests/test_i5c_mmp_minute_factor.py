@@ -211,6 +211,33 @@ def test_i5c_multi_day_no_prior_day_tail_carryover():
     assert counts.loc[(pd.Timestamp("2024-01-03"), "000001.SZ")] == 2
 
 
+def test_i5c_pre_session_bars_excluded_from_window():
+    # The MMP window is [session_open, decision_time]: a bar before session_open must
+    # NOT feed the rolling baseline. 20 pre-session bars (09:00..09:19) + ONE
+    # in-session bar (09:31) -> that bar has no prior-20 IN-SESSION baseline -> NaN.
+    specs = [
+        (f"{_DAY} {9:02d}:{m:02d}:00", "000001.SZ", 10.0, 10.1, 9.9, 10.05, 100.0 + m)
+        for m in range(20)  # 09:00..09:19, all before the 09:30 session open
+    ]
+    specs.append((f"{_DAY} 09:31:00", "000001.SZ", 10.0, 10.2, 9.8, 10.1, 200.0))
+    out = asof_daily_features(_mbars(specs), features=["mmp_ew"], session_open="09:30:00")
+    assert np.isnan(out[_MMP_COL].iloc[0])
+    counts = mmp_valid_minute_counts(_mbars(specs), session_open="09:30:00")
+    assert int(counts.iloc[0]) == 0
+
+
+def test_i5c_pre_session_bars_do_not_change_in_session_score():
+    # Prepending pre-session bars must leave a full in-session day's MMP unchanged.
+    in_session = _controlled_day(n=25)  # 09:31.. (all >= 09:30)
+    base = asof_daily_features(_mbars(in_session), features=["mmp_ew"])
+    pre = [
+        (f"{_DAY} {9:02d}:{m:02d}:00", "000001.SZ", 9.0, 9.1, 8.9, 9.0, 50.0)
+        for m in range(10)  # 09:00..09:09, before session open
+    ]
+    withpre = asof_daily_features(_mbars(pre + in_session), features=["mmp_ew"])
+    pd.testing.assert_frame_equal(base, withpre)
+
+
 def test_i5c_multi_symbol_isolation():
     a = _controlled_day(symbol="000001.SZ", n=22)
     b = _controlled_day(symbol="000002.SZ", n=22)

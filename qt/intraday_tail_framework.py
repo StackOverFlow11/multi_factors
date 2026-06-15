@@ -321,7 +321,9 @@ def _minute_count_summary(cfg: RootConfig, bars: pd.DataFrame) -> dict[str, floa
     """
     ic = cfg.intraday
     assert ic is not None
-    counts = mmp_valid_minute_counts(bars, decision_time=ic.decision_time)
+    counts = mmp_valid_minute_counts(
+        bars, decision_time=ic.decision_time, session_open=ic.session_open
+    )
     if counts.empty:
         return None
     arr = counts.to_numpy(dtype=float)
