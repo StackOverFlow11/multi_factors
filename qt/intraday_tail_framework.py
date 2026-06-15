@@ -35,6 +35,7 @@ from data.cache.intraday_coverage import IntradayCoverageLedger
 from data.cache.intraday_parquet_store import IntradayParquetStore
 from data.clean.intraday_aggregate import asof_daily_features
 from data.clean.intraday_schema import RAW_INTRADAY_FREQ, normalize_intraday_bars
+from data.feed.tushare_flags import TushareFlagsFeed
 from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
 from qt.pipeline import (
@@ -51,6 +52,37 @@ from runtime.intraday_execution import IntradayExecutionConfig
 
 _SCORE_FEATURE = "intraday_ret"  # the I3 feature family used as the smoke score
 _LOGGER_NAME = "qt.intraday_tail_framework"
+_DEFAULT_REPORT_NAME = "phase_i5a_intraday_tail_framework"
+
+
+def _report_basename(cfg: RootConfig) -> str:
+    """Report/log basename: configurable so I5b never clobbers the I5a artifact."""
+    return cfg.output.intraday_report_name or _DEFAULT_REPORT_NAME
+
+
+def _report_heading(price_limit_check: bool) -> tuple[str, str]:
+    """(H1 title, intro paragraph) — names the actual study (I5a vs I5b).
+
+    When execution-time price-limit feasibility is on this is the I5b
+    execution-hardening run, so the heading must not stay frozen at the I5a label
+    (the same stale-wording trap fixed for the P3-7/P3-8 reports).
+    """
+    if price_limit_check:
+        return (
+            "# Phase I5b — Intraday Execution-Time Price-Limit Feasibility "
+            "(execution hardening)",
+            "**This is an execution-feasibility hardening run, NOT a research "
+            "result.** It extends the I5a intraday tail event model with "
+            "direction-aware raw `stk_limit` blocking at the execution minute; the "
+            "score is still a single PIT-safe I3 feature used only to exercise the "
+            "shared event-driven backtest engine.",
+        )
+    return (
+        "# Phase I5a — Intraday Tail-Rebalance Event Framework (architecture smoke)",
+        "**This is an architecture/framework run, NOT a research result.** The "
+        "score is a single PIT-safe I3 feature used solely to exercise the shared "
+        "event-driven backtest engine with an intraday tail event model.",
+    )
 
 
 @dataclass(frozen=True)
@@ -74,6 +106,13 @@ class I5aResult:
     # non-blocked fills (so a 14:52 fill when 14:51 was missing is auditable, vs
     # the planned execution_ts). Empty tuple key absent -> no fill that date.
     actual_exec_by_date: dict[pd.Timestamp, tuple[pd.Timestamp, pd.Timestamp]]
+    # I5b execution-time price-limit feasibility diagnostics.
+    price_limit_check: bool
+    limit_coverage: dict[str, int]
+    stk_limit_gap_fetches: int
+    up_limit_blocked_buys: int
+    down_limit_blocked_sells: int
+    missing_limit_rows: int
     report_path: Path
     log_path: Path
 
@@ -165,6 +204,44 @@ def _load_minute_bars_cache_only(
     return bars, covered, uncovered, live_calls
 
 
+_STK_LIMIT_ENDPOINT = "stk_limit"
+
+
+def _load_price_limits(
+    cfg: RootConfig, covered: list[str], cache, logger
+) -> tuple[pd.DataFrame | None, int]:
+    """Load raw ``stk_limit`` rows for I5b execution-time limit feasibility.
+
+    Returns ``(limits_df, stk_limit_gap_fetches)``. The limits flow through the
+    SAME P4 read-through cache as the daily endpoints (no new endpoint); a
+    fully-covered window costs zero gap fetches. The cache stores RAW
+    ``up_limit`` / ``down_limit`` only — the model compares them to the RAW
+    execution-minute close, never qfq / daily close.
+    """
+    if cfg.intraday is None or not cfg.intraday.price_limit_check:
+        return None, 0
+    if not cfg.data.external_secret_file:
+        raise ValueError(
+            "intraday.price_limit_check=true requires data.external_secret_file "
+            "(token for the raw stk_limit endpoint)."
+        )
+    before = int(cache.stats().get(_STK_LIMIT_ENDPOINT, 0)) if cache is not None else 0
+    feed = TushareFlagsFeed(
+        cfg.data.external_secret_file,
+        token_key=cfg.data.tushare_token_key,
+        cache=cache,
+    )
+    limits = feed.limits(covered, cfg.data.start, cfg.data.end)
+    after = int(cache.stats().get(_STK_LIMIT_ENDPOINT, 0)) if cache is not None else 0
+    gap_fetches = after - before
+    logger.info(
+        "intraday price limits: %d raw stk_limit rows for %d covered symbols; "
+        "stk_limit cache gap_fetches=%d (read-through P4 cache; raw up/down only)",
+        len(limits), len(covered), gap_fetches,
+    )
+    return limits, gap_fetches
+
+
 def _score_panel(cfg: RootConfig, bars: pd.DataFrame, logger) -> tuple[pd.Series, str]:
     """Deterministic PIT-safe score = the I3 intraday return feature.
 
@@ -193,9 +270,10 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
     cfg = load_config(config_path)
     _check_i5a_preconditions(cfg)
 
+    basename = _report_basename(cfg)
     log_dir = Path(cfg.output.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "phase_i5a_intraday_tail_framework.log"
+    log_path = log_dir / f"{basename}.log"
     logger = _make_logger(log_path, name=_LOGGER_NAME)
     started = time.monotonic()
 
@@ -208,7 +286,18 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
     score_series, score_feature = _score_panel(cfg, bars, logger)
     scores = _FrameScores(score_series)
 
-    model = IntradayTailEventModel(calendar_panel=panel, bars=bars, cfg=exec_cfg)
+    price_limits, stk_limit_gap_fetches = _load_price_limits(cfg, covered, cache, logger)
+    ic = cfg.intraday
+    assert ic is not None  # guarded by _check_i5a_preconditions
+    model = IntradayTailEventModel(
+        calendar_panel=panel,
+        bars=bars,
+        cfg=exec_cfg,
+        price_limits=price_limits,
+        price_limit_check=ic.price_limit_check,
+        limit_tolerance=ic.limit_tolerance,
+        require_price_limit_coverage=ic.require_price_limit_coverage,
+    )
     execution = SimExecution(fee_rate=cfg.cost.fee_rate)
     engine = BacktestEngine(
         model=model,
@@ -243,7 +332,7 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
         lo, hi = actual_exec.get(d, (t, t))
         actual_exec[d] = (min(lo, t), max(hi, t))
 
-    report_path = Path(cfg.output.report_dir) / "phase_i5a_intraday_tail_framework.md"
+    report_path = Path(cfg.output.report_dir) / f"{basename}.md"
     result = I5aResult(
         config=cfg,
         event_order=cfg.backtest.event_order,
@@ -259,6 +348,12 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
         holdings_log=engine.holdings_log(),
         blocked_fill_counts=blocked_counts,
         actual_exec_by_date=actual_exec,
+        price_limit_check=model.price_limit_check_enabled(),
+        limit_coverage=model.limit_coverage(),
+        stk_limit_gap_fetches=stk_limit_gap_fetches,
+        up_limit_blocked_buys=model.up_limit_blocked_buys(),
+        down_limit_blocked_sells=model.down_limit_blocked_sells(),
+        missing_limit_rows=model.missing_limit_rows(),
         report_path=report_path,
         log_path=log_path,
     )
@@ -298,14 +393,11 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     nav = result.nav_table
+    title, intro = _report_heading(result.price_limit_check)
     lines: list[str] = []
-    lines.append("# Phase I5a — Intraday Tail-Rebalance Event Framework (architecture smoke)")
+    lines.append(title)
     lines.append("")
-    lines.append(
-        "**This is an architecture/framework run, NOT a research result.** The "
-        "score is a single PIT-safe I3 feature used solely to exercise the shared "
-        "event-driven backtest engine with an intraday tail event model."
-    )
+    lines.append(intro)
     lines.append("")
     lines.append("## Event model")
     lines.append("")
@@ -409,6 +501,55 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
         "nothing) and is NEVER replaced by a daily close."
     )
     lines.append("")
+    lines.append("## Execution-time price-limit feasibility (I5b)")
+    lines.append("")
+    if not result.price_limit_check:
+        lines.append(
+            "- **disabled** (`intraday.price_limit_check=false`): feasibility is the "
+            "base bar-exists rule only (missing/NaN execution bar blocks both "
+            "directions). No raw `stk_limit` comparison was performed."
+        )
+    else:
+        cov = result.limit_coverage
+        lines.append(
+            "- **enabled** (`intraday.price_limit_check=true`): a buy is blocked at "
+            "the raw upper limit and a sell at the raw lower limit, directionally."
+        )
+        lines.append(
+            "- **comparison basis**: the selected execution-minute **raw** 1min "
+            "close vs the symbol/date **raw** `stk_limit` band — NOT qfq, NOT daily "
+            "close, NOT a daily-close-derived limit flag. (The intraday cache stores "
+            "unadjusted bars and `stk_limit` is raw, so the comparison is "
+            "RAW-vs-RAW.)"
+        )
+        lines.append(
+            f"- limit tolerance (raw-price equality band): "
+            f"`{cfg.intraday.limit_tolerance}`; "
+            f"require_price_limit_coverage: `{cfg.intraday.require_price_limit_coverage}`"
+        )
+        lines.append(
+            f"- limit coverage over rebalance anchors: required "
+            f"{cov.get('required', 0)} (rebalance date, symbol) pairs; present "
+            f"{cov.get('present', 0)}; missing {cov.get('missing', 0)}"
+        )
+        lines.append(
+            f"- **stk_limit cache gap-fetches this run: {result.stk_limit_gap_fetches}** "
+            "(read through the existing P4 cache — only uncovered date ranges or the "
+            "recent-tail refresh window hit the API; never a minute/stk_mins fetch. A "
+            "window whose tail is older than refresh_recent_days costs 0; a recent "
+            "window re-pulls its tail by policy.)"
+        )
+        lines.append(
+            f"- buys blocked by a raw up-limit: {result.up_limit_blocked_buys}; "
+            f"sells blocked by a raw down-limit: {result.down_limit_blocked_sells}"
+        )
+        lines.append(
+            f"- evaluated pairs with no usable raw limit row (unchecked): "
+            f"{result.missing_limit_rows} "
+            "(lenient mode counts/discloses these and falls back to the bar-exists "
+            "rule; strict mode fails before any result — never a silent passed check)"
+        )
+    lines.append("")
     lines.append("## Achieved holdings (sample)")
     lines.append("")
     h = result.holdings_log
@@ -427,13 +568,22 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
     lines.append("")
     lines.append("## Limitations (explicit)")
     lines.append("")
-    lines.append(
-        "- **Execution-time feasibility is the minimum I5a rule**: a missing/NaN "
-        "execution bar blocks BOTH directions. Price-limit feasibility at execution "
-        "time is NOT applied — the daily panel carries only daily-close-derived "
-        "limit flags, which the I5a contract forbids using for execution. Raw "
-        "`stk_limit` vs execution-minute-close is future work."
-    )
+    if result.price_limit_check:
+        lines.append(
+            "- **Execution-time feasibility (I5b)**: a missing/NaN execution bar "
+            "blocks BOTH directions; on top of that, raw `stk_limit` blocks buys at "
+            "the upper limit and sells at the lower limit, comparing the raw "
+            "execution-minute close to raw limits (see the section above). Remaining "
+            "gap: only the price-limit and bar-existence constraints are modeled; "
+            "partial-fill / liquidity / volume caps at the execution minute are not."
+        )
+    else:
+        lines.append(
+            "- **Execution-time feasibility is the base bar-exists rule**: a "
+            "missing/NaN execution bar blocks BOTH directions. Raw `stk_limit` "
+            "price-limit feasibility is available (`intraday.price_limit_check`) but "
+            "DISABLED in this config, so no limit comparison was applied."
+        )
     lines.append(
         "- **ST / suspension availability**: suspended stocks have no minute bars, "
         "so they are blocked by the missing-bar rule; explicit ST status is NOT "

@@ -261,6 +261,26 @@ class IntradayCfg(_Strict):
     execution_window: tuple[str, str] = ("14:51:00", "14:56:59")
     require_cache_coverage: bool = True
     missing_execution: Literal["block"] = "block"
+    # I5b execution-time price-limit feasibility. OFF by default, so every I5a /
+    # daily config validates and behaves unchanged. When enabled, the intraday
+    # tail model gates buys at the raw upper limit and sells at the raw lower
+    # limit, comparing the selected execution-minute RAW close to raw ``stk_limit``
+    # (never qfq / daily close). ``require_price_limit_coverage`` makes a missing
+    # required (anchor date, symbol) limit row a hard, pre-result failure instead
+    # of a silent "checked" pass; ``limit_tolerance`` is the raw-price equality
+    # band for the at-limit test.
+    price_limit_check: bool = False
+    require_price_limit_coverage: bool = True
+    limit_tolerance: float = 1e-6
+
+    @field_validator("limit_tolerance")
+    @classmethod
+    def _check_limit_tolerance(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError(
+                f"intraday.limit_tolerance must be >= 0; got {v!r}."
+            )
+        return v
 
     @model_validator(mode="after")
     def _check_execution(self) -> "IntradayCfg":
@@ -320,6 +340,11 @@ class OutputCfg(_Strict):
     # generalization check) sets its own title so the report header names the
     # actual study instead of the machinery's default phase label (P3-8).
     subset_report_title: str | None = None
+    # Report/log basename for the intraday tail smoke (run-phase-i5a-intraday).
+    # None keeps the historical 'phase_i5a_intraday_tail_framework'; the I5b
+    # execution-feasibility config sets its own so it never overwrites the
+    # accepted I5a artifact (same precedent as baseline_report_name).
+    intraday_report_name: str | None = None
 
 
 class OOSCfg(_Strict):
