@@ -1,0 +1,108 @@
+# Phase I5a — intraday tail-rebalance event-framework smoke (architecture, NOT research).
+#
+# Proves the shared event-driven backtest engine drives an IntradayTailEventModel
+# end-to-end on REAL SH/SZ minute data: decision at 14:50, execution at the first
+# valid 1min close in [14:51, 14:56:59], exec-to-exec holding returns. The score is
+# a single PIT-safe I3 feature (intraday_ret_0930_1450), not a research alpha.
+#
+# Minute bars are read from the EXISTING intraday cache only (read-only; a cache
+# miss is a hard blocker, never a silent warm -> zero stk_mins live calls). The
+# daily panel + PIT index membership come through the existing P4 read-through cache.
+# SSE50 (000016.SH) is SH/SZ-only; window is short + recent (covered by the cache).
+
+project:
+  name: quantitative_trading_phase_i5a_intraday_tail
+  timezone: Asia/Shanghai
+data:
+  source: tushare
+  freq: D
+  start: '2026-03-03'
+  end: '2026-06-12'
+  external_secret_file: /home/shaofl/Projects/financial_projects/.config.json
+  tushare_token_key: tushare.token
+  output_name: i5a_daily
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+universe:
+  type: index
+  index_code: 000016.SH
+  symbols: []
+  min_listing_days: 60
+  filters:
+    # Selection-level daily tradability flags are DISABLED for this smoke: at the
+    # 14:50 decision the daily-close-derived limit flag is an EOD value, and the
+    # honest blocking happens at EXECUTION via minute bars (a suspended/halted name
+    # has no minute bar and is blocked there). Disclosed in the report.
+    missing_close: true
+    suspended: false
+    st: false
+    limit_up_down: false
+# factors is required by the schema but the I5a runner ignores it: the score is the
+# I3 intraday_ret feature, not a config factor. Kept as a minimal valid placeholder.
+factors:
+- name: momentum_20
+  enabled: true
+  params:
+    window: 20
+    price_col: close
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: false
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+alpha:
+  model: equal_weight
+  params: {}
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 10
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: intraday_tail_rebalance
+  cash_return: 0.0
+intraday:
+  enabled: true
+  decision_time: '14:50:00'
+  data_lag: 1min
+  session_open: '09:30:00'
+  execution_model: next_minute_close
+  execution_window:
+  - '14:51:00'
+  - '14:56:59'
+  require_cache_coverage: true
+  missing_execution: block
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+analytics:
+  forward_return_periods:
+  - 1
+  - 5
+  - 20
+  quantiles: 5
+  benchmark: null
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true

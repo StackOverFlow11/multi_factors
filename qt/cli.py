@@ -156,6 +156,29 @@ def _cmd_run_phase3_subset(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_phase_i5a_intraday(args: argparse.Namespace) -> int:
+    """Run the I5a intraday tail-rebalance architecture smoke + report."""
+    from qt.intraday_tail_framework import run_phase_i5a_intraday
+
+    try:
+        result = run_phase_i5a_intraday(args.config)
+    except (ConfigError, ValueError, FileNotFoundError, RuntimeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    final_nav = (
+        result.nav_table["nav"].iloc[-1] if not result.nav_table.empty else float("nan")
+    )
+    n_blocked = sum(result.blocked_fill_counts.values())
+    print(
+        f"OK run-phase-i5a-intraday: periods={len(result.nav_table)}, "
+        f"covered={result.covered_symbols}/{result.requested_symbols}, "
+        f"stk_mins_live_calls={result.minute_live_calls}, blocked_fills={n_blocked}, "
+        f"final_nav={final_nav:.6f}\n"
+        f"report: {result.report_path}"
+    )
+    return 0
+
+
 def _cmd_data_update(args: argparse.Namespace) -> int:
     """Warm/update the tushare caches (P4-3); never runs a backtest."""
     from qt.data_updater import format_summary, run_data_update
@@ -238,6 +261,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_du.add_argument("--config", required=True, help="Path to the YAML config.")
     p_du.set_defaults(func=_cmd_data_update)
+
+    p_i5a = sub.add_parser(
+        "run-phase-i5a-intraday",
+        help="Run the I5a intraday tail-rebalance architecture smoke (minute cache).",
+    )
+    p_i5a.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_i5a.set_defaults(func=_cmd_run_phase_i5a_intraday)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),
