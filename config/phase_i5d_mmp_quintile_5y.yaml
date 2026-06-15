@@ -1,0 +1,129 @@
+# Phase I5d — MMP Quintile 5Y Group Backtest (EXPLORATORY, NOT a performance claim).
+#
+# Ranks the I5c Minute Microstructure Pressure (MMP) daily score
+# (intraday_mmp20_ew_0930_1450) on each monthly rebalance date and splits the
+# cross-section into analytics.quantiles EQUAL-COUNT groups (Q1 = lowest score,
+# Q5 = highest). Each group runs as its own long-only equal-weight portfolio
+# through the SAME I5a/I5b intraday tail event model (14:50 decision / 14:51
+# execution, exec-to-exec returns) with raw stk_limit execution feasibility ON and
+# trading cost fee_rate=0.001. Factor math / event model / execution feasibility
+# are UNCHANGED — only the grouping + per-group orchestration is new. No tuning.
+#
+# Window = 5 complete years (2021-06-01 .. 2026-05-31). Primary universe = CSI500
+# (000905.SH): enough cross-section for 5 groups. Minute bars are read from the
+# EXISTING intraday cache ONLY on the monthly anchor dates (read-only; a miss is a
+# hard blocker -> zero stk_mins live calls). require_cache_coverage=false drops the
+# minute-uncovered constituents (DISCLOSED in the report; the WINDOW is not
+# shortened). Raw stk_limit flows through the same P4 read-through cache as the
+# daily endpoints.
+
+project:
+  name: quantitative_trading_phase_i5d_mmp_quintile_5y
+  timezone: Asia/Shanghai
+data:
+  source: tushare
+  freq: D
+  start: '2021-06-01'
+  end: '2026-05-31'
+  external_secret_file: /home/shaofl/Projects/financial_projects/.config.json
+  tushare_token_key: tushare.token
+  output_name: i5d_daily
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+universe:
+  type: index
+  index_code: 000905.SH
+  symbols: []
+  min_listing_days: 60
+  filters:
+    # Selection-level daily tradability flags stay DISABLED (as in I5b/I5c): the
+    # daily close limit flag is an EOD value not known at 14:50. The honest
+    # direction-aware blocking is execution-time raw stk_limit vs the raw
+    # execution-minute close.
+    missing_close: true
+    suspended: false
+    st: false
+    limit_up_down: false
+# factors is required by the schema but the runner ignores it: the score is the I3
+# mmp_ew feature (selected via intraday.score_feature), not a config factor.
+factors:
+- name: momentum_20
+  enabled: true
+  params:
+    window: 20
+    price_col: close
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: false
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+alpha:
+  model: equal_weight
+  params: {}
+portfolio:
+  # top_n is required by the schema but IGNORED by the grouped backtest: each
+  # quantile group holds ALL its bucket members (EqualWeightAll), not a top-N cut.
+  constructor: topn_equal_weight
+  top_n: 10
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: intraday_tail_rebalance
+  cash_return: 0.0
+intraday:
+  enabled: true
+  decision_time: '14:50:00'
+  data_lag: 1min
+  session_open: '09:30:00'
+  execution_model: next_minute_close
+  execution_window:
+  - '14:51:00'
+  - '14:56:59'
+  # A 5-year CSI500 minute history is not fully cached for every constituent; drop
+  # the uncovered names (disclosed in the report) instead of failing the whole run.
+  # The window is NOT shortened.
+  require_cache_coverage: false
+  missing_execution: block
+  # I5b execution-time raw price-limit feasibility stays ON.
+  price_limit_check: true
+  require_price_limit_coverage: true
+  limit_tolerance: 1.0e-06
+  # I5c: select the exploratory MMP minute factor as the PIT-safe daily score.
+  score_feature: mmp_ew
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+analytics:
+  forward_return_periods:
+  - 1
+  - 5
+  - 20
+  # number of equal-count quantile groups for the I5d grouped backtest.
+  quantiles: 5
+  benchmark: null
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+  intraday_report_name: phase_i5d_mmp_quintile_5y
+  intraday_report_title: Phase I5d — MMP Quintile 5Y Group Backtest
