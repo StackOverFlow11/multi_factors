@@ -42,6 +42,7 @@ class TushareCovariatesFeed:
         rate_limit: int | None = None,
         max_retries: int = 6,
         cache=None,
+        scheduler=None,
     ) -> None:
         self._secret_file = str(secret_file)
         self._token_key = token_key
@@ -53,6 +54,8 @@ class TushareCovariatesFeed:
         # ``pit_sw_intervals`` (index_member_all, P4-3) all read through it.
         # None keeps the historical direct fetch EXACTLY.
         self._cache = cache
+        # D5: optional shared GlobalRateLimiter; None keeps the per-call throttle.
+        self._scheduler = scheduler
 
     def _client(self):
         if self._pro is None:
@@ -63,7 +66,8 @@ class TushareCovariatesFeed:
 
     def _call(self, fn, **kwargs):
         return request_with_retry(
-            fn, max_retries=self._max_retries, rate_limit=self._rate_limit, **kwargs
+            fn, max_retries=self._max_retries, rate_limit=self._rate_limit,
+            scheduler=self._scheduler, **kwargs,
         )
 
     def industry(self, symbols: list[str]) -> dict[str, str]:

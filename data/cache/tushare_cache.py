@@ -114,6 +114,28 @@ FetchOne = Callable[[str, str, str], "pd.DataFrame | None"]
 FetchSnapshot = Callable[..., "pd.DataFrame | None"]
 
 
+class _FetchOk:
+    """A successful concurrent gap fetch (D5): carries the raw frame."""
+
+    __slots__ = ("raw",)
+
+    def __init__(self, raw) -> None:
+        self.raw = raw
+
+
+class _FetchError:
+    """A failed concurrent gap fetch (D5): carries the exception OBJECT only.
+
+    Re-raised on the main thread after durable successes; the message is the
+    feed-level secret-safe ``RuntimeError`` (exception type, never the token).
+    """
+
+    __slots__ = ("exc",)
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+
 class TushareCache:
     """Endpoint-level read-through cache (market bars + universe/tradability)."""
 
@@ -130,6 +152,7 @@ class TushareCache:
         source_version: str | None = None,
         not_ready_days: int = 0,
         recent_tail_overrides: dict[str, int] | None = None,
+        max_workers: int = 1,
     ) -> None:
         self._store = store
         self._ledger = ledger
@@ -150,6 +173,12 @@ class TushareCache:
         # REQUESTED range (not today-based) — e.g. fina_indicator refetches a long
         # trailing window of recent report periods to catch LATE disclosures.
         self._recent_tail_overrides = dict(recent_tail_overrides or {})
+        # D5: bounded concurrency for the dense per-symbol gap FETCH stage. 1
+        # (default) keeps the serial read-through path byte-identical; >1 fans the
+        # planned gap fetches onto a thread pool (the shared GlobalRateLimiter lives
+        # in the feeds, so the global quota holds), while store upserts + ledger
+        # writes stay on the main thread in deterministic order.
+        self._max_workers = max(1, int(max_workers))
         # per-instance endpoint fetch counters (cache stats; one increment per
         # gap/window/snapshot actually sent to the API). A fully-covered repeat
         # run leaves these at zero — the read-through hit rate is observable from
@@ -376,6 +405,12 @@ class TushareCache:
         columns: list[str],
         key_cols: list[str],
     ) -> pd.DataFrame:
+        # D5: only the opted-in multi-worker, multi-symbol case takes the
+        # concurrent path; everything else stays on the byte-identical serial loop.
+        if self._max_workers > 1 and len(symbols) > 1:
+            return self._read_through_concurrent(
+                endpoint, symbols, start, end, fetch, parse, columns, key_cols
+            )
         req_start = pd.Timestamp(start).normalize()
         req_end = pd.Timestamp(end).normalize()
         fields_hash = _fields_hash(columns)
@@ -408,6 +443,103 @@ class TushareCache:
         if not out:
             return pd.DataFrame(columns=columns)
         return pd.concat(out, ignore_index=True).reset_index(drop=True)
+
+    def _read_through_concurrent(
+        self, endpoint, symbols, start, end, fetch, parse, columns, key_cols
+    ) -> pd.DataFrame:
+        """D5 bounded-concurrency read-through: parallel fetch, serial durable writes.
+
+        Phase 1 (main thread): plan every uncovered gap (ledger reads use the D4
+        lookup cache). Phase 2: fetch the planned gaps on a bounded thread pool —
+        each fetch funnels through the feeds' shared ``GlobalRateLimiter``, so the
+        global quota holds. Phase 3 (main thread, deterministic plan order):
+        parse/upsert/record each SUCCESSFUL gap so it is durable, then re-raise the
+        first failure (a failed gap records no coverage and stays retryable, exactly
+        like the serial path). Phase 4: read the requested window back per symbol.
+        The store/ledger contents are independent of fetch completion order.
+        """
+        req_start = pd.Timestamp(start).normalize()
+        req_end = pd.Timestamp(end).normalize()
+        fields_hash = _fields_hash(columns)
+        forced = endpoint in self._force_refresh
+
+        # Phase 1 — plan (main thread).
+        plans: list[tuple[str, pd.Timestamp, pd.Timestamp]] = []
+        n_covered = 0
+        for symbol in symbols:
+            gaps = self._gaps_for(endpoint, symbol, req_start, req_end, forced)
+            if not gaps:
+                n_covered += 1
+            for gap_start, gap_end in gaps:
+                plans.append((symbol, gap_start, gap_end))
+
+        # Phase 2 — concurrent fetch (bounded by max_workers).
+        raw_results = self._fetch_plans_concurrent(plans, fetch)
+
+        # Phase 3 — deterministic durable writes (main thread, plan order).
+        first_exc: Exception | None = None
+        for (symbol, gap_start, gap_end), res in zip(plans, raw_results):
+            if isinstance(res, _FetchError):
+                if first_exc is None:
+                    first_exc = res.exc
+                continue
+            self.fetch_counts[endpoint] = self.fetch_counts.get(endpoint, 0) + 1
+            parsed = parse(res.raw)
+            if len(parsed):
+                self._store.upsert_symbol(endpoint, symbol, parsed, key_cols)
+                self.written_counts[endpoint] = (
+                    self.written_counts.get(endpoint, 0) + len(parsed)
+                )
+            self._record_gap_coverage(
+                endpoint, symbol, gap_start, gap_end, parsed, fields_hash
+            )
+        if first_exc is not None:
+            # earlier successful gaps are already durable; the failed gap is not
+            # recorded, so a later run retries it (serial-equivalent failure model).
+            raise first_exc
+
+        # Phase 4 — read back the requested window (symbol order).
+        out: list[pd.DataFrame] = []
+        for symbol in symbols:
+            cached = self._store.read_symbol(endpoint, symbol)
+            if not cached.empty:
+                mask = (cached["date"] >= req_start) & (cached["date"] <= req_end)
+                hit = cached.loc[mask, columns]
+                if not hit.empty:
+                    out.append(hit)
+        _LOGGER.info(
+            "cache %s: %d symbols, %d gap-fetches, %d fully-covered "
+            "(api calls=%d, workers=%d)",
+            endpoint, len(symbols), len(plans), n_covered,
+            self.fetch_counts[endpoint], self._max_workers,
+        )
+        if not out:
+            return pd.DataFrame(columns=columns)
+        return pd.concat(out, ignore_index=True).reset_index(drop=True)
+
+    def _fetch_plans_concurrent(self, plans, fetch):
+        """Fetch every planned ``(symbol, start, end)`` gap on a bounded pool.
+
+        Returns a list aligned to ``plans``: a ``_FetchOk(raw)`` or a
+        ``_FetchError(exc)`` per gap. Each task catches its OWN exception (so no
+        worker exception escapes the pool); the throttle/retry + the shared global
+        rate limiter live inside ``fetch`` (the feed closure).
+        """
+        if not plans:
+            return []
+        from concurrent.futures import ThreadPoolExecutor
+
+        def task(i):
+            symbol, gap_start, gap_end = plans[i]
+            try:
+                raw = fetch(symbol, _compact(gap_start), _compact(gap_end))
+                return _FetchOk(raw)
+            except Exception as exc:  # secret-safe: only the object is kept
+                return _FetchError(exc)
+
+        workers = min(self._max_workers, len(plans))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(task, range(len(plans))))
 
     def _gaps_for(self, endpoint, symbol, req_start, req_end, forced):
         """The uncovered sub-intervals to fetch (+ a forced trailing tail)."""

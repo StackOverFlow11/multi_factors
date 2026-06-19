@@ -85,6 +85,13 @@ data_update:
       - adj_factor
       - stk_mins_1min
     report_name: data_update_quality_report.md
+  # D5 opt-in bounded concurrency. max_workers=1 (default) keeps the warm fully
+  # serial — every existing config behaves exactly as before. >1 fans the dense
+  # per-symbol gap FETCH onto a bounded thread pool, all funneled through ONE
+  # shared global rate limiter (reusing rate_limit_per_min above), so the Tushare
+  # quota is never multiplied per thread; store + ledger writes stay deterministic.
+  concurrency:
+    max_workers: 1
 
 # --- unused by data-update (schema-only stubs) ------------------------------- #
 factors:

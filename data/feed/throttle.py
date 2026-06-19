@@ -18,25 +18,35 @@ def request_with_retry(
     *,
     max_retries: int = 6,
     rate_limit: int | None = None,
+    scheduler: Any = None,
     **kwargs: Any,
 ) -> Any:
-    """Call ``fn(**kwargs)`` with retry-on-error + per-minute throttle.
+    """Call ``fn(**kwargs)`` with retry-on-error + a per-minute throttle.
 
     Retries transient exceptions with exponential backoff up to ``max_retries``
-    attempts; on success sleeps ``60 / rate_limit`` seconds (no-op if unset).
-    Raises a readable ``RuntimeError`` (type only, never the token) if every
-    attempt fails.
+    attempts. Throttling has two mutually-exclusive modes:
+
+    * ``scheduler`` set (D5 bounded concurrency): acquire one global slot BEFORE
+      each attempt, so every worker's attempts (including retries) share one budget
+      — no per-call ``rate_limit`` sleep is added (that would double the spacing).
+    * ``scheduler`` unset (the historical serial path): on success sleep
+      ``60 / rate_limit`` seconds (no-op if unset).
+
+    Raises a readable ``RuntimeError`` (exception TYPE only, never the token /
+    payload) if every attempt fails.
     """
     attempts = max(1, int(max_retries))
     last_exc: Exception | None = None
     for attempt in range(attempts):
+        if scheduler is not None:
+            scheduler.acquire()  # global slot before EVERY attempt (incl. retries)
         try:
             result = fn(**kwargs)
         except Exception as exc:  # transient API / network error
             last_exc = exc
             time.sleep(min(2.0**attempt, 8.0))
             continue
-        if rate_limit:
+        if scheduler is None and rate_limit:
             time.sleep(60.0 / rate_limit)
         return result
     raise RuntimeError(

@@ -47,6 +47,7 @@ class TushareFeed(DataFeed):
         rate_limit: int | None = None,
         max_retries: int = 6,
         cache=None,
+        scheduler=None,
     ) -> None:
         self._secret_file = str(secret_file)
         self._token_key = token_key
@@ -59,6 +60,8 @@ class TushareFeed(DataFeed):
         # passes one in. The cache stores RAW rows only; front_adjust still runs
         # downstream, unchanged.
         self._cache = cache
+        # D5: optional shared GlobalRateLimiter; None keeps the per-call throttle.
+        self._scheduler = scheduler
 
     # -- secret handling ---------------------------------------------------- #
     def _read_token(self) -> str:
@@ -82,6 +85,7 @@ class TushareFeed(DataFeed):
             fn,
             max_retries=self._max_retries,
             rate_limit=self._rate_limit,
+            scheduler=self._scheduler,
             **kwargs,
         )
 
