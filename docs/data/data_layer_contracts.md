@@ -3,7 +3,7 @@
 > 目的：把 **`cache`（缓存）** 与 **`store`（面板存储）** 的边界写成可提交的契约，
 > 让后续改动有明确不变量可守。本文件只描述 **当前已实现** 的行为，不预告未实现的阶段。
 
-已实现：**D1**（边界文档化 + 低风险 token 解析去重）、**D2**（`TushareCache` endpoint specs/parsers 拆分，公开缓存行为不变）、**D3**（report-only `data/quality/` 数据质量层）、**D3b**（默认关闭的 `data-update` 质量报告钩子，report-only）。**D4–D6 尚未实现**，本文件不声称其存在。
+已实现：**D1**（边界文档化 + 低风险 token 解析去重）、**D2**（`TushareCache` endpoint specs/parsers 拆分，公开缓存行为不变）、**D3**（report-only `data/quality/` 数据质量层）、**D3b**（默认关闭的 `data-update` 质量报告钩子，report-only）、**D4**（coverage ledger `record_many` 批量写 + 进程内查找缓存，公开路径/列/语义不变）。**D5–D6 尚未实现**，本文件不声称其存在。
 
 ---
 
@@ -42,7 +42,7 @@
 - 它 **不跑 factor / alpha / portfolio / backtest，不写 `PanelStore`**。
 - 真实回测仍各自走 read-through，按需补自己的缺口；`data-update` 只是把常用 endpoint 提前填好。
 
-## 4. D1 / D2 / D3 / D3b 已做什么；D4+ 范围（未实现）
+## 4. D1 / D2 / D3 / D3b / D4 已做什么；D5+ 范围（未实现）
 
 **D1**（行为零改动）做两件低风险事：**把上述边界写成本契约文档**，以及 **把 `TushareFeed` /
 `IndexConstituentsFeed` 里重复的 token 解析收敛到共享的 `data/feed/secret.py::read_token`**
@@ -68,8 +68,16 @@ dump。**report-only**:不过滤/修复/改数据,不让 job 失败,不改 cache
 feed/factor/alpha/portfolio/runtime/backtest 语义(日频 close-to-close 不漂移)。不合成交易日历(仅结构检查;
 缺日期/缺分钟的 D3 检查在 D3b 关闭)。
 
-以下明确 **仍未实现**（D4+,本文件 **不声称已实现**）：
+**D4**（行为保持的缓存内部扩展）给日频 `CoverageLedger` 与分钟 `IntradayCoverageLedger` 加 `record_many(...)`
+批量追加(一次归一化 + 一次原子 parquet 写;空输入 no-op;每行与单行 `record` 逐字归一),`record(...)` 委托给
+`record_many([row])`;并加进程内帧缓存 + 按 `(endpoint, key[, raw_freq])` 的查找 memo,让重复 lookup 不再重读重
+过滤整张 parquet(按文件 mtime 失效,外部写绝不被当陈旧服务;`read()` 返回 copy 防污染)。`TushareCache` 的
+not-ready 拆分用**一次** `record_many` 写其 1–2 行覆盖。**公开方法/构造、parquet 路径(`manifest/coverage.parquet`
+/ `coverage_intraday.parquet`)、`LEDGER_COLUMNS`/`INTRADAY_LEDGER_COLUMNS` 名序、coverage 语义(仅 ok/empty 算
+覆盖;failed/not_ready 不算;snapshot 取最新成功 fetched_at)全不变**。
 
-- 并发 / 线程池 / 异步抓取（concurrency）；
-- endpoint schema registry（改运行时 dispatch 语义）、`CoverageLedger` 存储格式变更 / batch 写入、
-  `PanelStore` 的 append/partition 特性。
+以下明确 **仍未实现**（D5+,本文件 **不声称已实现**）：
+
+- 并发 / 线程池 / 异步抓取 / 全局限频器（concurrency，**D5**)；
+- endpoint schema registry（改运行时 dispatch 语义）；
+- `PanelStore` 的 append/partition 特性。
