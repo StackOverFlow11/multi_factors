@@ -14,6 +14,7 @@ value} examples — never a token, a secret-file path, or an unbounded symbol du
 from __future__ import annotations
 
 import numbers
+import re
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -30,6 +31,30 @@ _SEVERITY_ORDER = {HARD: 0, WARNING: 1, INFO: 2}
 MAX_EXAMPLES = 5
 
 _FRAME_COLUMNS = ["dataset", "check", "severity", "count", "examples", "note"]
+
+# Defensive report-safety guard (NOT a secrets-detection product): redact
+# secret-looking strings that a caller might pass into a finding note or example
+# value, so a rendered/stored report never carries a token-file path or key.
+# Deterministic + order-independent: each pattern -> a neutral marker.
+_REDACTED = "[REDACTED]"
+_SECRET_PATTERNS = (
+    re.compile(r"\S*\.config\.json", re.IGNORECASE),   # any path ending in .config.json
+    re.compile(r"tushare\.token", re.IGNORECASE),      # the secret config key
+    re.compile(r"token\s*[=:]\s*\S+", re.IGNORECASE),  # token=... / token: ... values
+)
+
+
+def sanitize_text(value: str) -> str:
+    """Redact secret-looking substrings (config paths / token keys/values).
+
+    A bounded report-safety guard applied to every string that may reach a
+    rendered or stored finding. Benign values (symbols, ISO dates, numbers) are
+    untouched. Idempotent and deterministic.
+    """
+    out = value
+    for pattern in _SECRET_PATTERNS:
+        out = pattern.sub(_REDACTED, out)
+    return out
 
 
 @dataclass(frozen=True)
@@ -60,7 +85,7 @@ def clean_value(value: object) -> object:
         return int(value)
     if isinstance(value, numbers.Real):
         return round(float(value), 6)
-    return str(value)
+    return sanitize_text(str(value))
 
 
 def make_finding(
@@ -84,7 +109,7 @@ def make_finding(
         severity=severity,
         count=int(count),
         examples=bounded,
-        note=note,
+        note=sanitize_text(note) if note is not None else None,
     )
 
 
@@ -120,12 +145,16 @@ def findings_to_frame(findings: list[QualityFinding]) -> pd.DataFrame:
 
 
 def _format_examples(examples: tuple[dict, ...]) -> str:
-    """Compact deterministic ``k=v`` join of bounded example rows."""
+    """Compact deterministic ``k=v`` join of bounded example rows.
+
+    Sanitized once more at render time so a secret-looking example KEY (not just
+    a value) can never reach the output.
+    """
     parts = []
     for ex in examples:
         kv = ", ".join(f"{k}={ex[k]}" for k in ex)
         parts.append(f"{{{kv}}}")
-    return "; ".join(parts)
+    return sanitize_text("; ".join(parts))
 
 
 def render_report(

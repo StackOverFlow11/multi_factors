@@ -13,8 +13,14 @@ from data.quality.report import (
     has_hard,
     make_finding,
     render_report,
+    sanitize_text,
     sort_findings,
 )
+
+# Secret-looking inputs a caller might (wrongly) pass into a finding; the report
+# layer must redact them. These are SCAN TARGETS, not real secrets.
+_SECRET_PATH = "/home/shaofl/Projects/financial_projects/.config.json"
+_SECRET_KEY = "tushare.token"
 
 
 def test_make_finding_bounds_examples_to_five():
@@ -89,12 +95,70 @@ def test_render_is_deterministic_and_bounded():
 
 
 def test_render_has_no_secret_looking_paths():
-    findings = [make_finding("market_daily", "non_positive_ohlc", HARD, 1,
-                             examples=[{"symbol": "000001.SZ", "date": pd.Timestamp("2024-01-03")}])]
+    """Secret-looking path/key passed into a finding must be redacted from output."""
+    findings = [
+        make_finding(
+            "market_daily", "non_positive_ohlc", HARD, 1,
+            examples=[{"path": _SECRET_PATH, "key": _SECRET_KEY, "symbol": "000001.SZ"}],
+            note=f"leaked at {_SECRET_PATH}",
+        )
+    ]
     out = render_report(findings)
+    assert _SECRET_PATH not in out
     assert ".config.json" not in out
-    assert "tushare.token" not in out
-    assert "secret" not in out.lower()
+    assert _SECRET_KEY not in out
+    assert "[REDACTED]" in out
+    # benign content in the same finding still renders
+    assert "000001.SZ" in out
+
+
+def test_secret_path_in_example_value_redacted():
+    f = make_finding("x", "y", HARD, 1, examples=[{"path": _SECRET_PATH}])
+    assert f.examples[0]["path"] == "[REDACTED]"
+    assert _SECRET_PATH not in render_report([f])
+
+
+def test_tushare_token_in_example_value_redacted():
+    f = make_finding("x", "y", HARD, 1, examples=[{"key": _SECRET_KEY}])
+    assert f.examples[0]["key"] == "[REDACTED]"
+    assert _SECRET_KEY not in render_report([f])
+
+
+def test_secret_path_in_note_redacted():
+    f = make_finding("x", "y", HARD, 1, note=f"see {_SECRET_PATH} for the token")
+    assert _SECRET_PATH not in (f.note or "")
+    assert "[REDACTED]" in (f.note or "")
+    assert _SECRET_PATH not in render_report([f])
+
+
+def test_token_kv_value_redacted():
+    out = render_report([make_finding("x", "y", HARD, 1, examples=[{"v": "token=abc123secret"}])])
+    assert "abc123secret" not in out
+
+
+def test_benign_values_still_render():
+    f = make_finding(
+        "market_daily", "high_lt_low", HARD, 1,
+        examples=[{"symbol": "000001.SZ", "date": pd.Timestamp("2024-01-03")}],
+    )
+    out = render_report([f])
+    assert "000001.SZ" in out
+    assert "2024-01-03" in out
+    assert "[REDACTED]" not in out
+
+
+def test_sanitize_text_is_idempotent_and_deterministic():
+    once = sanitize_text(f"path {_SECRET_PATH} key {_SECRET_KEY}")
+    twice = sanitize_text(once)
+    assert once == twice
+    assert _SECRET_PATH not in once and _SECRET_KEY not in once
+
+
+def test_secret_inputs_examples_still_bounded_to_five():
+    examples = [{"path": _SECRET_PATH, "i": i} for i in range(9)]
+    f = make_finding("x", "y", HARD, 9, examples=examples)
+    assert len(f.examples) == 5
+    assert all(ex["path"] == "[REDACTED]" for ex in f.examples)
 
 
 def test_sort_findings_severity_first():
