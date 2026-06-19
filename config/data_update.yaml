@@ -71,6 +71,20 @@ data_update:
     - grossprofit_margin
   rate_limit_per_min: 450   # conservative (official stk_mins ceiling is 500/min)
   force_refresh: []
+  # D3b report-only data-quality hook. OFF by default: with enabled=false the job
+  # behaves exactly as before. When enabled, the updater runs the D3 data/quality
+  # STRUCTURAL checks on the frames it ALREADY warmed (NO extra API calls) and
+  # writes a deterministic Markdown report under output.report_dir. It never
+  # filters/repairs data, never fails the job, never changes cache coverage or the
+  # per-endpoint request summary. endpoints accepts only the structural surfaces
+  # the updater loads as frames; report_name must be a bare filename.
+  quality:
+    enabled: false
+    endpoints:
+      - market_daily
+      - adj_factor
+      - stk_mins_1min
+    report_name: data_update_quality_report.md
 
 # --- unused by data-update (schema-only stubs) ------------------------------- #
 factors:
