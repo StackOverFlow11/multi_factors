@@ -14,13 +14,10 @@ printed/logged (same contract as :class:`TushareFeed`).
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pandas as pd
 
+from data.feed.secret import read_token
 from data.feed.throttle import request_with_retry
-from data.feed.tushare_feed import _lookup_dotted
 
 # canonical constituents columns
 CONSTITUENT_COLUMNS: tuple[str, ...] = ("date", "symbol", "weight")
@@ -49,26 +46,12 @@ class IndexConstituentsFeed:
         self._cache = cache
 
     # -- secret handling (token never logged) ------------------------------- #
-    def _read_token(self) -> str:
-        path = Path(self._secret_file)
-        if not path.exists():
-            raise ValueError(
-                f"Secret config file not found: {self._secret_file}. "
-                f"Set data.external_secret_file to your .config.json path."
-            )
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Secret config file is not valid JSON: {self._secret_file} ({exc.msg})."
-            ) from None
-        return _lookup_dotted(data, self._token_key)
-
     def _client(self):
         if self._pro is None:
             import tushare as ts
 
-            self._pro = ts.pro_api(self._read_token())  # token handed straight in
+            # token via the shared external-config reader, handed straight in
+            self._pro = ts.pro_api(read_token(self._secret_file, self._token_key))
         return self._pro
 
     # tushare index_weight caps a single response at ~6000 rows; a ~300-name

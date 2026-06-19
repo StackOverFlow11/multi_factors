@@ -1,10 +1,30 @@
-"""IndexConstituentsFeed mapping tests — no network, fake SDK."""
+"""IndexConstituentsFeed mapping tests — no network, fake SDK.
+
+The token path uses a FAKE tmp config json with a FAKE token; the real
+/home/shaofl/.../.config.json is NEVER read and no network call is made.
+"""
 
 from __future__ import annotations
 
+import io
+import json
+import logging
+from contextlib import redirect_stdout
+
 import pandas as pd
+import pytest
 
 from data.feed.index_feed import IndexConstituentsFeed
+
+FAKE_TOKEN = "FAKE_TUSHARE_TOKEN_do_not_leak_0123456789abcdef"
+
+
+def _write_fake_config(tmp_path, token: str = FAKE_TOKEN):
+    """Write a fake nested config json mimicking the real .config.json layout."""
+    cfg = {"tushare": {"token": token}, "other": {"unused": 1}}
+    path = tmp_path / "fake_config.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    return path
 
 
 class _FakePro:
@@ -82,3 +102,62 @@ def test_get_constituents_empty_result_is_schema_shaped(monkeypatch):
     out = feed.get_constituents("000300.SH", "2024-01-01", "2024-02-29")
     assert list(out.columns) == ["date", "symbol", "weight"]
     assert len(out) == 0
+
+
+# --------------------------------------------------------------------------- #
+# Token sourcing — real _client() path through the shared read_token (D1)
+# --------------------------------------------------------------------------- #
+def test_index_feed_sources_token_through_read_token(tmp_path, monkeypatch, caplog):
+    """The REAL _client() reads the token via secret.read_token and hands it to
+    tushare.pro_api — sourced from the external fake config, never leaked."""
+    cfg_path = _write_fake_config(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    class _FakeProToken:
+        def index_weight(self, index_code, start_date, end_date):  # noqa: ARG002
+            return pd.DataFrame(
+                {
+                    "index_code": ["000300.SH"],
+                    "con_code": ["000001.SZ"],
+                    "trade_date": [start_date],
+                    "weight": [1.0],
+                }
+            )
+
+    def fake_pro_api(token=None):
+        captured["token"] = token
+        return _FakeProToken()
+
+    import tushare as ts
+
+    monkeypatch.setattr(ts, "pro_api", fake_pro_api)
+
+    feed = IndexConstituentsFeed(secret_file=str(cfg_path), token_key="tushare.token")
+    stdout = io.StringIO()
+    with caplog.at_level(logging.DEBUG), redirect_stdout(stdout):
+        out = feed.get_constituents("000300.SH", "2024-01-01", "2024-01-31")
+
+    # Token came from the external fake config via the shared reader.
+    assert captured["token"] == FAKE_TOKEN
+    assert list(out.columns) == ["date", "symbol", "weight"]
+    # Never leaked to stdout or logging.
+    assert FAKE_TOKEN not in stdout.getvalue()
+    assert FAKE_TOKEN not in caplog.text
+
+
+def test_index_feed_missing_token_key_raises_readable_error(tmp_path, monkeypatch):
+    """A missing dotted token_key raises a readable error naming the key path,
+    and never echoes the real token value."""
+    cfg_path = _write_fake_config(tmp_path)
+    feed = IndexConstituentsFeed(secret_file=str(cfg_path), token_key="tushare.nope")
+
+    import tushare as ts
+
+    monkeypatch.setattr(ts, "pro_api", lambda token=None: object())
+
+    with pytest.raises(ValueError) as exc:
+        feed.get_constituents("000300.SH", "2024-01-01", "2024-01-31")
+    msg = str(exc.value)
+    assert "tushare.nope" in msg
+    assert FAKE_TOKEN not in msg

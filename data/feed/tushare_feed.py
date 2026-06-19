@@ -17,13 +17,11 @@ Field mapping (tushare ``daily`` -> CORE_COLUMNS):
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pandas as pd
 
 from data.clean.schema import CORE_COLUMNS, normalize_panel
 from data.feed.base import DataFeed
+from data.feed.secret import read_token
 from data.feed.throttle import request_with_retry
 
 # tushare raw column -> canonical column.
@@ -32,27 +30,6 @@ _FIELD_MAP: dict[str, str] = {
     "trade_date": "date",
     "vol": "volume",
 }
-
-
-def _lookup_dotted(data: dict, dotted_key: str) -> str:
-    """Resolve a dotted key (e.g. 'tushare.token') in a nested dict.
-
-    Raises a readable ValueError if any segment is missing — the message names the
-    missing key path but NEVER echoes any value (so no secret can leak).
-    """
-    node: object = data
-    for part in dotted_key.split("."):
-        if not isinstance(node, dict) or part not in node:
-            raise ValueError(
-                f"Secret config is missing key '{dotted_key}'. "
-                f"Expected a nested entry reachable via that dotted path."
-            )
-        node = node[part]
-    if not isinstance(node, str) or not node:
-        raise ValueError(
-            f"Secret config key '{dotted_key}' must map to a non-empty string token."
-        )
-    return node
 
 
 class TushareFeed(DataFeed):
@@ -85,20 +62,8 @@ class TushareFeed(DataFeed):
 
     # -- secret handling ---------------------------------------------------- #
     def _read_token(self) -> str:
-        """Read the token from the external json config (dotted-key lookup)."""
-        path = Path(self._secret_file)
-        if not path.exists():
-            raise ValueError(
-                f"Secret config file not found: {self._secret_file}. "
-                f"Set data.external_secret_file to your .config.json path."
-            )
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Secret config file is not valid JSON: {self._secret_file} ({exc.msg})."
-            ) from None
-        return _lookup_dotted(data, self._token_key)
+        """Read the token via the shared external-config reader (dotted-key lookup)."""
+        return read_token(self._secret_file, self._token_key)
 
     def _client(self):
         """Build (once) and return the tushare pro client. Lazy + no logging."""
