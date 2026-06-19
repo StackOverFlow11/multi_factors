@@ -212,11 +212,20 @@ def _cmd_data_update(args: argparse.Namespace) -> int:
     except (ConfigError, ValueError, FileNotFoundError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    print(
+    out = (
         f"OK data-update: {len(result.endpoints)} endpoints, "
         f"{len(result.symbols)} symbols ({result.elapsed_seconds:.1f}s)\n"
         f"{format_summary(result)}"
     )
+    # D3b: only surfaced when the report-only quality hook is enabled; with the
+    # default (disabled) hook the output is materially unchanged.
+    if result.quality_report_path is not None:
+        out += (
+            f"\nquality: findings={result.quality_findings_count} "
+            f"hard={result.quality_hard_count} "
+            f"report={result.quality_report_path}"
+        )
+    print(out)
     return 0
 
 

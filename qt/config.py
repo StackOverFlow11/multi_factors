@@ -592,6 +592,66 @@ _DATA_UPDATE_ENDPOINTS = frozenset({
     "index_member_all", "stk_mins_1min",
 })
 
+# D3b quality can only check the STRUCTURAL endpoints the updater already loads as
+# in-memory frames (market bars + 1min minutes). Universe / financial / dimension
+# endpoints are not re-materialized as frames here, so they are out of scope.
+_DATA_UPDATE_QUALITY_ENDPOINTS = frozenset({
+    "market_daily", "adj_factor", "stk_mins_1min",
+})
+
+
+class DataUpdateQualityCfg(_Strict):
+    """D3b report-only data-quality hook for ``data-update`` (default OFF).
+
+    When ``enabled`` the updater runs the accepted D3 ``data/quality`` STRUCTURAL
+    checks on the frames it ALREADY warmed (no extra API call) and writes a
+    deterministic Markdown report under ``output.report_dir``. It is report-only:
+    it never filters / repairs / mutates data, never fails the job, never changes
+    cache coverage or the per-endpoint request summary. With ``enabled=false``
+    (the default) every existing config behaves exactly as before.
+    """
+
+    enabled: bool = False
+    # Which warmed surfaces to quality-check (only the structural ones above).
+    endpoints: list[str] = Field(
+        default_factory=lambda: ["market_daily", "adj_factor", "stk_mins_1min"]
+    )
+    # A BARE filename written under output.report_dir (never absolute, never a
+    # path with separators or '..').
+    report_name: str = "data_update_quality_report.md"
+
+    @field_validator("endpoints")
+    @classmethod
+    def _check_quality_endpoints(cls, v: list[str]) -> list[str]:
+        unknown = [e for e in v if e not in _DATA_UPDATE_QUALITY_ENDPOINTS]
+        if unknown:
+            raise ValueError(
+                f"data_update.quality.endpoints {unknown} unknown; must be in "
+                f"{sorted(_DATA_UPDATE_QUALITY_ENDPOINTS)}."
+            )
+        return v
+
+    @field_validator("report_name")
+    @classmethod
+    def _check_report_name(cls, v: str) -> str:
+        name = str(v)
+        if not name.strip():
+            raise ValueError(
+                "data_update.quality.report_name must be a non-empty filename."
+            )
+        if (
+            "/" in name
+            or "\\" in name
+            or ".." in name
+            or name in (".", "..")
+        ):
+            raise ValueError(
+                "data_update.quality.report_name must be a bare filename under "
+                "output.report_dir (no path separators, no '..', not absolute); "
+                f"got {name!r}."
+            )
+        return name
+
 
 class DataUpdateCfg(_Strict):
     """Standalone data-updater section (P4-3) — consumed ONLY by ``data-update``.
@@ -614,6 +674,8 @@ class DataUpdateCfg(_Strict):
     fina_fields: list[str] = Field(default_factory=lambda: ["roe", "netprofit_yoy"])
     rate_limit_per_min: int = 450
     force_refresh: list[str] = Field(default_factory=list)
+    # D3b report-only quality hook (default OFF; see DataUpdateQualityCfg).
+    quality: DataUpdateQualityCfg = Field(default_factory=DataUpdateQualityCfg)
 
     @field_validator("endpoints", "force_refresh")
     @classmethod
