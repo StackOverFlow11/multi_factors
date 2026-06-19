@@ -33,6 +33,7 @@ class IndexConstituentsFeed:
         rate_limit: int | None = None,
         max_retries: int = 6,
         cache=None,
+        scheduler=None,
     ) -> None:
         self._secret_file = str(secret_file)
         self._token_key = token_key
@@ -44,6 +45,8 @@ class IndexConstituentsFeed:
         # one. The cache stores RAW snapshots; the as-of membership stays
         # downstream, unchanged.
         self._cache = cache
+        # D5: optional shared GlobalRateLimiter; None keeps the per-call throttle.
+        self._scheduler = scheduler
 
     # -- secret handling (token never logged) ------------------------------- #
     def _client(self):
@@ -90,6 +93,7 @@ class IndexConstituentsFeed:
                 pro.index_weight,
                 max_retries=self._max_retries,
                 rate_limit=self._rate_limit,
+                scheduler=self._scheduler,
                 index_code=index_code,
                 start_date=win_start.strftime("%Y%m%d"),
                 end_date=win_end.strftime("%Y%m%d"),
@@ -121,6 +125,7 @@ class IndexConstituentsFeed:
                 self._client().index_weight,
                 max_retries=self._max_retries,
                 rate_limit=self._rate_limit,
+                scheduler=self._scheduler,
                 index_code=index_code,
                 start_date=start_compact,
                 end_date=end_compact,

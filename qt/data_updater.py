@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from data.feed.scheduler import GlobalRateLimiter
 from qt.config import RootConfig, load_config
 from qt.data_update_quality import collect_findings, write_quality_report
 
@@ -59,6 +60,9 @@ class UpdateResult:
     quality_report_path: Path | None = None
     quality_findings_count: int = 0
     quality_hard_count: int = 0
+    # D5 bounded concurrency (max_workers=1 == serial; rate_limit is the global cap).
+    max_workers: int = 1
+    rate_limit_per_min: int = 0
 
 
 def update_endpoints(
@@ -148,8 +152,15 @@ def _resolve_symbols(cfg: RootConfig, feeds: UpdateFeeds, start: str, end: str) 
     return sorted(syms)
 
 
-def _build_feeds(cfg: RootConfig, cache, intraday_cache, rate_limit: int) -> UpdateFeeds:
-    """Construct the real tushare feeds, all sharing the read-through caches."""
+def _build_feeds(
+    cfg: RootConfig, cache, intraday_cache, rate_limit: int, scheduler=None
+) -> UpdateFeeds:
+    """Construct the real tushare feeds, all sharing the read-through caches.
+
+    ``scheduler`` (D5) is the ONE shared global rate limiter handed to every feed
+    when bounded concurrency is on; ``None`` (serial mode) keeps the historical
+    per-call throttle on each feed, byte-identical to before.
+    """
     from data.feed.index_feed import IndexConstituentsFeed
     from data.feed.tushare_covariates import TushareCovariatesFeed
     from data.feed.tushare_feed import TushareFeed
@@ -160,17 +171,28 @@ def _build_feeds(cfg: RootConfig, cache, intraday_cache, rate_limit: int) -> Upd
     secret = cfg.data.external_secret_file
     key = cfg.data.tushare_token_key
     return UpdateFeeds(
-        market=TushareFeed(secret, token_key=key, rate_limit=rate_limit, cache=cache),
-        index=IndexConstituentsFeed(secret, token_key=key, cache=cache),
-        flags=TushareFlagsFeed(secret, token_key=key, rate_limit=rate_limit, cache=cache),
+        market=TushareFeed(
+            secret, token_key=key, rate_limit=rate_limit, cache=cache,
+            scheduler=scheduler,
+        ),
+        index=IndexConstituentsFeed(
+            secret, token_key=key, cache=cache, scheduler=scheduler
+        ),
+        flags=TushareFlagsFeed(
+            secret, token_key=key, rate_limit=rate_limit, cache=cache,
+            scheduler=scheduler,
+        ),
         covariates=TushareCovariatesFeed(
-            secret, token_key=key, rate_limit=rate_limit, cache=cache
+            secret, token_key=key, rate_limit=rate_limit, cache=cache,
+            scheduler=scheduler,
         ),
         fina=TushareFinancialFeed(
-            secret, token_key=key, rate_limit=rate_limit, cache=cache
+            secret, token_key=key, rate_limit=rate_limit, cache=cache,
+            scheduler=scheduler,
         ),
         intraday=TushareIntradayFeed(
-            secret, token_key=key, rate_limit=rate_limit, cache=intraday_cache
+            secret, token_key=key, rate_limit=rate_limit, cache=intraday_cache,
+            scheduler=scheduler,
         ),
     )
 
@@ -209,6 +231,15 @@ def run_data_update(config_path: str, *, today=None) -> UpdateResult:
         TushareIntradayCache,
     )
 
+    # D5: bounded concurrency is opt-in. max_workers==1 (default) builds NO
+    # scheduler — every feed keeps its per-call throttle and the cache stays serial,
+    # byte-identical to before. >1 builds ONE global rate limiter shared by all
+    # feeds (so the quota is global, not per-thread) and a multi-worker cache.
+    max_workers = du.concurrency.max_workers
+    scheduler = (
+        GlobalRateLimiter(du.rate_limit_per_min) if max_workers > 1 else None
+    )
+
     root = cfg.data.cache.root_dir
     cache = TushareCache(
         CacheParquetStore(root),
@@ -219,11 +250,14 @@ def run_data_update(config_path: str, *, today=None) -> UpdateResult:
         today=today_ts,
         not_ready_days=du.not_ready_days,
         recent_tail_overrides={"fina_indicator": du.fina_tail_days},
+        max_workers=max_workers,
     )
     intraday_cache = TushareIntradayCache(
         IntradayParquetStore(root), IntradayCoverageLedger(root)
     )
-    feeds = _build_feeds(cfg, cache, intraday_cache, du.rate_limit_per_min)
+    feeds = _build_feeds(
+        cfg, cache, intraday_cache, du.rate_limit_per_min, scheduler=scheduler
+    )
 
     symbols = _resolve_symbols(cfg, feeds, start, end)
     intraday_window = (
@@ -253,6 +287,8 @@ def run_data_update(config_path: str, *, today=None) -> UpdateResult:
         quality_report_path=quality.report_path if quality is not None else None,
         quality_findings_count=quality.findings_count if quality is not None else 0,
         quality_hard_count=quality.hard_count if quality is not None else 0,
+        max_workers=max_workers,
+        rate_limit_per_min=du.rate_limit_per_min,
     )
 
 
@@ -284,9 +320,11 @@ def _maybe_run_quality(cfg: RootConfig, du, capture, symbols, start, end):
 
 def format_summary(result: UpdateResult) -> str:
     """One human line per endpoint: requests / rows_written / not_ready."""
+    mode = "serial" if result.max_workers <= 1 else f"{result.max_workers} workers"
     lines = [
         f"data-update window [{result.window_start.date()} .. "
-        f"{result.window_end.date()}], {len(result.symbols)} symbols"
+        f"{result.window_end.date()}], {len(result.symbols)} symbols "
+        f"({mode}, global rate_limit_per_min={result.rate_limit_per_min})"
     ]
     for ep in result.endpoints:
         s = result.summary.get(ep, {})

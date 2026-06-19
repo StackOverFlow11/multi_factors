@@ -653,6 +653,30 @@ class DataUpdateQualityCfg(_Strict):
         return name
 
 
+class DataUpdateConcurrencyCfg(_Strict):
+    """D5 opt-in bounded concurrency for ``data-update`` cache warms (default serial).
+
+    ``max_workers=1`` (the default) keeps the warm fully serial — byte/behavior
+    compatible with every existing config. ``max_workers>1`` fans the per-symbol gap
+    FETCH stage onto a bounded thread pool, all funneled through ONE shared global
+    rate limiter (reusing ``data_update.rate_limit_per_min``) so the Tushare quota is
+    never multiplied per thread; store upserts and ledger writes still happen in
+    deterministic main-thread order.
+    """
+
+    max_workers: int = 1
+
+    @field_validator("max_workers")
+    @classmethod
+    def _check_max_workers(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(
+                f"data_update.concurrency.max_workers must be >= 1 (1 == serial); "
+                f"got {v}."
+            )
+        return v
+
+
 class DataUpdateCfg(_Strict):
     """Standalone data-updater section (P4-3) — consumed ONLY by ``data-update``.
 
@@ -676,6 +700,10 @@ class DataUpdateCfg(_Strict):
     force_refresh: list[str] = Field(default_factory=list)
     # D3b report-only quality hook (default OFF; see DataUpdateQualityCfg).
     quality: DataUpdateQualityCfg = Field(default_factory=DataUpdateQualityCfg)
+    # D5 opt-in bounded concurrency (default max_workers=1 == serial).
+    concurrency: DataUpdateConcurrencyCfg = Field(
+        default_factory=DataUpdateConcurrencyCfg
+    )
 
     @field_validator("endpoints", "force_refresh")
     @classmethod
