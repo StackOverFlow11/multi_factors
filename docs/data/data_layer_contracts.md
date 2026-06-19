@@ -3,7 +3,7 @@
 > 目的：把 **`cache`（缓存）** 与 **`store`（面板存储）** 的边界写成可提交的契约，
 > 让后续改动有明确不变量可守。本文件只描述 **当前已实现** 的行为，不预告未实现的阶段。
 
-本文件对应 **D1**（边界文档化 + 低风险 token 解析去重）。**D2–D6 尚未实现**，本文件不声称其存在。
+已实现：**D1**（边界文档化 + 低风险 token 解析去重）、**D2**（`TushareCache` endpoint specs/parsers 拆分，公开缓存行为不变）。**D3–D6 尚未实现**，本文件不声称其存在。
 
 ---
 
@@ -42,15 +42,21 @@
 - 它 **不跑 factor / alpha / portfolio / backtest，不写 `PanelStore`**。
 - 真实回测仍各自走 read-through，按需补自己的缺口；`data-update` 只是把常用 endpoint 提前填好。
 
-## 4. 不属于 D1 的范围（后续阶段，未实现）
+## 4. D1 / D2 已做什么；D3+ 范围（未实现）
 
-以下明确 **不在 D1**，本文件 **不声称已实现**：
+**D1**（行为零改动）做两件低风险事：**把上述边界写成本契约文档**，以及 **把 `TushareFeed` /
+`IndexConstituentsFeed` 里重复的 token 解析收敛到共享的 `data/feed/secret.py::read_token`**
+（其余 feed 早已使用该共享读取器）。
+
+**D2**（行为保持型重构，公开缓存语义不变）把 `data/cache/tushare_cache.py` 的内部拆成小文件:
+endpoint 常量/specs → `data/cache/tushare_specs.py`、raw endpoint 解析器 → `data/cache/tushare_parsers.py`、
+两个叶子规划 helper（`_fields_hash`/`_compact`）→ `data/cache/tushare_planning.py`;`TushareCache` 仍是
+公开门面（方法/签名/gap 规划/分页/staleness/coverage 语义全不变),并 re-export endpoint ids + `FINA_FIELDS`
+保持向后兼容导入。
+
+以下明确 **仍未实现**（D3+,本文件 **不声称已实现**）：
 
 - 数据质量校验（data-quality validator）；
 - 并发 / 线程池 / 异步抓取（concurrency）；
-- `TushareCache` 内部拆分、endpoint schema registry、`CoverageLedger` 存储格式变更、
+- endpoint schema registry（改运行时 dispatch 语义）、`CoverageLedger` 存储格式变更、
   `PanelStore` 的 append/partition 特性。
-
-D1 仅做两件低风险事：**把以上边界写成本契约文档**，以及 **把 `TushareFeed` / `IndexConstituentsFeed`
-里重复的 token 解析收敛到共享的 `data/feed/secret.py::read_token`**（其余 feed 早已使用该共享读取器）。
-数据行为零改动。

@@ -37,11 +37,17 @@ Stored rows are RAW and canonical-shaped (``date`` as datetime, ``symbol`` as
 str, native prices / weights / limits). The PIT as-of membership, raw price
 limit checks, and ``front_adjust`` all stay downstream, unchanged. No token or
 secret ever reaches this layer; the ledger holds endpoint metadata only.
+
+D2 internal layout: endpoint constants/specs live in
+:mod:`data.cache.tushare_specs`, raw endpoint parsers in
+:mod:`data.cache.tushare_parsers`, and the two leaf planning helpers in
+:mod:`data.cache.tushare_planning`. This module keeps the public ``TushareCache``
+facade + the read-through engine, and re-exports the endpoint ids + ``FINA_FIELDS``
+for backward-compatible imports.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections.abc import Callable
 
@@ -50,286 +56,62 @@ import pandas as pd
 from data.cache.coverage import CoverageLedger
 from data.cache.intervals import merge_intervals, subtract_intervals
 from data.cache.parquet_store import CacheParquetStore
-
-_LOGGER = logging.getLogger("data.cache.tushare")
-
-# endpoint identifiers (also the names accepted in data.cache.force_refresh).
-MARKET_DAILY = "market_daily"
-ADJ_FACTOR = "adj_factor"
-INDEX_WEIGHT = "index_weight"
-SUSPEND_D = "suspend_d"
-NAMECHANGE = "namechange"
-STK_LIMIT = "stk_limit"
-STOCK_BASIC = "stock_basic"
-# P4-3 factor-support endpoints.
-DAILY_BASIC = "daily_basic"          # dense per-symbol date-range (pe/pb/total_mv)
-FINA_INDICATOR = "fina_indicator"    # per-symbol, report-period range, carries ann_date
-INDEX_MEMBER_ALL = "index_member_all"  # per-symbol dimension (SW in/out intervals)
-
-# every endpoint this cache knows (fetch_counts is seeded with all of them so a
-# warm run reports an explicit 0 for an endpoint it never had to touch).
-ALL_ENDPOINTS = (
-    MARKET_DAILY, ADJ_FACTOR, INDEX_WEIGHT, SUSPEND_D, NAMECHANGE,
-    STK_LIMIT, STOCK_BASIC, DAILY_BASIC, FINA_INDICATOR, INDEX_MEMBER_ALL,
+from data.cache.tushare_parsers import (
+    _parse_adj,
+    _parse_daily,
+    _parse_daily_basic,
+    _parse_fina,
+    _parse_index_member,
+    _parse_index_weight,
+    _parse_namechange,
+    _parse_stk_limit,
+    _parse_stock_basic,
+    _parse_suspend,
+)
+from data.cache.tushare_planning import _compact, _fields_hash
+from data.cache.tushare_specs import (
+    ADJ_FACTOR,
+    ALL_ENDPOINTS,
+    DAILY_BASIC,
+    FINA_FIELDS,
+    FINA_INDICATOR,
+    INDEX_MEMBER_ALL,
+    INDEX_WEIGHT,
+    MARKET_DAILY,
+    NAMECHANGE,
+    STK_LIMIT,
+    STOCK_BASIC,
+    SUSPEND_D,
+    _ADJ_COLUMNS,
+    _DAILY_BASIC_COLUMNS,
+    _DAILY_BASIC_KEY,
+    _DAILY_COLUMNS,
+    _FINA_COLUMNS,
+    _FINA_KEY,
+    _GLOBAL_KEY,
+    _INDEX_MEMBER_COLUMNS,
+    _INDEX_MEMBER_KEY,
+    _INDEX_WEIGHT_COLUMNS,
+    _INDEX_WEIGHT_KEY,
+    _INDEX_WINDOW_DAYS,
+    _KEY_COLS,
+    _NAMECHANGE_COLUMNS,
+    _NAMECHANGE_KEY,
+    _STK_LIMIT_COLUMNS,
+    _STK_LIMIT_KEY,
+    _STOCK_BASIC_COLUMNS,
+    _STOCK_BASIC_KEY,
+    _SUSPEND_COLUMNS,
+    _SUSPEND_KEY,
 )
 
-# sentinel key for a global (whole-market) snapshot endpoint (stock_basic).
-_GLOBAL_KEY = "__all__"
-
-# canonical-raw column sets + natural keys stored per endpoint.
-_DAILY_COLUMNS = ["date", "symbol", "open", "high", "low", "close", "volume", "amount"]
-_ADJ_COLUMNS = ["date", "symbol", "adj_factor"]
-_KEY_COLS = ["date", "symbol"]
-
-_INDEX_WEIGHT_COLUMNS = ["index_code", "date", "symbol", "weight"]
-_INDEX_WEIGHT_KEY = ["date", "symbol"]
-
-_SUSPEND_COLUMNS = ["date", "symbol", "suspend_type"]
-_SUSPEND_KEY = ["date", "symbol", "suspend_type"]
-
-_STK_LIMIT_COLUMNS = ["date", "symbol", "up_limit", "down_limit"]
-_STK_LIMIT_KEY = ["date", "symbol"]
-
-_NAMECHANGE_COLUMNS = ["symbol", "start_date", "end_date", "name"]
-_NAMECHANGE_KEY = ["symbol", "start_date", "end_date", "name"]
-
-_STOCK_BASIC_COLUMNS = ["symbol", "list_date"]
-_STOCK_BASIC_KEY = ["symbol"]
-
-# P4-3 endpoints. daily_basic is a dense per-symbol date-range (like market bars);
-# the stored ``date`` is the trade_date. fina_indicator's stored ``date`` is the
-# REPORT-PERIOD end_date (the axis tushare filters on); ann_date is kept as a raw
-# column for the downstream PIT as-of (ann_date <= trade_date) — never as the
-# coverage axis. index_member_all is a per-symbol dimension of SW in/out intervals.
-_DAILY_BASIC_COLUMNS = ["date", "symbol", "pe", "pb", "total_mv"]
-_DAILY_BASIC_KEY = ["date", "symbol"]
-
-# fina_indicator is field-set dependent: a per-(symbol) parquet keyed by
-# (symbol, end_date, ann_date) CANNOT hold two different field sets for the same
-# report (a later subset upsert would overwrite an earlier one and a covered
-# interval would be reused with the wrong columns). So the cache ALWAYS fetches +
-# stores the CANONICAL SUPERSET of every financial field the project supports; a
-# caller (the feed) selects its requested subset on read. Coverage is therefore
-# uniform (one field set) and a subset warm never blocks a later different-subset
-# request. Must stay a superset of factors.compute.financial.SUPPORTED_FIELDS
-# (guarded by a drift test).
-FINA_FIELDS: tuple[str, ...] = ("roe", "netprofit_yoy", "grossprofit_margin")
-_FINA_COLUMNS = ["date", "symbol", "ann_date", "end_date", *FINA_FIELDS]
-_FINA_KEY = ["symbol", "end_date", "ann_date"]
-
-_INDEX_MEMBER_COLUMNS = [
-    "symbol", "l1_name", "l2_name", "l3_name", "in_date", "out_date"
-]
-_INDEX_MEMBER_KEY = ["symbol", "in_date", "out_date", "l1_name", "l2_name", "l3_name"]
-
-# tushare per-call row cap forces index_weight to be paged in <=90-day windows.
-_INDEX_WINDOW_DAYS = 90
-
-# tushare raw -> canonical name for the columns we keep.
-_DAILY_RENAME = {"ts_code": "symbol", "trade_date": "date", "vol": "volume"}
-_ADJ_RENAME = {"ts_code": "symbol", "trade_date": "date"}
+_LOGGER = logging.getLogger("data.cache.tushare")
 
 # A fetch callable: (symbol, start_compact, end_compact) -> raw tushare frame|None.
 FetchOne = Callable[[str, str, str], "pd.DataFrame | None"]
 # A snapshot fetch: (symbol) -> raw frame|None (namechange) or () -> raw frame|None
 # (stock_basic). Typed loosely; the cache only calls and parses the result.
 FetchSnapshot = Callable[..., "pd.DataFrame | None"]
-
-
-def _fields_hash(columns: list[str]) -> str:
-    """Stable short hash of a field set (order-independent)."""
-    return hashlib.sha1(",".join(sorted(columns)).encode("utf-8")).hexdigest()[:16]
-
-
-def _compact(ts: pd.Timestamp) -> str:
-    return pd.Timestamp(ts).strftime("%Y%m%d")
-
-
-def _parse_daily(raw: pd.DataFrame | None) -> pd.DataFrame:
-    """tushare ``daily`` frame -> canonical-raw rows (or empty)."""
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_DAILY_COLUMNS)
-    df = raw.rename(columns=_DAILY_RENAME).copy()
-    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
-    df["symbol"] = df["symbol"].astype(str)
-    for col in _DAILY_COLUMNS:
-        if col not in df.columns:
-            df[col] = float("nan")
-    return df[_DAILY_COLUMNS]
-
-
-def _parse_adj(raw: pd.DataFrame | None) -> pd.DataFrame:
-    """tushare ``adj_factor`` frame -> canonical-raw rows (or empty)."""
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_ADJ_COLUMNS)
-    df = raw.rename(columns=_ADJ_RENAME).copy()
-    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
-    df["symbol"] = df["symbol"].astype(str)
-    return df[_ADJ_COLUMNS]
-
-
-def _parse_suspend(raw: pd.DataFrame | None) -> pd.DataFrame:
-    """tushare ``suspend_d`` frame -> canonical-raw rows (or empty).
-
-    The feed queries with ``suspend_type='S'``; stored rows carry that type so
-    the suspended-set the feed builds from ``(date, symbol)`` is unchanged.
-    """
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_SUSPEND_COLUMNS)
-    df = raw.rename(columns={"ts_code": "symbol", "trade_date": "date"}).copy()
-    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
-    df["symbol"] = df["symbol"].astype(str)
-    if "suspend_type" not in df.columns:
-        df["suspend_type"] = "S"
-    df["suspend_type"] = df["suspend_type"].astype(str)
-    return df[_SUSPEND_COLUMNS]
-
-
-def _parse_stk_limit(raw: pd.DataFrame | None) -> pd.DataFrame:
-    """tushare ``stk_limit`` frame -> canonical-raw rows (or empty).
-
-    up_limit / down_limit stay RAW price terms (the limit checks run before
-    front-adjustment, as today); nothing here touches qfq.
-    """
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_STK_LIMIT_COLUMNS)
-    df = raw.rename(columns={"ts_code": "symbol", "trade_date": "date"}).copy()
-    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
-    df["symbol"] = df["symbol"].astype(str)
-    for col in ("up_limit", "down_limit"):
-        if col not in df.columns:
-            df[col] = float("nan")
-    return df[_STK_LIMIT_COLUMNS]
-
-
-def _parse_index_weight(raw: pd.DataFrame | None, index_code: str) -> pd.DataFrame:
-    """tushare ``index_weight`` frame -> canonical-raw rows (or empty).
-
-    ``con_code`` -> symbol, ``trade_date`` -> date; ``index_code`` is fixed from
-    the queried index. Raw snapshots only — the latest-snapshot as-of membership
-    logic stays downstream (unchanged).
-    """
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_INDEX_WEIGHT_COLUMNS)
-    df = raw.rename(columns={"con_code": "symbol", "trade_date": "date"}).copy()
-    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
-    df["symbol"] = df["symbol"].astype(str)
-    df["index_code"] = str(index_code)
-    if "weight" not in df.columns:
-        df["weight"] = float("nan")
-    return df[_INDEX_WEIGHT_COLUMNS]
-
-
-def _parse_namechange(raw: pd.DataFrame | None, symbol: str) -> pd.DataFrame:
-    """tushare ``namechange`` frame -> canonical-raw rows (or empty).
-
-    ``end_date`` is NaT for an active (open) name; the feed maps NaT back to
-    ``None`` when it builds the ST intervals, so the interval shape is unchanged.
-    """
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_NAMECHANGE_COLUMNS)
-    df = raw.copy()
-    df["symbol"] = (
-        df["ts_code"].astype(str) if "ts_code" in df.columns else str(symbol)
-    )
-    df["start_date"] = pd.to_datetime(
-        df["start_date"].astype(str), format="%Y%m%d", errors="coerce"
-    )
-    if "end_date" in df.columns:
-        df["end_date"] = pd.to_datetime(
-            df["end_date"].astype(str), format="%Y%m%d", errors="coerce"
-        )
-    else:
-        df["end_date"] = pd.NaT
-    df["name"] = df["name"].astype(str)
-    return df[_NAMECHANGE_COLUMNS]
-
-
-def _parse_stock_basic(raw: pd.DataFrame | None) -> pd.DataFrame:
-    """tushare ``stock_basic`` frame -> canonical-raw rows (or empty).
-
-    Stores ``list_date`` as the raw compact string; the feed parses it to a
-    Timestamp exactly as the direct path does (for the ``min_listing_days``
-    selection filter). The current-tag ``industry`` is NOT stored — it must
-    never re-enter neutralization (the PIT SW path replaced it).
-    """
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_STOCK_BASIC_COLUMNS)
-    df = raw.rename(columns={"ts_code": "symbol"}).copy()
-    df["symbol"] = df["symbol"].astype(str)
-    if "list_date" not in df.columns:
-        df["list_date"] = None
-    df["list_date"] = df["list_date"].astype(str)
-    return df[_STOCK_BASIC_COLUMNS]
-
-
-def _parse_daily_basic(raw: pd.DataFrame | None) -> pd.DataFrame:
-    """tushare ``daily_basic`` frame -> canonical-raw rows (or empty).
-
-    Stores pe / pb / total_mv RAW (published same-day, PIT-safe by construction);
-    the value-ratio inversion and log-market-cap stay downstream, unchanged.
-    """
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_DAILY_BASIC_COLUMNS)
-    df = raw.rename(columns={"ts_code": "symbol", "trade_date": "date"}).copy()
-    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
-    df["symbol"] = df["symbol"].astype(str)
-    for col in ("pe", "pb", "total_mv"):
-        if col not in df.columns:
-            df[col] = float("nan")
-    return df[_DAILY_BASIC_COLUMNS]
-
-
-def _parse_fina(raw: pd.DataFrame | None) -> pd.DataFrame:
-    """tushare ``fina_indicator`` frame -> canonical-raw SUPERSET rows (or empty).
-
-    The stored ``date`` is the report-period ``end_date`` (the coverage axis);
-    ``ann_date`` (disclosure) and ``end_date`` are kept RAW so the downstream
-    ``ann_date <= trade_date`` as-of alignment is byte-identical to the direct
-    path. ALL of :data:`FINA_FIELDS` are stored (missing -> NaN) so the schema is
-    field-set independent.
-    """
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_FINA_COLUMNS)
-    df = raw.rename(columns={"ts_code": "symbol"}).copy()
-    df["symbol"] = df["symbol"].astype(str)
-    df["ann_date"] = df["ann_date"].astype(str) if "ann_date" in df.columns else None
-    df["end_date"] = df["end_date"].astype(str) if "end_date" in df.columns else None
-    df["date"] = pd.to_datetime(df["end_date"], format="%Y%m%d", errors="coerce")
-    for f in FINA_FIELDS:
-        if f not in df.columns:
-            df[f] = float("nan")
-    return df[_FINA_COLUMNS]
-
-
-def _parse_index_member(raw: pd.DataFrame | None, symbol: str) -> pd.DataFrame:
-    """tushare ``index_member_all`` frame -> canonical-raw SW interval rows (or empty).
-
-    Stores the L1/L2/L3 names + ``in_date``/``out_date`` (out NaT for an active
-    membership). The level-name selection and the as-of interval lookup stay
-    downstream (the feed builds {symbol: [(name, in, out)]}, unchanged).
-    """
-    if raw is None or len(raw) == 0:
-        return pd.DataFrame(columns=_INDEX_MEMBER_COLUMNS)
-    df = raw.copy()
-    df["symbol"] = (
-        df["ts_code"].astype(str) if "ts_code" in df.columns else str(symbol)
-    )
-    for col in ("l1_name", "l2_name", "l3_name"):
-        if col not in df.columns:
-            df[col] = None
-        else:
-            df[col] = df[col].astype(object)
-    df["in_date"] = pd.to_datetime(
-        df["in_date"].astype(str), format="%Y%m%d", errors="coerce"
-    )
-    if "out_date" in df.columns:
-        df["out_date"] = pd.to_datetime(
-            df["out_date"].astype(str), format="%Y%m%d", errors="coerce"
-        )
-    else:
-        df["out_date"] = pd.NaT
-    return df[_INDEX_MEMBER_COLUMNS]
 
 
 class TushareCache:
