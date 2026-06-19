@@ -3,7 +3,7 @@
 > 目的：把 **`cache`（缓存）** 与 **`store`（面板存储）** 的边界写成可提交的契约，
 > 让后续改动有明确不变量可守。本文件只描述 **当前已实现** 的行为，不预告未实现的阶段。
 
-已实现：**D1**（边界文档化 + 低风险 token 解析去重）、**D2**（`TushareCache` endpoint specs/parsers 拆分，公开缓存行为不变）、**D3**（report-only `data/quality/` 数据质量层）、**D3b**（默认关闭的 `data-update` 质量报告钩子，report-only）、**D4**（coverage ledger `record_many` 批量写 + 进程内查找缓存，公开路径/列/语义不变）。**D5–D6 尚未实现**，本文件不声称其存在。
+已实现：**D1**（边界文档化 + 低风险 token 解析去重）、**D2**（`TushareCache` endpoint specs/parsers 拆分，公开缓存行为不变）、**D3**（report-only `data/quality/` 数据质量层）、**D3b**（默认关闭的 `data-update` 质量报告钩子，report-only）、**D4**（coverage ledger `record_many` 批量写 + 进程内查找缓存，公开路径/列/语义不变）、**D5**（opt-in 有界并发的 updater/缓存暖跑取数 + 单一全局限频器，默认串行）。**D6 尚未实现**，本文件不声称其存在。
 
 ---
 
@@ -42,7 +42,7 @@
 - 它 **不跑 factor / alpha / portfolio / backtest，不写 `PanelStore`**。
 - 真实回测仍各自走 read-through，按需补自己的缺口；`data-update` 只是把常用 endpoint 提前填好。
 
-## 4. D1 / D2 / D3 / D3b / D4 已做什么；D5+ 范围（未实现）
+## 4. D1 / D2 / D3 / D3b / D4 / D5 已做什么；D6+ 范围（未实现）
 
 **D1**（行为零改动）做两件低风险事：**把上述边界写成本契约文档**，以及 **把 `TushareFeed` /
 `IndexConstituentsFeed` 里重复的 token 解析收敛到共享的 `data/feed/secret.py::read_token`**
@@ -76,8 +76,18 @@ not-ready 拆分用**一次** `record_many` 写其 1–2 行覆盖。**公开方
 / `coverage_intraday.parquet`)、`LEDGER_COLUMNS`/`INTRADAY_LEDGER_COLUMNS` 名序、coverage 语义(仅 ok/empty 算
 覆盖;failed/not_ready 不算;snapshot 取最新成功 fetched_at)全不变**。
 
-以下明确 **仍未实现**（D5+,本文件 **不声称已实现**）：
+**D5**（opt-in 有界并发 + 单一全局限频器）给 `data-update` / 缓存暖跑的取数阶段加可选并发。新增
+`data/feed/scheduler.py::GlobalRateLimiter`(线程安全 ticket 限频器,锁内预定下一时隙、锁外 sleep,N 个 worker 汇入
+**一个**每分钟预算 —— 配额绝不按线程倍增;`monotonic`/`sleep` 可注入,只见整数预算,无 token/secret);
+`request_with_retry(..., scheduler=...)` 每次 attempt(含重试)前 acquire 全局时隙,且不再做 per-call rate sleep。
+**默认 `data_update.concurrency.max_workers=1` 保持全串行**(所有现存配置照常 validate、行为字节级不变)。
+`max_workers>1` 时:**只有日频密集 per-symbol 取数**(`market_daily`/`adj_factor`/`suspend_d`/`stk_limit`/
+`daily_basic`/`fina_indicator`)走有界线程池,**store upsert + coverage ledger 写仍在主线程按计划序**(成功 gap 先
+durable 再抛首个失败,失败 gap 不记覆盖、可重试);**snapshot、`index_weight` 90 天分页、intraday 缓存在 D5 仍串行**
+(并发开启时它们仍共享同一限频器)。`cache` 仍是 raw endpoint SoT、`PanelStore` 仍是 per-run 面板 artifact,缓存/
+store 边界不变;factor/alpha/portfolio/runtime/backtest 数学不变。
 
-- 并发 / 线程池 / 异步抓取 / 全局限频器（concurrency，**D5**)；
+以下明确 **仍未实现**（D6+,本文件 **不声称已实现**）：
+
 - endpoint schema registry（改运行时 dispatch 语义）；
-- `PanelStore` 的 append/partition 特性。
+- `PanelStore` 的 append/partition / 可选物化派生面板存储（**D6**,仅当因子研究需要可复用派生面板时才启动）。
