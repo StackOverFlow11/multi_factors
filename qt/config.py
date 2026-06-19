@@ -261,6 +261,14 @@ class IntradayCfg(_Strict):
     execution_window: tuple[str, str] = ("14:51:00", "14:56:59")
     require_cache_coverage: bool = True
     missing_execution: Literal["block"] = "block"
+    # I5c: which PIT-safe daily intraday feature the tail-rebalance score uses.
+    # Default "ret" reproduces the I5a/I5b smoke (intraday_ret_0930_1450); "mmp_ew"
+    # selects the exploratory Minute Microstructure Pressure factor. The allowed
+    # set mirrors data.clean.intraday_aggregate.INTRADAY_FEATURE_KEYS (a drift test
+    # locks them equal); an unknown key fails readably at validation.
+    score_feature: Literal[
+        "ret", "realized_vol", "vwap", "last30m_ret", "mmp_ew"
+    ] = "ret"
     # I5b execution-time price-limit feasibility. OFF by default, so every I5a /
     # daily config validates and behaves unchanged. When enabled, the intraday
     # tail model gates buys at the raw upper limit and sells at the raw lower
@@ -345,6 +353,12 @@ class OutputCfg(_Strict):
     # execution-feasibility config sets its own so it never overwrites the
     # accepted I5a artifact (same precedent as baseline_report_name).
     intraday_report_name: str | None = None
+    # H1 title for the intraday tail report. None keeps the renderer's
+    # study-aware default (I5c for the MMP factor / I5b when price-limit on / else
+    # I5a); a config that reuses the runner for a DIFFERENT study sets its own so
+    # the heading names the actual study, not a stale phase label (I5c precedent,
+    # same as subset_report_title).
+    intraday_report_title: str | None = None
 
 
 class OOSCfg(_Strict):

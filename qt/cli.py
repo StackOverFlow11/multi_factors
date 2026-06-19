@@ -179,6 +179,30 @@ def _cmd_run_phase_i5a_intraday(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_phase_i5d_intraday_groups(args: argparse.Namespace) -> int:
+    """Run the I5d MMP quintile grouped intraday-tail backtest + report/figures."""
+    from qt.intraday_group_backtest import run_phase_i5d_intraday_groups
+
+    try:
+        result = run_phase_i5d_intraday_groups(args.config)
+    except (ConfigError, ValueError, FileNotFoundError, RuntimeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    navs = " ".join(
+        f"Q{g.group}={g.metrics['final_nav']:.4f}" for g in result.groups
+    )
+    print(
+        f"OK run-phase-i5d-intraday-groups: groups={result.n_groups}, "
+        f"rebalances={result.rebalance_count}, "
+        f"covered={result.covered_symbols}/{result.requested_symbols}, "
+        f"stk_mins_live_calls={result.minute_live_calls}, "
+        f"fee_rate={result.config.cost.fee_rate}\n"
+        f"final_nav: {navs}\n"
+        f"report: {result.report_path}"
+    )
+    return 0
+
+
 def _cmd_data_update(args: argparse.Namespace) -> int:
     """Warm/update the tushare caches (P4-3); never runs a backtest."""
     from qt.data_updater import format_summary, run_data_update
@@ -268,6 +292,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_i5a.add_argument("--config", required=True, help="Path to the YAML config.")
     p_i5a.set_defaults(func=_cmd_run_phase_i5a_intraday)
+
+    p_i5d = sub.add_parser(
+        "run-phase-i5d-intraday-groups",
+        help="Run the I5d MMP quintile grouped intraday-tail backtest (5 groups).",
+    )
+    p_i5d.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_i5d.set_defaults(func=_cmd_run_phase_i5d_intraday_groups)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),

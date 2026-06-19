@@ -26,6 +26,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from data.cache.intervals import subtract_intervals
@@ -33,7 +34,7 @@ from data.cache.intraday_cache import ENDPOINT as INTRADAY_ENDPOINT
 from data.cache.intraday_cache import TushareIntradayCache
 from data.cache.intraday_coverage import IntradayCoverageLedger
 from data.cache.intraday_parquet_store import IntradayParquetStore
-from data.clean.intraday_aggregate import asof_daily_features
+from data.clean.intraday_aggregate import asof_daily_features, mmp_valid_minute_counts
 from data.clean.intraday_schema import RAW_INTRADAY_FREQ, normalize_intraday_bars
 from data.feed.tushare_flags import TushareFlagsFeed
 from portfolio.construct import TopNEqualWeight
@@ -50,7 +51,6 @@ from runtime.backtest.event_models import IntradayTailEventModel
 from runtime.backtest.sim_execution import SimExecution
 from runtime.intraday_execution import IntradayExecutionConfig
 
-_SCORE_FEATURE = "intraday_ret"  # the I3 feature family used as the smoke score
 _LOGGER_NAME = "qt.intraday_tail_framework"
 _DEFAULT_REPORT_NAME = "phase_i5a_intraday_tail_framework"
 
@@ -60,29 +60,51 @@ def _report_basename(cfg: RootConfig) -> str:
     return cfg.output.intraday_report_name or _DEFAULT_REPORT_NAME
 
 
-def _report_heading(price_limit_check: bool) -> tuple[str, str]:
-    """(H1 title, intro paragraph) — names the actual study (I5a vs I5b).
+def _report_heading(
+    score_feature: str, price_limit_check: bool, title_override: str | None = None
+) -> tuple[str, str]:
+    """(H1 title, intro paragraph) — names the actual study (I5a / I5b / I5c).
 
-    When execution-time price-limit feasibility is on this is the I5b
-    execution-hardening run, so the heading must not stay frozen at the I5a label
-    (the same stale-wording trap fixed for the P3-7/P3-8 reports).
+    The intro is keyed on the actual run (MMP factor study / execution-hardening /
+    architecture smoke); ``title_override`` (config ``intraday_report_title``) wins
+    for the H1 so a reused runner never keeps a stale phase label — the same
+    stale-wording trap fixed for the P3-7/P3-8 reports.
     """
-    if price_limit_check:
-        return (
+    if score_feature == "mmp_ew":
+        title = "# Phase I5c — MMP Minute Factor Study"
+        intro = (
+            "**This is an EXPLORATORY minute-factor study, NOT a performance claim "
+            "and NOT a broad factor search.** It runs ONE user-proposed minute "
+            "factor — Minute Microstructure Pressure (MMP) — as a PIT-safe daily "
+            "score through the I5a intraday tail event model with I5b raw "
+            "`stk_limit` execution feasibility ON. No parameters were tuned from "
+            "performance and no learned/IC weights are used."
+        )
+    elif price_limit_check:
+        title = (
             "# Phase I5b — Intraday Execution-Time Price-Limit Feasibility "
-            "(execution hardening)",
+            "(execution hardening)"
+        )
+        intro = (
             "**This is an execution-feasibility hardening run, NOT a research "
             "result.** It extends the I5a intraday tail event model with "
             "direction-aware raw `stk_limit` blocking at the execution minute; the "
             "score is still a single PIT-safe I3 feature used only to exercise the "
-            "shared event-driven backtest engine.",
+            "shared event-driven backtest engine."
         )
-    return (
-        "# Phase I5a — Intraday Tail-Rebalance Event Framework (architecture smoke)",
-        "**This is an architecture/framework run, NOT a research result.** The "
-        "score is a single PIT-safe I3 feature used solely to exercise the shared "
-        "event-driven backtest engine with an intraday tail event model.",
-    )
+    else:
+        title = (
+            "# Phase I5a — Intraday Tail-Rebalance Event Framework (architecture smoke)"
+        )
+        intro = (
+            "**This is an architecture/framework run, NOT a research result.** The "
+            "score is a single PIT-safe I3 feature used solely to exercise the "
+            "shared event-driven backtest engine with an intraday tail event model."
+        )
+    if title_override:
+        t = title_override.strip()
+        title = t if t.startswith("#") else f"# {t}"
+    return title, intro
 
 
 @dataclass(frozen=True)
@@ -92,7 +114,8 @@ class I5aResult:
     config: RootConfig
     event_order: str
     exec_cfg: IntradayExecutionConfig
-    score_feature: str
+    score_feature: str        # the resolved feature COLUMN (e.g. intraday_mmp20_ew_0930_1450)
+    score_feature_key: str    # the config key (e.g. "ret", "mmp_ew") that selected it
     requested_symbols: int
     covered_symbols: int
     uncovered_symbols: tuple[str, ...]
@@ -113,6 +136,10 @@ class I5aResult:
     up_limit_blocked_buys: int
     down_limit_blocked_sells: int
     missing_limit_rows: int
+    # I5c MMP factor diagnostics (report-only). Empty/None unless score is mmp_ew.
+    score_coverage: dict[str, int]              # {rows, valid, nan} over the daily score panel
+    minute_count_summary: dict[str, float] | None  # valid-MMP-minutes-per-(date,symbol) distribution
+    factor_diagnostics: tuple[dict, ...]        # per settled rebalance: n / stats / Spearman IC
     report_path: Path
     log_path: Path
 
@@ -243,26 +270,123 @@ def _load_price_limits(
 
 
 def _score_panel(cfg: RootConfig, bars: pd.DataFrame, logger) -> tuple[pd.Series, str]:
-    """Deterministic PIT-safe score = the I3 intraday return feature.
+    """PIT-safe daily score = the configured I3 intraday feature (I5c).
 
     ``asof_daily_features`` keeps only bars with ``available_time <= decision_time``
     before aggregating to (date, symbol), so the score for date T is known at T's
-    14:50 cutoff — exactly the information a tail decision may use. Returns the
-    score Series (named ``score``) and the source feature column name.
+    14:50 cutoff — exactly the information a tail decision may use. The feature is
+    selected by ``intraday.score_feature`` (default ``ret`` reproduces I5a/I5b;
+    ``mmp_ew`` is the exploratory MMP factor); only that one feature is requested
+    and its returned column is used EXACTLY (no prefix matching). Returns the score
+    Series (named ``score``) and the source feature column name.
     """
     ic = cfg.intraday
     assert ic is not None
     feats = asof_daily_features(
+        bars,
+        decision_time=ic.decision_time,
+        session_open=ic.session_open,
+        features=[ic.score_feature],
+    )
+    if feats.shape[1] != 1:
+        raise ValueError(
+            f"expected exactly one feature column for score_feature="
+            f"{ic.score_feature!r}, got {list(feats.columns)}."
+        )
+    col = feats.columns[0]
+    logger.info(
+        "intraday score: feature_key=%s, column=%s, %d (date,symbol) rows",
+        ic.score_feature, col, len(feats),
+    )
+    return feats[col].rename("score"), col
+
+
+# Minimum cross-sectional sample for a meaningful Spearman IC; below it the IC is
+# reported as NaN with the sample size, never silently computed on too few names.
+_MIN_IC_SAMPLE = 5
+
+
+def _score_coverage(score_series: pd.Series) -> dict[str, int]:
+    """{rows, valid, nan} over the daily score panel (report-only)."""
+    rows = int(score_series.shape[0])
+    nan = int(score_series.isna().sum())
+    return {"rows": rows, "valid": rows - nan, "nan": nan}
+
+
+def _minute_count_summary(cfg: RootConfig, bars: pd.DataFrame) -> dict[str, float] | None:
+    """Distribution of valid-MMP minutes per (date, symbol) (report-only).
+
+    Reuses :func:`mmp_valid_minute_counts` (single MMP source of truth) under the
+    SAME PIT cutoff. Returns None when there is nothing to summarize.
+    """
+    ic = cfg.intraday
+    assert ic is not None
+    counts = mmp_valid_minute_counts(
         bars, decision_time=ic.decision_time, session_open=ic.session_open
     )
-    col = next((c for c in feats.columns if c.startswith(_SCORE_FEATURE)), None)
-    if col is None:
-        raise ValueError(
-            f"no {_SCORE_FEATURE!r} feature column produced by asof_daily_features "
-            f"(got {list(feats.columns)})."
+    if counts.empty:
+        return None
+    arr = counts.to_numpy(dtype=float)
+    return {
+        "groups": float(counts.shape[0]),
+        "min": float(np.min(arr)),
+        "p10": float(np.percentile(arr, 10)),
+        "p50": float(np.percentile(arr, 50)),
+        "p90": float(np.percentile(arr, 90)),
+        "max": float(np.max(arr)),
+        "mean": float(np.mean(arr)),
+    }
+
+
+def _factor_diagnostics(
+    score_series: pd.Series,
+    model: IntradayTailEventModel,
+    nav_table: pd.DataFrame,
+    covered: list[str],
+) -> list[dict]:
+    """Per settled-rebalance score stats + Spearman IC vs exec-to-exec return.
+
+    REPORT-ONLY: the IC correlates the decision-date score with the SAME period's
+    execution-to-execution return the event model realizes (``holding_returns``),
+    over the covered, non-NaN-scored cross-section. Returns are read here purely
+    for analytics — never fed back into the factor/alpha layer (invariant #1).
+    """
+    covered_set = {str(s) for s in covered}
+    settled = {pd.Timestamp(d).normalize() for d in nav_table.index}
+    periods = [
+        p for p in model.holding_periods()
+        if pd.Timestamp(p.date).normalize() in settled
+    ]
+    rows: list[dict] = []
+    for p in periods:
+        d = pd.Timestamp(p.date).normalize()
+        try:
+            cross = score_series.xs(d, level="date")
+        except KeyError:
+            continue
+        cross = cross[[s for s in cross.index if str(s) in covered_set]].dropna()
+        n = int(cross.shape[0])
+        if n:
+            arr = cross.to_numpy(dtype=float)
+            stats = {
+                "mean": float(np.mean(arr)), "std": float(np.std(arr)),
+                "p10": float(np.percentile(arr, 10)),
+                "p50": float(np.percentile(arr, 50)),
+                "p90": float(np.percentile(arr, 90)),
+            }
+        else:
+            stats = {k: float("nan") for k in ("mean", "std", "p10", "p50", "p90")}
+        rets = model.holding_returns(p, list(cross.index))  # exec-to-exec; omits blocked
+        joined = pd.concat(
+            [cross.rename("score"), rets.rename("ret")], axis=1
+        ).dropna()
+        ic_n = int(joined.shape[0])
+        ic_val = (
+            float(joined["score"].corr(joined["ret"], method="spearman"))
+            if ic_n >= _MIN_IC_SAMPLE else float("nan")
         )
-    logger.info("intraday score: feature=%s, %d (date,symbol) rows", col, len(feats))
-    return feats[col].rename("score"), col
+        rows.append({"date": d, "n_scored": n, **stats, "ic": ic_val, "ic_n": ic_n})
+    return rows
 
 
 def run_phase_i5a_intraday(config_path: str) -> I5aResult:
@@ -332,12 +456,21 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
         lo, hi = actual_exec.get(d, (t, t))
         actual_exec[d] = (min(lo, t), max(hi, t))
 
+    # I5c factor diagnostics (report-only): score coverage, valid-MMP-minute
+    # distribution (mmp only), and per-rebalance score stats + Spearman IC.
+    score_coverage = _score_coverage(score_series)
+    minute_count_summary = (
+        _minute_count_summary(cfg, bars) if ic.score_feature == "mmp_ew" else None
+    )
+    factor_diag = _factor_diagnostics(score_series, model, nav_table, covered)
+
     report_path = Path(cfg.output.report_dir) / f"{basename}.md"
     result = I5aResult(
         config=cfg,
         event_order=cfg.backtest.event_order,
         exec_cfg=exec_cfg,
         score_feature=score_feature,
+        score_feature_key=ic.score_feature,
         requested_symbols=len(symbols),
         covered_symbols=len(covered),
         uncovered_symbols=tuple(uncovered),
@@ -354,6 +487,9 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
         up_limit_blocked_buys=model.up_limit_blocked_buys(),
         down_limit_blocked_sells=model.down_limit_blocked_sells(),
         missing_limit_rows=model.missing_limit_rows(),
+        score_coverage=score_coverage,
+        minute_count_summary=minute_count_summary,
+        factor_diagnostics=tuple(factor_diag),
         report_path=report_path,
         log_path=log_path,
     )
@@ -385,6 +521,83 @@ def _check_i5a_preconditions(cfg: RootConfig) -> None:
         )
 
 
+def _append_factor_section(lines: list[str], result: I5aResult) -> None:
+    """Score-feature disclosure + factor diagnostics (report-only, I5c §4/§5)."""
+    if result.score_feature_key == "mmp_ew":
+        lines.append("## MMP minute factor (definition & PIT)")
+        lines.append("")
+        lines.append(
+            "Per 1min bar `t`: `mid=(high+low)/2`; `S=(close-mid)/mid`; "
+            "`V=sqrt(volume/median(vol[t-20:t]))`; `B=|close-open|/(high-low+eps)`; "
+            "`R=(high-low)/(mean(hl[t-20:t])+eps)`; **`MMP_t = S*V*B*R`** "
+            "(`eps=1e-6`)."
+        )
+        lines.append(
+            "- **daily score** `intraday_mmp20_ew_0930_1450` = the EQUAL-WEIGHT mean "
+            "of valid `MMP_t` over the bars visible at the cutoff "
+            "(`[session_open, decision_time]`). The volume term lives inside "
+            "`MMP_t`; the daily aggregation is NOT additionally volume-weighted."
+        )
+        lines.append(
+            "- **rolling baselines** use ONLY the prior 20 bars `t-20..t-1` within "
+            "the SAME `(symbol, trade_date)` session — never bar `t`, never a later "
+            "bar, never the prior day's tail. The first 20 bars of each session "
+            "have NaN `MMP`."
+        )
+        lines.append(
+            "- **PIT**: a bar enters only if `available_time <= trade_date + "
+            "decision_time`; the filter runs on per-bar timestamps BEFORE daily "
+            "grouping, so post-cutoff / late-available bars cannot move the score."
+        )
+        mc = result.minute_count_summary
+        if mc is not None:
+            lines.append(
+                f"- **valid-MMP minutes per (date,symbol)**: groups "
+                f"{int(mc['groups'])}; min {int(mc['min'])} / p10 {int(mc['p10'])} / "
+                f"p50 {int(mc['p50'])} / p90 {int(mc['p90'])} / max {int(mc['max'])} "
+                f"(mean {mc['mean']:.1f})."
+            )
+        lines.append("")
+    sc = result.score_coverage
+    lines.append("## Score coverage & factor diagnostics (report-only)")
+    lines.append("")
+    lines.append(
+        f"- daily score panel: {sc['rows']} (date,symbol) rows; "
+        f"valid {sc['valid']}; NaN {sc['nan']}."
+    )
+    diag = result.factor_diagnostics
+    if not diag:
+        lines.append("- _no settled rebalance to diagnose._")
+        lines.append("")
+        return
+    lines.append(
+        "- per settled rebalance — cross-sectional score stats over covered, "
+        "non-NaN-scored names, and **Spearman IC** of the decision-date score vs "
+        "the SAME period's execution-to-execution return "
+        f"(report-only; min sample {_MIN_IC_SAMPLE}, else NaN):"
+    )
+    lines.append("")
+    lines.append("| date | n_scored | mean | std | p10 | p50 | p90 | IC(spearman) | IC_n |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
+    for r in diag:
+        ic_str = "NaN" if pd.isna(r["ic"]) else f"{r['ic']:.4f}"
+        lines.append(
+            f"| {pd.Timestamp(r['date']).date()} | {r['n_scored']} | "
+            f"{r['mean']:.6f} | {r['std']:.6f} | {r['p10']:.6f} | {r['p50']:.6f} | "
+            f"{r['p90']:.6f} | {ic_str} | {r['ic_n']} |"
+        )
+    ics = [r["ic"] for r in diag if not pd.isna(r["ic"])]
+    if ics:
+        lines.append("")
+        lines.append(
+            f"- mean IC across {len(ics)} settled period(s) with sufficient sample: "
+            f"{float(np.mean(ics)):.4f}. **Report-only, NOT a performance claim** — "
+            "a 1–3 period intraday smoke is far too small to infer factor quality; "
+            "returns are read here for analytics only and never feed the factor/alpha."
+        )
+    lines.append("")
+
+
 def _write_report(result: I5aResult, *, elapsed: float) -> None:
     """Write the I5a architecture-smoke markdown report (auditable event basis)."""
     cfg = result.config
@@ -393,7 +606,10 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     nav = result.nav_table
-    title, intro = _report_heading(result.price_limit_check)
+    title, intro = _report_heading(
+        result.score_feature_key, result.price_limit_check,
+        cfg.output.intraday_report_title,
+    )
     lines: list[str] = []
     lines.append(title)
     lines.append("")
@@ -409,12 +625,16 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
     lines.append(
         f"- execution_window: `[{ec.execution_window[0]}, {ec.execution_window[1]}]`"
     )
-    lines.append(f"- score feature: `{result.score_feature}`")
+    lines.append(
+        f"- score feature: `{result.score_feature}` "
+        f"(key=`{result.score_feature_key}`)"
+    )
     lines.append("")
     lines.append("**Returns are execution-to-execution, NOT close-to-close.** Holding "
                  "return of a period = exec_price(next) / exec_price(this) - 1, priced "
                  "at the first valid 1min close in the execution window.")
     lines.append("")
+    _append_factor_section(lines, result)
     lines.append("## Minute-cache coverage & data provenance")
     lines.append("")
     lines.append(f"- window: `{cfg.data.start}` → `{cfg.data.end}`")
@@ -589,10 +809,19 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
         "so they are blocked by the missing-bar rule; explicit ST status is NOT "
         "consulted at execution time in this smoke."
     )
-    lines.append(
-        "- The score is a single PIT-safe intraday feature to prove the framework; "
-        "this is not a performance claim and no parameters were tuned."
-    )
+    if result.score_feature_key == "mmp_ew":
+        lines.append(
+            "- **EXPLORATORY single-factor study, NOT a performance claim**: ONE "
+            "user-proposed minute factor (MMP) on one short SSE50 window. No "
+            "parameter was tuned from performance, no robustness matrix, no learned "
+            "/ IC-weighted alpha. The IC above is report-only over 1–3 periods — far "
+            "too small to infer factor quality; final NAV is reported, not claimed."
+        )
+    else:
+        lines.append(
+            "- The score is a single PIT-safe intraday feature to prove the "
+            "framework; this is not a performance claim and no parameters were tuned."
+        )
     lines.append("")
     lines.append(f"_elapsed: {elapsed:.1f}s_")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
