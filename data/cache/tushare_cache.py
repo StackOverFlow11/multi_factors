@@ -482,41 +482,51 @@ class TushareCache:
         """
         pending_start = self._pending_start()
         if pending_start is None or gap_end < pending_start:
-            self._record_one(endpoint, symbol, gap_start, gap_end, parsed,
-                             "empty", fields_hash)
+            self._record_rows(
+                endpoint, symbol,
+                [(gap_start, gap_end, parsed, "empty")], fields_hash,
+            )
             return
         has_date = "date" in parsed.columns
         hist_end = pending_start - pd.Timedelta(days=1)
+        entries = []
         if gap_start <= hist_end:
             hist = parsed[parsed["date"] <= hist_end] if has_date else parsed.iloc[0:0]
-            self._record_one(endpoint, symbol, gap_start, hist_end, hist,
-                             "empty", fields_hash)
+            entries.append((gap_start, hist_end, hist, "empty"))
         pend = parsed[parsed["date"] >= pending_start] if has_date else parsed
-        self._record_one(endpoint, symbol, pending_start, gap_end, pend,
-                         "not_ready", fields_hash)
+        entries.append((pending_start, gap_end, pend, "not_ready"))
+        self._record_rows(endpoint, symbol, entries, fields_hash)
 
-    def _record_one(
-        self, endpoint, symbol, start, end, rows, empty_status, fields_hash
-    ):
-        """Append one coverage row; ``empty_status`` is used when ``rows`` is empty."""
-        n = len(rows)
-        status = "ok" if n else empty_status
-        if status == "not_ready":
-            self.not_ready_counts[endpoint] = (
-                self.not_ready_counts.get(endpoint, 0) + 1
-            )
-        self._ledger.record(
-            endpoint=endpoint,
-            key_type="symbol",
-            key=symbol,
-            start_date=start,
-            end_date=end,
-            fields_hash=fields_hash,
-            row_count=n,
-            status=status,
-            fetched_at=self._clock(),
-            source_version=self._source_version,
-        )
+    def _record_rows(self, endpoint, symbol, entries, fields_hash):
+        """Append the coverage row(s) for ONE fetched gap in a single batch write.
+
+        ``entries`` is ``[(start, end, rows, empty_status), ...]`` (one entry for a
+        plain gap, two when the not-ready pending tail is carved out). The status
+        per entry is ``ok`` when it has rows else its ``empty_status``; the not-ready
+        counter is bumped exactly as before. One ``record_many`` replaces the
+        per-row writes for the gap.
+        """
+        batch = []
+        for start, end, rows, empty_status in entries:
+            n = len(rows)
+            status = "ok" if n else empty_status
+            if status == "not_ready":
+                self.not_ready_counts[endpoint] = (
+                    self.not_ready_counts.get(endpoint, 0) + 1
+                )
+            batch.append({
+                "endpoint": endpoint,
+                "key_type": "symbol",
+                "key": symbol,
+                "start_date": start,
+                "end_date": end,
+                "fields_hash": fields_hash,
+                "row_count": n,
+                "status": status,
+                "fetched_at": self._clock(),
+                "source_version": self._source_version,
+            })
+        self._ledger.record_many(batch)
 
     # -- index_weight gap fetch (paged in <=90-day windows) ---------------- #
     def _fetch_index_gap(self, index_code, gap_start, gap_end, fetch, fields_hash):
