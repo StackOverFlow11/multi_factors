@@ -1,0 +1,131 @@
+# Phase I5e — MMP Quintile CSI300 Independent Generalization Check
+# (EXPLORATORY, NOT a performance claim).
+#
+# Freezes the accepted I5d MMP quintile grouped-backtest machinery and re-runs it
+# on an INDEPENDENT universe — CSI300 (000300.SH) — over the SAME full window
+# (2021-06-01 .. 2026-05-31). Purpose: test whether the Q1->Q5 MMP monotonicity
+# seen on CSI500 (PR #39) attributes to the factor rather than to the original
+# universe/regime. The MMP math, equal-count bucket semantics (Q1 = lowest score,
+# Q5 = highest), the I5a/I5b intraday tail event model (14:50 decision / 14:51
+# execution, exec-to-exec returns), raw stk_limit execution feasibility, and the
+# cache-only minute loading are ALL UNCHANGED from I5d — only the universe and the
+# report labels differ. No tuning, no learned alpha, no new factors.
+#
+# Minute bars are read from the EXISTING intraday cache ONLY on the monthly anchor
+# dates (read-only; a miss is a hard blocker -> zero stk_mins live calls).
+# require_cache_coverage=false drops the minute-uncovered constituents (DISCLOSED
+# in the report; the WINDOW is NOT shortened). Daily endpoints and raw stk_limit
+# flow through the same P4 read-through cache as I5d; CSI300 daily history that is
+# not yet cached is fetched via that read-through path exactly as I5d did for
+# CSI500. The token is never printed or written.
+
+project:
+  name: quantitative_trading_phase_i5e_mmp_quintile_csi300_generalization
+  timezone: Asia/Shanghai
+data:
+  source: tushare
+  freq: D
+  start: '2021-06-01'
+  end: '2026-05-31'
+  external_secret_file: /home/shaofl/Projects/financial_projects/.config.json
+  tushare_token_key: tushare.token
+  output_name: i5e_csi300_daily
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+universe:
+  type: index
+  index_code: 000300.SH
+  symbols: []
+  min_listing_days: 60
+  filters:
+    # Selection-level daily tradability flags stay DISABLED (as in I5b/I5c/I5d): the
+    # daily close limit flag is an EOD value not known at 14:50. The honest
+    # direction-aware blocking is execution-time raw stk_limit vs the raw
+    # execution-minute close.
+    missing_close: true
+    suspended: false
+    st: false
+    limit_up_down: false
+# factors is required by the schema but the runner ignores it: the score is the I3
+# mmp_ew feature (selected via intraday.score_feature), not a config factor.
+factors:
+- name: momentum_20
+  enabled: true
+  params:
+    window: 20
+    price_col: close
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: false
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+alpha:
+  model: equal_weight
+  params: {}
+portfolio:
+  # top_n is required by the schema but IGNORED by the grouped backtest: each
+  # quantile group holds ALL its bucket members (EqualWeightAll), not a top-N cut.
+  constructor: topn_equal_weight
+  top_n: 10
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: intraday_tail_rebalance
+  cash_return: 0.0
+intraday:
+  enabled: true
+  decision_time: '14:50:00'
+  data_lag: 1min
+  session_open: '09:30:00'
+  execution_model: next_minute_close
+  execution_window:
+  - '14:51:00'
+  - '14:56:59'
+  # A 5-year CSI300 minute history is not fully cached for every constituent; drop
+  # the uncovered names (disclosed in the report) instead of failing the whole run.
+  # The window is NOT shortened.
+  require_cache_coverage: false
+  missing_execution: block
+  # I5b execution-time raw price-limit feasibility stays ON.
+  price_limit_check: true
+  require_price_limit_coverage: true
+  limit_tolerance: 1.0e-06
+  # I5c: select the exploratory MMP minute factor as the PIT-safe daily score.
+  score_feature: mmp_ew
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+analytics:
+  forward_return_periods:
+  - 1
+  - 5
+  - 20
+  # number of equal-count quantile groups for the grouped backtest.
+  quantiles: 5
+  benchmark: null
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+  intraday_report_name: phase_i5e_mmp_quintile_csi300_generalization
+  intraday_report_title: Phase I5e -- MMP Quintile CSI300 Generalization Check
