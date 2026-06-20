@@ -1,0 +1,128 @@
+# Phase I5f — intraday execution liquidity diagnostics (REPORT-ONLY, NOT research).
+#
+# Same intraday tail-rebalance smoke as I5a/I5b (decision 14:50, execute at the
+# first valid 1min close in [14:51, 14:56:59], exec-to-exec holding returns,
+# PIT-safe I3 score, raw stk_limit execution-time feasibility ON) PLUS an opt-in,
+# REPORT-ONLY execution liquidity diagnostic. For each desired rebalance trade
+# (|target_weight - current_weight|) it sizes the trade against the SELECTED
+# execution-minute 1min bar's traded amount (RMB) at max_participation_rate and
+# reports a capacity ratio. It NEVER changes fills, can_buy/can_sell, blocked
+# reasons, target weights, achieved holdings, turnover, cost, or NAV — the backtest
+# numbers are identical to running this config with the diagnostic disabled.
+#
+# Minute bars are read from the EXISTING intraday cache only (read-only; a miss is a
+# hard blocker -> zero stk_mins live calls). Raw stk_limit flows through the same P4
+# read-through cache as the daily endpoints. SSE50 (000016.SH) over the same short,
+# recent window as I5b matches the available minute-cache coverage.
+#
+# portfolio_notional is an ILLUSTRATIVE diagnostic sizing (10,000,000 RMB), not a
+# performance or tradability claim. No new factors, no tuning. The report writes to
+# its own name so it never overwrites the accepted I5a/I5b artifacts.
+
+project:
+  name: quantitative_trading_phase_i5f_intraday_liquidity_diagnostics
+  timezone: Asia/Shanghai
+data:
+  source: tushare
+  freq: D
+  start: '2026-03-03'
+  end: '2026-06-12'
+  external_secret_file: /home/shaofl/Projects/financial_projects/.config.json
+  tushare_token_key: tushare.token
+  output_name: i5f_daily
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+universe:
+  type: index
+  index_code: 000016.SH
+  symbols: []
+  min_listing_days: 60
+  filters:
+    # Selection-level daily tradability flags stay DISABLED (as in I5b): the daily
+    # close limit flag is an EOD value not known at 14:50. The honest direction-aware
+    # blocking is execution-time raw stk_limit vs the raw execution-minute close.
+    missing_close: true
+    suspended: false
+    st: false
+    limit_up_down: false
+# factors is required by the schema but the runner ignores it: the score is the I3
+# intraday_ret feature, not a config factor. Minimal valid placeholder.
+factors:
+- name: momentum_20
+  enabled: true
+  params:
+    window: 20
+    price_col: close
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: false
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+alpha:
+  model: equal_weight
+  params: {}
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 10
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: intraday_tail_rebalance
+  cash_return: 0.0
+intraday:
+  enabled: true
+  decision_time: '14:50:00'
+  data_lag: 1min
+  session_open: '09:30:00'
+  execution_model: next_minute_close
+  execution_window:
+  - '14:51:00'
+  - '14:56:59'
+  require_cache_coverage: true
+  missing_execution: block
+  # I5b execution-time raw price-limit feasibility stays ON.
+  price_limit_check: true
+  require_price_limit_coverage: true
+  limit_tolerance: 1.0e-06
+  # I5f: opt-in, report-only execution liquidity diagnostics.
+  liquidity_diagnostics:
+    enabled: true
+    portfolio_notional: 10000000
+    max_participation_rate: 0.05
+    mode: report_only
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+analytics:
+  forward_return_periods:
+  - 1
+  - 5
+  - 20
+  quantiles: 5
+  benchmark: null
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
+  intraday_report_name: phase_i5f_intraday_liquidity_diagnostics
+  intraday_report_title: Phase I5f -- Intraday Execution Liquidity Diagnostics (report-only)
