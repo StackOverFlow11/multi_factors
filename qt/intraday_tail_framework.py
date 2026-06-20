@@ -50,6 +50,10 @@ from runtime.backtest.engine import BacktestEngine
 from runtime.backtest.event_models import IntradayTailEventModel
 from runtime.backtest.sim_execution import SimExecution
 from runtime.intraday_execution import IntradayExecutionConfig
+from runtime.intraday_liquidity import (
+    LiquidityDiagnostics,
+    build_liquidity_diagnostics,
+)
 
 _LOGGER_NAME = "qt.intraday_tail_framework"
 _DEFAULT_REPORT_NAME = "phase_i5a_intraday_tail_framework"
@@ -140,6 +144,8 @@ class I5aResult:
     score_coverage: dict[str, int]              # {rows, valid, nan} over the daily score panel
     minute_count_summary: dict[str, float] | None  # valid-MMP-minutes-per-(date,symbol) distribution
     factor_diagnostics: tuple[dict, ...]        # per settled rebalance: n / stats / Spearman IC
+    # I5f execution liquidity diagnostics (report-only). None unless enabled.
+    liquidity_diagnostics: LiquidityDiagnostics | None
     report_path: Path
     log_path: Path
 
@@ -423,6 +429,7 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
         require_price_limit_coverage=ic.require_price_limit_coverage,
     )
     execution = SimExecution(fee_rate=cfg.cost.fee_rate)
+    ld_cfg = ic.liquidity_diagnostics
     engine = BacktestEngine(
         model=model,
         universe=universe,
@@ -432,9 +439,37 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
         selection_panel=panel,
         initial_nav=cfg.backtest.initial_nav,
         cash_return=cfg.backtest.cash_return,
+        # I5f: record the per-rebalance (target, current) plan ONLY when the
+        # report-only liquidity diagnostics are enabled. Default-off keeps the
+        # engine loop byte-identical (no plan rows, no behaviour change).
+        record_rebalance_plan=ld_cfg.enabled,
     )
     nav_table = engine.run()
     logger.info("intraday backtest: %d settled periods", len(nav_table))
+
+    # I5f execution liquidity diagnostics — REPORT-ONLY, computed AFTER settlement
+    # from logs the backtest already produced; it never altered fills or NAV.
+    liquidity_diagnostics = None
+    if ld_cfg.enabled:
+        liquidity_diagnostics = build_liquidity_diagnostics(
+            plan_log=engine.rebalance_plan_log(),
+            fills=model.fills(),
+            up_blocked_buy_keys=model.up_limit_blocked_buy_keys(),
+            down_blocked_sell_keys=model.down_limit_blocked_sell_keys(),
+            bars=bars,
+            portfolio_notional=ld_cfg.portfolio_notional,
+            max_participation_rate=ld_cfg.max_participation_rate,
+        )
+        logger.info(
+            "intraday liquidity diagnostics (report-only): %d desired trades, "
+            "%d feasibility-blocked, %d missing-capacity, %d inspected, %d below 1.0x "
+            "capacity (did NOT alter fills/NAV)",
+            liquidity_diagnostics.total_desired_trades,
+            liquidity_diagnostics.feasibility_blocked,
+            liquidity_diagnostics.missing_capacity_rows,
+            liquidity_diagnostics.inspected,
+            liquidity_diagnostics.below_capacity,
+        )
 
     blocked = model.blocked_fills()
     blocked_counts: dict[str, int] = {}
@@ -490,6 +525,7 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
         score_coverage=score_coverage,
         minute_count_summary=minute_count_summary,
         factor_diagnostics=tuple(factor_diag),
+        liquidity_diagnostics=liquidity_diagnostics,
         report_path=report_path,
         log_path=log_path,
     )
@@ -595,6 +631,80 @@ def _append_factor_section(lines: list[str], result: I5aResult) -> None:
             "a 1–3 period intraday smoke is far too small to infer factor quality; "
             "returns are read here for analytics only and never feed the factor/alpha."
         )
+    lines.append("")
+
+
+def _append_liquidity_section(lines: list[str], result: I5aResult) -> None:
+    """Report-only execution liquidity diagnostics (I5f). No-op if disabled."""
+    ld = result.liquidity_diagnostics
+    if ld is None:
+        return
+    lines.append("## Execution liquidity diagnostics (I5f, report-only)")
+    lines.append("")
+    lines.append(
+        "**Report-only: these diagnostics did NOT alter fills, can_buy/can_sell, "
+        "blocked reasons, target weights, achieved holdings, turnover, cost, or NAV.** "
+        "They size each desired rebalance trade against the SELECTED execution-minute "
+        "1min bar's traded `amount` (RMB) at a participation cap — no future bar, no "
+        "daily amount/volume/close, no EOD proxy."
+    )
+    lines.append("")
+    lines.append(
+        f"- desired trade notional = `|target_weight - current_weight| * "
+        f"portfolio_notional`; portfolio_notional = `{ld.portfolio_notional:,.0f}` RMB "
+        "(illustrative diagnostic sizing, NOT a performance claim)."
+    )
+    lines.append(
+        f"- bar capacity = `execution_minute_amount * max_participation_rate`; "
+        f"max_participation_rate = `{ld.max_participation_rate}`."
+    )
+    lines.append(
+        "- capacity_ratio = bar_capacity / desired_notional; `>= 1` ⇒ the capped bar "
+        "covers the trade, `< 1` ⇒ potentially liquidity-constrained."
+    )
+    lines.append("")
+    lines.append(f"- total desired trades inspected: {ld.total_desired_trades}")
+    lines.append(
+        f"- excluded — existing execution feasibility already blocked them "
+        f"(missing bar / missing price / raw stk_limit; original reason kept, NOT "
+        f"reclassified as liquidity): {ld.feasibility_blocked}"
+    )
+    lines.append(f"- missing capacity-data rows (amount missing/NaN/≤0): {ld.missing_capacity_rows}")
+    lines.append(f"- trades with a usable capacity ratio: {ld.inspected}")
+    lines.append(f"- trades below 100% capacity (ratio < 1.0): {ld.below_capacity}")
+    rs = ld.ratio_stats
+    if ld.inspected > 0:
+        lines.append(
+            f"- capacity ratio distribution — min `{rs['min']:.3f}` / p10 "
+            f"`{rs['p10']:.3f}` / median `{rs['median']:.3f}` / p90 `{rs['p90']:.3f}`."
+        )
+    else:
+        lines.append("- capacity ratio distribution: _no inspected trade with a usable ratio._")
+    lines.append("")
+    if ld.top_constrained:
+        lines.append(
+            "Top constrained trades (lowest capacity ratio first; report-only):"
+        )
+        lines.append("")
+        lines.append(
+            "| date | symbol | direction | desired_notional | bar_capacity_notional | capacity_ratio |"
+        )
+        lines.append("|---|---|---|---|---|---|")
+        for t in ld.top_constrained:
+            lines.append(
+                f"| {pd.Timestamp(t.date).date()} | {t.symbol} | {t.direction} | "
+                f"{t.desired_notional:,.0f} | {t.bar_capacity_notional:,.0f} | "
+                f"{t.capacity_ratio:.3f} |"
+            )
+    else:
+        lines.append("_no constrained trade to list._")
+    lines.append("")
+    lines.append(
+        "- **No alpha / performance / tradability claim** is made from this "
+        "diagnostic: it only flags where a single execution minute may be too thin "
+        "for the sized trade; partial-fill / volume-cap enforcement is explicitly "
+        "out of scope here."
+    )
     lines.append("")
 
 
@@ -770,6 +880,7 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
             "rule; strict mode fails before any result — never a silent passed check)"
         )
     lines.append("")
+    _append_liquidity_section(lines, result)
     lines.append("## Achieved holdings (sample)")
     lines.append("")
     h = result.holdings_log

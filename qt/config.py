@@ -242,6 +242,48 @@ def _parse_hms(value: str) -> int:
     return h * 3600 + m * 60 + s
 
 
+class LiquidityDiagnosticsCfg(_Strict):
+    """Opt-in, report-only intraday execution liquidity diagnostics (I5f).
+
+    OFF by default, so every existing config validates and behaves unchanged.
+    When enabled, the intraday-tail report estimates — per desired rebalance trade
+    — whether the SELECTED execution-minute 1min bar's traded ``amount`` (RMB) can
+    absorb the trade at ``max_participation_rate``. This is REPORT-ONLY: it never
+    changes fills, can_buy/can_sell, blocked reasons, target weights, achieved
+    holdings, turnover, cost, NAV, factor scores, MMP grouping, alpha, or portfolio
+    construction. Only ``mode='report_only'`` is supported; an enforcement mode
+    fails readably (this layer must not move a real trade).
+    """
+
+    enabled: bool = False
+    portfolio_notional: float | None = None
+    max_participation_rate: float = 0.05
+    mode: str = "report_only"
+
+    @model_validator(mode="after")
+    def _check(self) -> "LiquidityDiagnosticsCfg":
+        if not self.enabled:
+            return self
+        if self.mode != "report_only":
+            raise ValueError(
+                "intraday.liquidity_diagnostics.mode only supports 'report_only' "
+                "(report-only diagnostics never change fills/NAV; no enforcement "
+                f"mode is implemented); got {self.mode!r}."
+            )
+        if self.portfolio_notional is None or float(self.portfolio_notional) <= 0.0:
+            raise ValueError(
+                "intraday.liquidity_diagnostics.portfolio_notional must be a "
+                "positive RMB number when enabled (it scales the desired trade "
+                f"notional); got {self.portfolio_notional!r}."
+            )
+        if not (0.0 < float(self.max_participation_rate) <= 1.0):
+            raise ValueError(
+                "intraday.liquidity_diagnostics.max_participation_rate must be in "
+                f"(0, 1]; got {self.max_participation_rate!r}."
+            )
+        return self
+
+
 class IntradayCfg(_Strict):
     """Opt-in intraday tail-rebalance event model declaration (I5a).
 
@@ -280,6 +322,12 @@ class IntradayCfg(_Strict):
     price_limit_check: bool = False
     require_price_limit_coverage: bool = True
     limit_tolerance: float = 1e-6
+    # I5f: opt-in, report-only execution liquidity diagnostics. Default-off nested
+    # block; with the default it changes nothing (existing configs validate and
+    # behave byte-identically).
+    liquidity_diagnostics: LiquidityDiagnosticsCfg = Field(
+        default_factory=LiquidityDiagnosticsCfg
+    )
 
     @field_validator("limit_tolerance")
     @classmethod

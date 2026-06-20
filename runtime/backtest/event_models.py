@@ -383,3 +383,17 @@ class IntradayTailEventModel:
     def missing_limit_rows(self) -> int:
         """Count of evaluated (date, symbol) pairs with no usable raw limit row."""
         return len(self._unchecked_limits)
+
+    def up_limit_blocked_buy_keys(self) -> set[tuple[pd.Timestamp, str]]:
+        """(rebalance date, symbol) keys whose BUY was blocked by a raw up-limit.
+
+        Read-only view of the idempotent diagnostic state populated during
+        ``feasibility()``. Exposed so a report-only liquidity diagnostic (I5f) can
+        skip trades the existing feasibility already blocked, without re-deriving
+        or reclassifying the block reason.
+        """
+        return set(self._up_blocked_buys.keys())
+
+    def down_limit_blocked_sell_keys(self) -> set[tuple[pd.Timestamp, str]]:
+        """(rebalance date, symbol) keys whose SELL was blocked by a raw down-limit."""
+        return set(self._down_blocked_sells.keys())

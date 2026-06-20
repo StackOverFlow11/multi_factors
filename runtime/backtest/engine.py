@@ -88,6 +88,7 @@ class BacktestEngine:
         selection_panel: pd.DataFrame,
         initial_nav: float = 1.0,
         cash_return: float = 0.0,
+        record_rebalance_plan: bool = False,
     ) -> None:
         self._model = model
         self._universe = universe
@@ -97,9 +98,16 @@ class BacktestEngine:
         self._panel = selection_panel
         self._initial_nav = float(initial_nav)
         self._cash_return = float(cash_return)
+        # I5f (report-only): when True, record the per-rebalance (target, current)
+        # weights the engine actually used so the intraday-tail report can size
+        # desired trades for liquidity diagnostics. Purely additive bookkeeping —
+        # default False keeps the loop byte-identical (no plan rows recorded), so
+        # NAV / fills / holdings / feasibility are untouched.
+        self._record_rebalance_plan = bool(record_rebalance_plan)
         self._feasibility_log: list[dict] = []
         self._holdings_log: list[dict] = []
         self._event_log: list[dict] = []
+        self._rebalance_plan_log: list[dict] = []
 
     # -- run -------------------------------------------------------------- #
     def run(self) -> pd.DataFrame:
@@ -114,6 +122,7 @@ class BacktestEngine:
         self._feasibility_log = []
         self._holdings_log = []
         self._event_log = []
+        self._rebalance_plan_log = []
         for i, period in enumerate(periods):
             turnover, cost, gross, net = self._step(period)
             nav = nav * (1.0 + net)
@@ -152,6 +161,8 @@ class BacktestEngine:
             target = pd.Series(dtype=float)  # nothing to hold -> exit what we can
 
         symbols = sorted(set(current.index) | set(target.index))
+        if self._record_rebalance_plan:
+            self._record_rebalance_plan_rows(period.date, target, current, symbols)
         can_buy, can_sell = self._model.feasibility(period, symbols)
         self._execution.rebalance_to(
             target, period.date, can_buy=can_buy, can_sell=can_sell
@@ -170,6 +181,44 @@ class BacktestEngine:
         self._record_feasibility(period.date, achieved)
         self._record_holdings(period.date, achieved)
         return (turnover, cost, gross, net)
+
+    # -- rebalance plan log (I5f, report-only; recorded only when requested) - #
+    def _record_rebalance_plan_rows(
+        self,
+        date: pd.Timestamp,
+        target: pd.Series,
+        current: pd.Series,
+        symbols: list[str],
+    ) -> None:
+        """Record the (target, current) weight the engine used per symbol.
+
+        Captures EXACTLY the weights the rebalance used (``current`` is the
+        post-settle drifted book, ``target`` the constructor output), so a desired
+        trade ``target - current`` is faithful and cannot be re-derived wrongly
+        downstream. Report-only bookkeeping; does not affect the rebalance.
+        """
+        for sym in symbols:
+            s = str(sym)
+            self._rebalance_plan_log.append(
+                {
+                    "date": date,
+                    "symbol": s,
+                    "target_weight": float(target.get(s, 0.0)),
+                    "current_weight": float(current.get(s, 0.0)),
+                }
+            )
+
+    def rebalance_plan_log(self) -> pd.DataFrame:
+        """Per-rebalance (date, symbol, target_weight, current_weight) plan.
+
+        Empty (no rows) unless the engine was built with
+        ``record_rebalance_plan=True``. Report-only: never consulted by the
+        rebalance/settlement loop.
+        """
+        cols = ["date", "symbol", "target_weight", "current_weight"]
+        if not self._rebalance_plan_log:
+            return pd.DataFrame(columns=cols)
+        return pd.DataFrame(self._rebalance_plan_log)[cols].reset_index(drop=True)
 
     # -- feasibility log -------------------------------------------------- #
     def _record_feasibility(self, date: pd.Timestamp, achieved: pd.Series) -> None:
