@@ -56,6 +56,7 @@ import pandas as pd
 from data.cache.coverage import CoverageLedger
 from data.cache.intervals import merge_intervals, subtract_intervals
 from data.cache.parquet_store import CacheParquetStore
+from data.cache.schema_registry import REGISTRY, SchemaGuard
 from data.cache.tushare_parsers import (
     _parse_adj,
     _parse_daily,
@@ -153,9 +154,15 @@ class TushareCache:
         not_ready_days: int = 0,
         recent_tail_overrides: dict[str, int] | None = None,
         max_workers: int = 1,
+        schema_guard: SchemaGuard | None = None,
     ) -> None:
         self._store = store
         self._ledger = ledger
+        # D-series schema drift guard. None (default) keeps every parse site a
+        # byte-identical passthrough (zero behaviour change); a guard runs the raw/
+        # canonical/hash drift checks around the SAME parse call (report-only or
+        # strict). The guard never sees a token or a data value — only column names.
+        self._schema_guard = schema_guard
         self._refresh_recent_days = int(refresh_recent_days)
         self._refresh_dimension_days = int(refresh_dimension_days)
         self._force_refresh = set(force_refresh or ())
@@ -204,6 +211,41 @@ class TushareCache:
             }
             for ep in ALL_ENDPOINTS
         }
+
+    # -- D-series schema drift guard --------------------------------------- #
+    def _guarded_parse(self, endpoint, raw, parse):
+        """Parse ``raw`` for ``endpoint``, optionally running the drift guard.
+
+        With no guard this is an EXACT passthrough (``parse(raw)``) — zero
+        behaviour change. With a guard: check #4 (stored-schema hash, deduped to
+        once per endpoint per run) runs first, then #1/#2 on the raw frame, then
+        the SAME parse, then #3 on the parsed canonical columns. The guard only
+        ever inspects column names, never a value or token.
+        """
+        if self._schema_guard is None:
+            return parse(raw)
+        guard = self._schema_guard
+        guard.check_fields_hash(
+            endpoint,
+            REGISTRY[endpoint].expected_canonical_hash,
+            self._ledger.last_fields_hash(endpoint),
+        )
+        guard.inspect_raw(endpoint, raw)
+        parsed = parse(raw)
+        guard.inspect_canonical(endpoint, list(parsed.columns))
+        return parsed
+
+    def schema_findings(self) -> tuple:
+        """Accumulated schema-drift findings (empty when no guard is attached)."""
+        if self._schema_guard is None:
+            return ()
+        return self._schema_guard.findings()
+
+    def schema_summary(self) -> "dict | None":
+        """Schema-guard count summary, or None when no guard is attached."""
+        if self._schema_guard is None:
+            return None
+        return self._schema_guard.summary()
 
     # -- dense per-symbol date-range endpoints ----------------------------- #
     def daily_bars(
@@ -484,7 +526,7 @@ class TushareCache:
                     first_exc = res.exc
                 continue
             self.fetch_counts[endpoint] = self.fetch_counts.get(endpoint, 0) + 1
-            parsed = parse(res.raw)
+            parsed = self._guarded_parse(endpoint, res.raw, parse)
             if len(parsed):
                 self._store.upsert_symbol(endpoint, symbol, parsed, key_cols)
                 self.written_counts[endpoint] = (
@@ -590,7 +632,7 @@ class TushareCache:
         """Fetch one gap, upsert raw rows, record coverage (incl. empty/not-ready)."""
         raw = fetch(symbol, _compact(gap_start), _compact(gap_end))
         self.fetch_counts[endpoint] = self.fetch_counts.get(endpoint, 0) + 1
-        parsed = parse(raw)
+        parsed = self._guarded_parse(endpoint, raw, parse)
         if len(parsed):
             self._store.upsert_symbol(endpoint, symbol, parsed, key_cols)
             self.written_counts[endpoint] = (
@@ -677,7 +719,9 @@ class TushareCache:
             )
             raw = fetch(index_code, _compact(win_start), _compact(win_end))
             self.fetch_counts[INDEX_WEIGHT] += 1
-            parsed = _parse_index_weight(raw, index_code)
+            parsed = self._guarded_parse(
+                INDEX_WEIGHT, raw, lambda r: _parse_index_weight(r, index_code)
+            )
             if not parsed.empty:
                 frames.append(parsed)
                 total_rows += len(parsed)
@@ -717,7 +761,7 @@ class TushareCache:
         """Fetch one snapshot, upsert raw rows, record coverage (incl. empty)."""
         raw = fetch()
         self.fetch_counts[endpoint] = self.fetch_counts.get(endpoint, 0) + 1
-        parsed = parse(raw)
+        parsed = self._guarded_parse(endpoint, raw, parse)
         row_count = len(parsed)
         if row_count:
             self._store.upsert_symbol(endpoint, key, parsed, key_cols)
