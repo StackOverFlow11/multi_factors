@@ -3,7 +3,7 @@
 > 目的：把 **`cache`（缓存）** 与 **`store`（面板存储）** 的边界写成可提交的契约，
 > 让后续改动有明确不变量可守。本文件只描述 **当前已实现** 的行为，不预告未实现的阶段。
 
-已实现：**D1**（边界文档化 + 低风险 token 解析去重）、**D2**（`TushareCache` endpoint specs/parsers 拆分，公开缓存行为不变）、**D3**（report-only `data/quality/` 数据质量层）、**D3b**（默认关闭的 `data-update` 质量报告钩子，report-only）、**D4**（coverage ledger `record_many` 批量写 + 进程内查找缓存，公开路径/列/语义不变）、**D5**（opt-in 有界并发的 updater/缓存暖跑取数 + 单一全局限频器，默认串行）。**D6 尚未实现**，本文件不声称其存在。
+已实现：**D1**（边界文档化 + 低风险 token 解析去重）、**D2**（`TushareCache` endpoint specs/parsers 拆分，公开缓存行为不变）、**D3**（report-only `data/quality/` 数据质量层）、**D3b**（默认关闭的 `data-update` 质量报告钩子，report-only）、**D4**（coverage ledger `record_many` 批量写 + 进程内查找缓存，公开路径/列/语义不变）、**D5**（opt-in 有界并发的 updater/缓存暖跑取数 + 单一全局限频器，默认串行）、**schema 注册表 + drift 守卫**（默认关闭、opt-in 的 endpoint schema 校验，report-only / strict；PR #57）。**D6 尚未实现**，本文件不声称其存在。
 
 ---
 
@@ -87,7 +87,9 @@ durable 再抛首个失败,失败 gap 不记覆盖、可重试);**snapshot、`in
 (并发开启时它们仍共享同一限频器)。`cache` 仍是 raw endpoint SoT、`PanelStore` 仍是 per-run 面板 artifact,缓存/
 store 边界不变;factor/alpha/portfolio/runtime/backtest 数学不变。
 
+**schema 注册表 + drift 守卫**（默认关闭、opt-in，行为保持）新增 `data/cache/schema_registry.py`:每端点声明式 `EndpointSchema`(required / optional / known_extra 源列,从 `tushare_specs.py` 派生=单一真相源)+ 有状态 `SchemaGuard`。**核心**:parser 硬编码 canonical 列集 + 防御性 `fillna`,故存储侧 `fields_hash` 对 tushare 改列免疫——真风险在 raw 输入侧,守卫遂在 **parse 之前**校验 raw frame:#1 缺 required 源列(HARD)/ #2 真未知额外列(WARNING,被 `known_extra_columns` 收窄)/ #3 canonical ≠ 注册表(HARD)/ #4 `fields_hash` ≠ ledger 历史(HARD,迁移检测器)。`report_only` 只报告;`strict` 在 upsert 前 raise(该 gap 不记覆盖、可重试,沿"failed fetch 不记覆盖")。接进 `qt/pipeline.py::_build_cache`(仅 enabled 时建);`data/cache/coverage.py` 加只读 `last_fields_hash`。**默认 `data.cache.schema_guard.enabled=false` ⇒ `_guarded_parse` 直通、字节级不变**;findings/日志/异常只含 endpoint+列名,无 token/secret;**仅日频 `TushareCache`**(分钟守卫 defer),**未接 live `data-update`**(follow-up)。
+
 以下明确 **仍未实现**（D6+,本文件 **不声称已实现**）：
 
-- endpoint schema registry（改运行时 dispatch 语义）；
+- 改运行时 dispatch 语义的 endpoint schema 注册表（PR #57 已加 default-off drift **校验**守卫;用注册表改运行时 dispatch 仍未做）；
 - `PanelStore` 的 append/partition / 可选物化派生面板存储（**D6**,仅当因子研究需要可复用派生面板时才启动）。
