@@ -35,6 +35,21 @@ class ProjectCfg(_Strict):
     timezone: str = "Asia/Shanghai"
 
 
+class SchemaGuardCfg(_Strict):
+    """Default-off endpoint schema drift guard for the tushare cache (D-series).
+
+    Disabled by DEFAULT — ``enabled=False`` keeps every existing config byte/
+    behaviour identical (no guard is constructed, every cache parse site stays a
+    passthrough). When ``enabled``, the cache runs report-only (or ``strict``,
+    which raises on a HARD drift) checks on each endpoint's RAW source columns,
+    parsed canonical columns, and stored-schema hash vs the ledger history. The
+    guard sees only column + endpoint names — never a token or a data value.
+    """
+
+    enabled: bool = False
+    mode: Literal["report_only", "strict"] = "report_only"
+
+
 class CacheCfg(_Strict):
     """Persistent endpoint-level raw cache (P4-1 market bars + P4-2 universe/tradability).
 
@@ -68,6 +83,8 @@ class CacheCfg(_Strict):
     # Endpoint names (e.g. "market_daily", "index_weight") to always refetch in
     # full, ignoring coverage — for forcing a clean re-pull of one endpoint.
     force_refresh: list[str] = Field(default_factory=list)
+    # D-series schema drift guard (default-off; see SchemaGuardCfg).
+    schema_guard: SchemaGuardCfg = Field(default_factory=SchemaGuardCfg)
 
     @field_validator("refresh_recent_days")
     @classmethod

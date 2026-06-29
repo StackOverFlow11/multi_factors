@@ -158,6 +158,25 @@ class CoverageLedger:
         self._snapshot_memo[memo_key] = result
         return result
 
+    def last_fields_hash(self, endpoint: str) -> str | None:
+        """``fields_hash`` of the most-recent (by ``fetched_at``) row for ``endpoint``.
+
+        READ-ONLY, additive (D-series schema guard): the stored canonical-column
+        hash from the last fetch of any key of ``endpoint``, or ``None`` when the
+        endpoint was never recorded. Reuses the in-process frame cache; does NOT
+        change ``LEDGER_COLUMNS``, the parquet path, or coverage semantics.
+        """
+        ledger = self._load()
+        if ledger.empty:
+            return None
+        sub = ledger[ledger["endpoint"] == endpoint]
+        if sub.empty:
+            return None
+        value = sub.loc[sub["fetched_at"].idxmax(), "fields_hash"]
+        if pd.isna(value):  # pd.isna(None) is True — covers None / NaN / NaT
+            return None
+        return str(value)
+
     # -- write -------------------------------------------------------------- #
     def _normalize_row(self, row: dict) -> dict:
         """Normalize one input row to the ledger dtypes/order (no secret fields)."""

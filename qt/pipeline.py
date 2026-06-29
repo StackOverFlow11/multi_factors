@@ -563,6 +563,14 @@ def _build_cache(cfg: RootConfig):
         return None
     from data.cache import CacheParquetStore, CoverageLedger, TushareCache
 
+    # D-series schema drift guard: built ONLY when opted in (default-off => None =>
+    # every cache parse site stays a byte-identical passthrough).
+    schema_guard = None
+    if cache_cfg.schema_guard.enabled:
+        from data.cache.schema_registry import SchemaGuard
+
+        schema_guard = SchemaGuard(mode=cache_cfg.schema_guard.mode)
+
     root = cache_cfg.root_dir
     return TushareCache(
         CacheParquetStore(root),
@@ -570,6 +578,7 @@ def _build_cache(cfg: RootConfig):
         refresh_recent_days=cache_cfg.refresh_recent_days,
         refresh_dimension_days=cache_cfg.refresh_dimension_days,
         force_refresh=tuple(cache_cfg.force_refresh),
+        schema_guard=schema_guard,
     )
 
 
@@ -681,6 +690,15 @@ def _log_run_cache_stats(cache, logger: logging.Logger) -> None:
     if not stats:
         return
     logger.info("%s", _format_cache_stats(stats))
+    # D-series schema drift guard: one secret-free count line, only when a guard
+    # is attached (default-off => schema_summary() is None => nothing logged).
+    summary_getter = getattr(cache, "schema_summary", None)
+    summary = summary_getter() if summary_getter is not None else None
+    if summary is not None:
+        logger.info(
+            "schema guard: hard=%d warning=%d total=%d",
+            int(summary["hard"]), int(summary["warning"]), int(summary["total"]),
+        )
 
 
 def _load_panel(
