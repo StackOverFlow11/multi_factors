@@ -229,6 +229,24 @@ def _cmd_data_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_data_backfill(args: argparse.Namespace) -> int:
+    """Backfill the tushare caches over the WIDE historical window (PR-2); no backtest."""
+    from qt.data_backfill import format_summary, run_data_backfill
+
+    try:
+        result = run_data_backfill(args.config)
+    except (ConfigError, ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"OK data-backfill: {result.universe_size} symbols in "
+        f"{result.n_batches} batch(es), failed_batches={result.failed_batches} "
+        f"({result.elapsed_seconds:.1f}s)\n"
+        f"{format_summary(result)}"
+    )
+    return 0
+
+
 def _cmd_fetch_data(args: argparse.Namespace) -> int:
     """Stage helper: run the spine and report the data-fetch stage."""
     return _run_pipeline_cmd(args.config, "fetch-data")
@@ -294,6 +312,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_du.add_argument("--config", required=True, help="Path to the YAML config.")
     p_du.set_defaults(func=_cmd_data_update)
+
+    p_bf = sub.add_parser(
+        "data-backfill",
+        help="Backfill the tushare raw caches over the WIDE history (PR-2); no backtest.",
+    )
+    p_bf.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_bf.set_defaults(func=_cmd_data_backfill)
 
     p_i5a = sub.add_parser(
         "run-phase-i5a-intraday",

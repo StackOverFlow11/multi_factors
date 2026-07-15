@@ -116,6 +116,29 @@ data_update:
   # per thread; store + ledger writes stay deterministic.
   concurrency:
     max_workers: 4
+  # PR-2 historical backfill knobs — consumed ONLY by the SEPARATE, manual
+  #   python -m qt.cli data-backfill --config config/data_update_all_a.yaml
+  # command. The nightly `data-update` job IGNORES this block entirely.
+  #
+  # Backfill warms the caches over the WIDE window [backfill.start, today] (the
+  # full history), NOT the incremental `today - lookback_days` tail. It processes
+  # the universe in per-symbol batches of `chunk_size`, tolerates a per-batch
+  # failure (logged + skipped + retryable on re-run), and is resumable via the
+  # coverage ledgers (a re-run fetches only still-uncovered gaps — safe to Ctrl-C
+  # and re-run). Run it BEFORE enabling the nightly timer: backfill history first,
+  # then keep it current nightly.
+  #
+  # ⚠️ HONEST COST — a COLD all-A MINUTE backfill is a LONG, MANY-HOUR (potentially
+  # multi-DAY) operation. At all-A scale (~5500 symbols × ~5 years of 1min bars,
+  # paged ≤23 trading days / ≤8000 rows per call) `include_minute: true` is by far
+  # the most expensive path here — tens of thousands of stk_mins calls, run against
+  # the rate limit. It is resumable, so run it in stages and re-run to finish; if
+  # you only need daily/universe/financial history first, set include_minute: false
+  # for a much shorter run and backfill minutes separately.
+  backfill:
+    start: "2020-01-01"     # WIDE backfill window start (window = [start, today])
+    chunk_size: 300         # per-batch symbol count (durable + failure-isolated)
+    include_minute: true    # also backfill 1min history (see HONEST COST above)
 
 # --- unused by data-update (schema-only stubs) ------------------------------- #
 factors:
