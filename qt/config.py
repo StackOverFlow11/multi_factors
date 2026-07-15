@@ -754,6 +754,12 @@ class DataUpdateCfg(_Strict):
 
     timezone: str = "Asia/Shanghai"
     scheduled_start: str = "21:00:00"
+    # Which universe the warm resolves. "config" (default) = the existing
+    # behavior (static symbols / union of index constituents via ``universe``),
+    # byte-identical. "all_a" = the WHOLE listed A-share market from the
+    # stock_basic snapshot (post-market all-A auto-fetch). Only ``data-update``
+    # reads this; it never leaks into the backtest universe (UniverseCfg).
+    universe_scope: Literal["config", "all_a"] = "config"
     endpoints: list[str] = Field(default_factory=list)
     index_codes: list[str] = Field(default_factory=list)
     lookback_days: int = 400

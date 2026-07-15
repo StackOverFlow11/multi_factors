@@ -16,6 +16,9 @@ Provides the cross-sectional inputs the pipeline needs:
         the value-factor inversion happens in the pipeline, P3-5).
   * ``listing_dates(symbols)``    -> {symbol: list_date}  (``stock_basic.list_date``,
         for the ``min_listing_days`` buy filter, UNI-008).
+  * ``all_a_symbols()``           -> [symbol, ...]  (every listed A-share symbol from
+        the same ``stock_basic`` snapshot; resolves the "all-A" data-update warm with
+        no new endpoint — the snapshot is the whole listed market, not symbol-filtered).
   * ``industry(symbols)``         -> {symbol: industry}  (``stock_basic.industry``,
         the CURRENT tag). Retained as an accessor but NO LONGER wired into
         neutralization — the current tag would broadcast a future industry onto past
@@ -111,6 +114,27 @@ class TushareCovariatesFeed:
                 str(r.list_date), format="%Y%m%d", errors="coerce"
             )
         return out
+
+    def all_a_symbols(self) -> list[str]:
+        """Return EVERY listed A-share symbol from the ``stock_basic`` snapshot.
+
+        tushare ``stock_basic`` returns the WHOLE listed market (it is NOT filtered
+        by any symbols arg), so its snapshot already carries the full listed
+        A-share list. This resolves the "all-A" universe with NO new endpoint: it
+        reuses the same read-through ``stock_basic`` path as ``listing_dates`` (a
+        fully-covered warm run makes ~0 calls). Only the symbol column is read —
+        never the current-tag industry. Returns a sorted, de-duplicated list of
+        ``str`` symbols (``[]`` if the snapshot is empty).
+        """
+        if self._cache is not None:
+            df = self._cache.stock_basic(self._stock_basic_fetch())
+            col = "symbol"
+        else:
+            df = self._stock_basic_fetch()()
+            col = "ts_code"
+        if df is None or len(df) == 0 or col not in df.columns:
+            return []
+        return sorted({str(s) for s in df[col].tolist()})
 
     def _stock_basic_fetch(self):
         """`() -> raw stock_basic frame` (ts_code, list_date) — global snapshot.

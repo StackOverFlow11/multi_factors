@@ -1,0 +1,171 @@
+# All-A data updater config — the daily 21:00 (Asia/Shanghai) incremental warm
+# over the WHOLE listed A-share market (post-market all-A auto-fetch, PR-1).
+#
+# Used ONLY by:  python -m qt.cli data-update --config config/data_update_all_a.yaml
+# It warms/updates the read-through caches and runs NOTHING else (no factors,
+# no alpha, no portfolio, no backtest, no PanelStore). Scheduling is external:
+# the systemd timer under deploy/systemd/ fires the CLI at 21:00 Asia/Shanghai
+# (see docs/ops/data_update_schedule.md).
+#
+# The ONLY substantive difference from config/data_update.yaml is
+# data_update.universe_scope: all_a — the warm resolves every listed A-share
+# symbol from the stock_basic snapshot instead of the config universe. It does NOT
+# backfill history (that is a separate manual run). concurrency.max_workers is
+# raised for throughput, still funneled through ONE shared global rate limiter
+# (rate_limit_per_min).
+#
+# STEADY-STATE COST (be honest — this is NOT "~free"): because lookback_days is
+# relative to *today*, the requested window shifts forward one day every day, so a
+# fully-covered universe still has a genuine new ~1-trading-day gap per symbol per
+# dense endpoint EVERY night, indefinitely. At all-A scale (~5500 symbols × ~6
+# dense endpoints) that is roughly tens of thousands of API calls per night
+# (~30k order of magnitude) and ~1+ hour of API-bound work — comfortably inside
+# the service TimeoutStartSec=4h, but budget for it. A fully-covered *back* range
+# (dates already stored) is what makes ~0 calls; the moving front edge is not.
+#
+# The factors/alpha/portfolio/backtest/cost/output sections below are present
+# ONLY to satisfy the shared RootConfig schema (so `validate-config` accepts this
+# file); the data-update command ignores them.
+
+project:
+  name: quantitative_trading_data_update_all_a
+  timezone: Asia/Shanghai
+
+data:
+  source: tushare
+  freq: D
+  start: "2024-01-01"
+  end: "2024-12-31"
+  external_secret_file: "/home/shaofl/Projects/financial_projects/.config.json"
+  tushare_token_key: "tushare.token"
+  output_name: data_update_all_a
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+
+# universe is IGNORED for symbol resolution when data_update.universe_scope=all_a
+# (the all-A list comes from the stock_basic snapshot). It is kept as a valid
+# index section only to satisfy the schema; index_weight pre-warming is driven by
+# data_update.index_codes below, not by this section.
+universe:
+  type: index
+  index_code: "000300.SH"
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: true
+    st: true
+    limit_up_down: true
+
+# The actual data-update job parameters.
+data_update:
+  timezone: Asia/Shanghai
+  scheduled_start: "21:00:00"
+  universe_scope: all_a     # <-- resolve the WHOLE listed A-share market
+  endpoints:
+    - market_daily
+    - adj_factor
+    - index_weight
+    - suspend_d
+    - namechange
+    - stk_limit
+    - stock_basic
+    - daily_basic
+    - fina_indicator
+    - index_member_all
+  # index_weight is pre-warmed for the project's recurring backtest universes
+  # (SSE50 / CSI300 / CSI500); it is NOT universe-agnostic. A backtest against any
+  # OTHER index still warms its own index_weight lazily via read-through. index_weight
+  # is index-keyed + 90-day paged, so these three cost a handful of extra calls, not
+  # thousands.
+  index_codes:
+    - "000016.SH"           # SSE50
+    - "000300.SH"           # CSI300
+    - "000905.SH"           # CSI500
+  lookback_days: 400        # dense endpoints: re-warm [today - lookback, today]
+  tail_refresh_days: 14     # recent-tail always refetched (corrections/delays)
+  not_ready_days: 1         # today may be unpublished at 21:00 -> not_ready, not covered
+  fina_tail_days: 400       # refetch recent report periods to catch LATE disclosures
+  # NOTE: the cache ALWAYS stores the canonical fina superset (roe / netprofit_yoy
+  # / grossprofit_margin) regardless of this list, so a warm here never blocks a
+  # later config that needs a different field. fina_tail_days == lookback_days here,
+  # so fina's gap spans the whole window every night (a redundant re-upsert of
+  # already-stored report periods, NOT a quota multiplier — one call per symbol per
+  # window); left equal on purpose so late disclosures across the full lookback are
+  # caught.
+  fina_fields:
+    - roe
+    - netprofit_yoy
+    - grossprofit_margin
+  rate_limit_per_min: 450   # conservative (official stk_mins ceiling is 500/min)
+  force_refresh: []
+  quality:
+    enabled: false
+    endpoints:
+      - market_daily
+      - adj_factor
+      - stk_mins_1min
+    report_name: data_update_all_a_quality_report.md
+  # Bounded concurrency for throughput over ~5500 symbols. The per-symbol gap
+  # FETCH stage fans onto 4 workers, all funneled through ONE shared global rate
+  # limiter (rate_limit_per_min above), so the Tushare quota is never multiplied
+  # per thread; store + ledger writes stay deterministic.
+  concurrency:
+    max_workers: 4
+
+# --- unused by data-update (schema-only stubs) ------------------------------- #
+factors:
+  - name: momentum_20
+    enabled: true
+    params:
+      window: 20
+      price_col: close
+
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+
+alpha:
+  model: equal_weight
+  params: {}
+
+portfolio:
+  constructor: topn_equal_weight
+  top_n: 30
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+
+backtest:
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
