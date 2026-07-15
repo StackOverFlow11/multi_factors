@@ -137,7 +137,19 @@ def _resolve_today(cfg: RootConfig, today) -> pd.Timestamp:
 
 
 def _resolve_symbols(cfg: RootConfig, feeds: UpdateFeeds, start: str, end: str) -> list[str]:
-    """Universe to warm: static symbols, or the union of index constituents."""
+    """Universe to warm: all-A, static symbols, or the union of index constituents.
+
+    ``data_update.universe_scope='all_a'`` resolves the WHOLE listed A-share market
+    from the stock_basic snapshot (post-market all-A auto-fetch); the default
+    'config' scope keeps the existing static / index logic UNCHANGED.
+    """
+    if cfg.data_update.universe_scope == "all_a":
+        if feeds.covariates is None:
+            raise ValueError(
+                "data_update.universe_scope='all_a' needs the covariates feed "
+                "(stock_basic) to resolve the listed A-share universe."
+            )
+        return feeds.covariates.all_a_symbols()
     if cfg.universe.type == "static":
         return list(cfg.universe.symbols)
     codes = cfg.data_update.index_codes or (

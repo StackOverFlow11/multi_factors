@@ -1,0 +1,19 @@
+# systemd USER timer (artifact — NOT installed/enabled by the repo).
+#
+# Fires quant-data-update.service daily at 21:00 Asia/Shanghai (after the A-share
+# close, when the day's bars are published). Persistent=true so a run missed while
+# the machine was off fires on the next boot. Install/enable steps are in
+# docs/ops/data_update_schedule.md — enable ONLY after a manual, observed
+# data-update run succeeds.
+
+[Unit]
+Description=Daily 21:00 Asia/Shanghai trigger for the quant all-A cache warm
+Documentation=file:///home/shaofl/Projects/financial_projects/stocks_market/Quantitative_Trading/docs/ops/data_update_schedule.md
+
+[Timer]
+OnCalendar=*-*-* 21:00:00 Asia/Shanghai
+Persistent=true
+Unit=quant-data-update.service
+
+[Install]
+WantedBy=timers.target

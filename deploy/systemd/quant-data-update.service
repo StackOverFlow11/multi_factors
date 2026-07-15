@@ -1,0 +1,30 @@
+# systemd USER service (artifact — NOT installed/enabled by the repo).
+#
+# Runs the daily all-A incremental cache warm (post-market auto-fetch, PR-1). It
+# ONLY warms the read-through tushare caches — no factors / alpha / portfolio /
+# backtest / PanelStore. Paired with quant-data-update.timer (fires 21:00
+# Asia/Shanghai). Install/enable steps + the LOUD "manual run first" preflight are
+# in docs/ops/data_update_schedule.md. Do NOT enable this before a manual,
+# observed data-update run succeeds.
+#
+# Requires the external secret file (tushare token) OUTSIDE the repo at
+# /home/shaofl/Projects/financial_projects/.config.json (referenced by the config,
+# never embedded here). The token value must never appear in this unit.
+
+[Unit]
+Description=Quant all-A tushare cache incremental warm (post-market auto-fetch)
+Documentation=file:///home/shaofl/Projects/financial_projects/stocks_market/Quantitative_Trading/docs/ops/data_update_schedule.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/shaofl/Projects/financial_projects/stocks_market/Quantitative_Trading
+ExecStart=/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli data-update --config /home/shaofl/Projects/financial_projects/stocks_market/Quantitative_Trading/config/data_update_all_a.yaml
+# Give the whole-market warm room; adjust after observing a real run.
+TimeoutStartSec=4h
+Nice=10
+
+# No [Install] section: this service is triggered ONLY by
+# quant-data-update.timer (which carries the [Install] WantedBy=timers.target).
+# Enable the TIMER, never the service — see docs/ops/data_update_schedule.md.
