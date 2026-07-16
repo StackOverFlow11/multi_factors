@@ -41,7 +41,7 @@
 - `data-update` CLI（`qt/data_updater.py::run_data_update`）**只做 endpoint 级增量暖缓存**。
 - 它 **不跑 factor / alpha / portfolio / backtest，不写 `PanelStore`**。
 - 真实回测仍各自走 read-through，按需补自己的缺口；`data-update` 只是把常用 endpoint 提前填好。
-- **`data_update.universe_scope`（PR #59）**：`config`（默认，static/index）或 `all_a`（全 listed A 股，经 `stock_basic` 快照解析）。`all_a` 只是把暖缓存的 universe 换成全市场，**上述"只暖缓存、不跑研究"不变量照旧**；盘后定时靠外部 `deploy/systemd/quant-data-update.{service,timer}`（user timer @ 21:00 Asia/Shanghai，artifact-only，不自动 enable）。全A **历史回填**（分块/续跑/分钟全窗口）仍待实现（PR-2）。
+- **`data_update.universe_scope`（PR #59）**：`config`（默认，static/index）或 `all_a`（全 listed A 股，经 `stock_basic` 快照解析）。`all_a` 只是把暖缓存的 universe 换成全市场，**上述"只暖缓存、不跑研究"不变量照旧**；盘后定时靠外部 `deploy/systemd/quant-data-update.{service,timer}`（user timer @ 21:00 Asia/Shanghai，artifact-only，不自动 enable）。全A **历史回填**（分块/断点续跑/分钟全窗口 + per-symbol 失败隔离 + `start>today` 守卫）经独立 `data-backfill` CLI（`qt/data_backfill.py::run_data_backfill`，PR #61）实现——同样只暖 raw 缓存，不跑研究、不写 `PanelStore`；增量 `run_data_update` 路径字节级不变（`_build_scheduler`/`_build_caches` verbatim 抽取共享）。
 
 ## 4. D1 / D2 / D3 / D3b / D4 / D5 已做什么；D6+ 范围（未实现）
 
