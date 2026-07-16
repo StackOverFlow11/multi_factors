@@ -718,6 +718,55 @@ class DataUpdateQualityCfg(_Strict):
         return name
 
 
+class BackfillCfg(_Strict):
+    """PR-2 historical backfill knobs for ``data-backfill`` (all defaults => a
+    no-op addition: every existing config still validates unchanged).
+
+    ``data-backfill`` is a SEPARATE, manual, long-running command from the nightly
+    incremental ``data-update``; it warms the SAME caches over a WIDE window.
+
+    * ``start`` — the WIDE backfill window start. The window is ``[start, today]``,
+      NOT the incremental ``today - lookback_days`` tail (validated as a date).
+    * ``chunk_size`` — symbols are processed in batches of this size so progress is
+      durable batch-by-batch, memory stays bounded, and a per-batch failure is
+      isolated (must be >= 1).
+    * ``include_minute`` — also backfill 1min bars over the FULL window (a LONG,
+      resumable operation at all-A scale). ``false`` skips minute history.
+    """
+
+    start: str = "2020-01-01"
+    chunk_size: int = 300
+    include_minute: bool = True
+
+    @field_validator("start", mode="before")
+    @classmethod
+    def _coerce_date_to_str(cls, v: Any) -> Any:
+        if isinstance(v, (_date, datetime)):
+            return v.strftime("%Y-%m-%d")
+        return v
+
+    @field_validator("start")
+    @classmethod
+    def _check_start(cls, v: str) -> str:
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(
+                f"data_update.backfill.start must be a 'YYYY-MM-DD' date; "
+                f"got {v!r} ({exc})."
+            ) from exc
+        return v
+
+    @field_validator("chunk_size")
+    @classmethod
+    def _check_chunk_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(
+                f"data_update.backfill.chunk_size must be >= 1; got {v}."
+            )
+        return v
+
+
 class DataUpdateConcurrencyCfg(_Strict):
     """D5 opt-in bounded concurrency for ``data-update`` cache warms (default serial).
 
@@ -775,6 +824,9 @@ class DataUpdateCfg(_Strict):
     concurrency: DataUpdateConcurrencyCfg = Field(
         default_factory=DataUpdateConcurrencyCfg
     )
+    # PR-2 historical backfill knobs (consumed ONLY by the separate data-backfill
+    # command; the nightly data-update ignores them). All-defaults => unchanged.
+    backfill: BackfillCfg = Field(default_factory=BackfillCfg)
 
     @field_validator("endpoints", "force_refresh")
     @classmethod

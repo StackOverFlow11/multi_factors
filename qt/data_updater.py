@@ -164,6 +164,56 @@ def _resolve_symbols(cfg: RootConfig, feeds: UpdateFeeds, start: str, end: str) 
     return sorted(syms)
 
 
+def _build_scheduler(du) -> GlobalRateLimiter | None:
+    """D5: build the ONE shared global rate limiter when bounded concurrency is on.
+
+    ``max_workers == 1`` (serial, the default) returns ``None`` — every feed keeps
+    its per-call throttle, byte-identical to before; ``> 1`` funnels all workers
+    through a single per-minute budget (reusing ``rate_limit_per_min``) so the
+    Tushare quota is never multiplied per thread. Shared by the incremental warm
+    and the historical backfill so both throttle identically.
+    """
+    if du.concurrency.max_workers > 1:
+        return GlobalRateLimiter(du.rate_limit_per_min)
+    return None
+
+
+def _build_caches(cfg: RootConfig, du, today_ts):
+    """Construct the shared daily + intraday read-through caches (raw-only).
+
+    Both the incremental warm and the historical backfill build the SAME caches
+    from ``data.cache.root_dir`` — same not-ready pending window, same fina
+    late-disclosure tail, same coverage semantics, same ``max_workers``. The
+    caches store RAW endpoint facts only; no token / qfq / factor result is ever
+    cached. Returns ``(daily_cache, intraday_cache)``.
+    """
+    from data.cache import (
+        CacheParquetStore,
+        CoverageLedger,
+        IntradayCoverageLedger,
+        IntradayParquetStore,
+        TushareCache,
+        TushareIntradayCache,
+    )
+
+    root = cfg.data.cache.root_dir
+    cache = TushareCache(
+        CacheParquetStore(root),
+        CoverageLedger(root),
+        refresh_recent_days=du.tail_refresh_days,
+        refresh_dimension_days=cfg.data.cache.refresh_dimension_days,
+        force_refresh=tuple(du.force_refresh),
+        today=today_ts,
+        not_ready_days=du.not_ready_days,
+        recent_tail_overrides={"fina_indicator": du.fina_tail_days},
+        max_workers=du.concurrency.max_workers,
+    )
+    intraday_cache = TushareIntradayCache(
+        IntradayParquetStore(root), IntradayCoverageLedger(root)
+    )
+    return cache, intraday_cache
+
+
 def _build_feeds(
     cfg: RootConfig, cache, intraday_cache, rate_limit: int, scheduler=None
 ) -> UpdateFeeds:
@@ -234,39 +284,13 @@ def run_data_update(config_path: str, *, today=None) -> UpdateResult:
     end = today_ts.strftime("%Y-%m-%d")
     start = (today_ts - pd.Timedelta(days=du.lookback_days)).strftime("%Y-%m-%d")
 
-    from data.cache import (
-        CacheParquetStore,
-        CoverageLedger,
-        IntradayCoverageLedger,
-        IntradayParquetStore,
-        TushareCache,
-        TushareIntradayCache,
-    )
-
     # D5: bounded concurrency is opt-in. max_workers==1 (default) builds NO
     # scheduler — every feed keeps its per-call throttle and the cache stays serial,
     # byte-identical to before. >1 builds ONE global rate limiter shared by all
     # feeds (so the quota is global, not per-thread) and a multi-worker cache.
     max_workers = du.concurrency.max_workers
-    scheduler = (
-        GlobalRateLimiter(du.rate_limit_per_min) if max_workers > 1 else None
-    )
-
-    root = cfg.data.cache.root_dir
-    cache = TushareCache(
-        CacheParquetStore(root),
-        CoverageLedger(root),
-        refresh_recent_days=du.tail_refresh_days,
-        refresh_dimension_days=cfg.data.cache.refresh_dimension_days,
-        force_refresh=tuple(du.force_refresh),
-        today=today_ts,
-        not_ready_days=du.not_ready_days,
-        recent_tail_overrides={"fina_indicator": du.fina_tail_days},
-        max_workers=max_workers,
-    )
-    intraday_cache = TushareIntradayCache(
-        IntradayParquetStore(root), IntradayCoverageLedger(root)
-    )
+    scheduler = _build_scheduler(du)
+    cache, intraday_cache = _build_caches(cfg, du, today_ts)
     feeds = _build_feeds(
         cfg, cache, intraday_cache, du.rate_limit_per_min, scheduler=scheduler
     )

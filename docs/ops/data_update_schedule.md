@@ -136,6 +136,53 @@ symbols this becomes statistically likely on any given night. Important properti
 - **Per-symbol failure isolation is a planned PR-2 hardening** (changing the fail-fast
   behavior is a warm-path semantic change, deliberately out of scope for PR-1).
 
+## Historical backfill (PR-2) — run FIRST, then keep current
+
+The nightly `data-update` job only tops up the moving front edge (`lookback_days`
+relative to *today*) and, for minutes, a 7-day tail. It does **not** load deep
+history. To populate the caches with the full historical window, use the separate,
+manual **`data-backfill`** command:
+
+```bash
+cd /home/shaofl/Projects/financial_projects/stocks_market/Quantitative_Trading
+/home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.cli \
+  data-backfill --config config/data_update_all_a.yaml
+```
+
+It reuses the SAME caches, feeds, universe resolution, and rate limiter as
+`data-update`, but:
+
+- **Wide window.** It warms `[backfill.start, today]` (the full history), NOT the
+  incremental `today - lookback_days` tail.
+- **Chunked.** Symbols are processed in per-symbol batches of
+  `data_update.backfill.chunk_size` (default 300), so progress is durable
+  batch-by-batch and memory stays bounded.
+- **Full minute history (optional).** With `data_update.backfill.include_minute:
+  true` it warms 1min bars over the whole `[backfill.start, today]` window — NOT
+  the nightly 7-day tail. Set it to `false` to skip minute history for a much
+  shorter run.
+- **Per-symbol / per-batch failure-tolerant.** Unlike the nightly job (which stays
+  fail-fast on purpose), a batch whose fetch fails persistently (after the feeds'
+  retries) is **logged (secret-free: batch index + exception type only) and
+  skipped**; the run CONTINUES to the next batch. The failed batch's gaps stay
+  uncovered (records no coverage), so they are retried on the next run. The
+  `OK data-backfill: …` summary tallies `failed_batches` and lists failed symbols
+  (bounded).
+- **Resumable.** Resumability is inherent to the coverage ledgers — a re-run over
+  the same window fetches only still-uncovered gaps. It is **safe to Ctrl-C and
+  re-run**; durable successes before an interruption are already persisted.
+
+⚠️ **This is a LONG, MANY-HOUR (potentially multi-day), manual run** — especially
+with `include_minute: true` at all-A scale (~5500 symbols × years of 1min bars).
+Run it in stages and re-run to finish. It never runs factors / alpha / portfolio /
+backtest / PanelStore, and (like `data-update`) stores RAW endpoint facts only —
+no token, no qfq, no derived flag.
+
+**Order of operations:** backfill the history FIRST (this command), confirm the
+summary looks sane, and only THEN enable the nightly incremental timer above so it
+keeps the caches current. The backfill window `[start, today]` is fixed, so a
+re-run after enabling the timer stays warm except for still-uncovered gaps.
+
 ## Notes
 
 - Scope is set by `data_update.universe_scope: all_a` in the config; the default
