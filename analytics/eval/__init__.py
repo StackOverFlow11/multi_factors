@@ -14,16 +14,19 @@ Layering: ``analytics`` is downstream of ``factors``, so importing
 ``factors.spec`` here is fine; ``FactorSpec`` itself lives in ``factors/``
 because the ``Factor`` class must hold it (invariant #3, 分层解耦).
 
-``StandardFactorEvaluator`` + the vectorized eval-IR are PR-B.
+``StandardFactorEvaluator`` (``standard.py``) fills the 8 sections; the
+vectorized eval-IR it reduces lives in ``ir.py`` (design §8).
 """
 
 from analytics.eval.config import EvalConfig
 from analytics.eval.evaluator import EvalIR, FactorEvaluator
+from analytics.eval.ir import EvalContext, StandardEvalIR, build_eval_ir
 from analytics.eval.report import (
     SCHEMA_VERSION,
     FactorEvalReport,
     extract_verdict_inputs,
 )
+from analytics.eval.standard import StandardFactorEvaluator
 from analytics.eval.sections import (
     MANDATORY_SECTIONS,
     VERDICT_KEYS,
@@ -67,15 +70,19 @@ __all__ = [
     "WATCH",
     "AxisVerdict",
     "EvalConfig",
+    "EvalContext",
     "EvalIR",
     "FactorEvalReport",
     "FactorEvaluator",
     "Section",
     "SectionLike",
     "Skipped",
+    "StandardEvalIR",
+    "StandardFactorEvaluator",
     "VerdictInputs",
     "VerdictResult",
     "VerdictThresholds",
+    "build_eval_ir",
     "decide_verdict",
     "extract_verdict_inputs",
 ]
