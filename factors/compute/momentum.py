@@ -22,6 +22,7 @@ from __future__ import annotations
 import pandas as pd
 
 from factors.base import Factor
+from factors.spec import FactorSpec
 
 
 class MomentumFactor(Factor):
@@ -53,6 +54,35 @@ class MomentumFactor(Factor):
     @property
     def price_col(self) -> str:
         return self._price_col
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract. A property, not a class attribute: ``factor_id``
+        must track the ACTUAL window (mirrors the ``self.name`` idiom above).
+
+        expected_ic_sign=+1: the classic cross-sectional momentum prior (winners
+        keep winning). NOTE the project's own evidence disagrees in magnitude —
+        P3-3/P3-4 found momentum_20 IC ~= 0 and sign-flipping across cells — but
+        the prior stays the STATED hypothesis, which is the point: the sign is
+        fixed before the run and the verdict then checks it factually.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Trailing {self._window}-bar price momentum: "
+                f"{self._price_col}[t] / {self._price_col}[t-{self._window}] - 1."
+            ),
+            expected_ic_sign=+1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            input_fields=(self._price_col,),
+            family="momentum",
+            # value at t needs bars t-window..t -> the leading ``window`` rows
+            # of every symbol are NaN by construction.
+            min_history_bars=self._window,
+        )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
         """Compute per-symbol momentum aligned to the panel index.

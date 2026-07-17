@@ -12,11 +12,38 @@ from __future__ import annotations
 import pandas as pd
 
 from factors.base import Factor
+from factors.spec import FactorSpec
 
 # financial fields that may be requested as a factor (P1; grossprofit_margin
 # joined in P3-5 as the conservative quality candidate — same ann_date as-of
 # machinery, no new temporal logic).
 SUPPORTED_FIELDS: tuple[str, ...] = ("roe", "netprofit_yoy", "grossprofit_margin")
+
+# Per-field evaluation contract metadata (hypothesis fixed BEFORE any run).
+# All three carry the conventional +1 prior: more profitable / faster-growing /
+# higher-margin firms are hypothesized to earn higher cross-sectional returns.
+# The project's own evidence is weak-to-null for roe / netprofit_yoy (P3-1: IC
+# 0.0006 / 0.0001 on SSE50; P3-3/P3-4: signs flip across cells) and
+# grossprofit_margin showed no signal in P3-5 — the prior is still the STATED
+# hypothesis; the verdict is what checks it.
+_FIELD_META: dict[str, tuple[int, str, str]] = {
+    # field: (expected_ic_sign, family, description)
+    "roe": (
+        +1,
+        "quality",
+        "Return on equity (fina_indicator), PIT-aligned by ann_date disclosure.",
+    ),
+    "netprofit_yoy": (
+        +1,
+        "growth",
+        "Net-profit YoY growth (fina_indicator), PIT-aligned by ann_date.",
+    ),
+    "grossprofit_margin": (
+        +1,
+        "quality",
+        "Gross-profit margin (fina_indicator), PIT-aligned by ann_date.",
+    ),
+}
 
 
 class FinancialFactor(Factor):
@@ -30,6 +57,28 @@ class FinancialFactor(Factor):
             )
         self.name = field
         self._field = field
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property because the id IS the chosen field.
+
+        ``min_history_bars=0``: this factor does no temporal logic of its own —
+        the value is already PIT-aligned upstream by ``ann_date`` as-of, so there
+        is no warm-up window to exclude.
+        """
+        sign, family, description = _FIELD_META[self._field]
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=description,
+            expected_ic_sign=sign,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            input_fields=(self._field,),
+            family=family,
+            min_history_bars=0,
+        )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
         """Return the as-of financial column as a MultiIndex(date, symbol) series."""
