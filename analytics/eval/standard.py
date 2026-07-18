@@ -44,6 +44,8 @@ import pandas as pd
 
 from analytics.eval.config import EvalConfig
 from analytics.eval.evaluator import FactorEvaluator
+from analytics.eval.report import FactorEvalReport
+from analytics.eval.verdict import VerdictThresholds
 from analytics.eval.ir import (
     DECAY_LAGS,
     EvalContext,
@@ -189,6 +191,30 @@ class StandardFactorEvaluator(FactorEvaluator):
                 f"{type(ctx).__name__}."
             )
         return build_eval_ir(factor_panel, spec, cfg, ctx)
+
+    def evaluate_with_ir(
+        self,
+        factor_panel: pd.Series | pd.DataFrame,
+        spec: FactorSpec,
+        cfg: EvalConfig,
+        ctx: object | None = None,
+        thresholds: VerdictThresholds | None = None,
+    ) -> tuple[FactorEvalReport, StandardEvalIR]:
+        """Like :meth:`evaluate`, but also return the IR (for dashboard rendering).
+
+        Mirrors the frozen ABC ``evaluate`` template step for step. It exists
+        because the contract ``evaluate`` returns ONLY the report (its signature is
+        frozen), whereas :func:`analytics.eval.figures.render_factor_dashboard`
+        needs the IR's ``ic`` / ``quantile_returns`` series. Building the IR once
+        here avoids a second ``build_ir`` pass, and reusing the identical
+        assemble -> validate -> with_verdict sequence keeps the two entry points in
+        lockstep (the report is byte-identical to ``evaluate``'s).
+        """
+        ir = self.build_ir(factor_panel, spec, cfg, ctx)
+        sections = [getattr(self, name)(ir) for name in self.SECTION_ORDER]
+        report = FactorEvalReport.assemble(spec, cfg, sections, thresholds=thresholds)
+        report.validate_all_mandatory_present()
+        return report.with_verdict(thresholds), ir
 
     # -- 2. Predictive Power ------------------------------------------------
 
