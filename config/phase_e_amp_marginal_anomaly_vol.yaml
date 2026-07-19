@@ -1,0 +1,132 @@
+# PR-E — Third real factor evaluation: amplitude marginal-anomaly relative volatility.
+#
+# Reproduces the Changjiang high-frequency-factor series #19 (长江证券《高频因子（十九）：
+# 收益来源基础的因子挖掘方法论二——时间段切割因子》, reportId 5462994) "振幅边际异常
+# 相对波动因子" as a first-class AmpMarginalAnomalyVolFactor and runs it through the
+# FROZEN StandardFactorEvaluator on REAL cached A-share data. CACHE-ONLY: the minute
+# read is provably live-call-free; daily / universe / covariate endpoints go through the
+# read-through cache (warm -> 0 gap fetches).
+#
+# The subject factor DERIVES 5min bars from the 1min cache (resample_intraday_bars,
+# available_time = max source -> PIT-faithful), PIT-truncates them at 14:50, pools the
+# trailing 20 trading days of within-day (|Δamp|, r) pairs, selects the bars whose
+# |Δamp| > μ + σ of the pooled |Δamp|, and returns the ddof=1 std of the RETURNS on
+# those selected bars (amp = high/low - 1). Pre-registered sign = +1 (report IC positive:
+# raw CSI800 +4.47% / full-market +4.92%; market-cap + industry neutral +4.11% / +5.56%,
+# ICIR 65.85% / 108.71%). NOTE the report's sample is CSI800 / full-market on a MONTHLY
+# series -- our eval cell is CSI500 daily, so those numbers are a LOOSE reference only.
+#
+# Eval CELL is IDENTICAL to PR-C / PR-D: universe = CSI500 (000905.SH), PIT membership;
+# window = 2021-07-01 .. 2026-06-30 (the project's minute-coverage window); daily
+# rebalance; OOS split 2024-01-01; book = value_ep/value_bp/volatility_20; fee 0.001.
+# The ONLY substantive difference is the subject factor, which is minute-derived and
+# computed by the runner from the intraday cache -- it is NOT a config-listed daily
+# factor. The evaluator runs TWICE (see qt/eval_amp_marginal_anomaly_vol.py): once with
+# NO book (Incremental NOT_ASSESSED) and once with the confirmed book to measure whether
+# the anomaly-vol factor adds alpha BEYOND value / low-vol.
+#
+# RUN NOTE (DOCUMENTED NEGATIVE reproduction): the prototype sanity check came out with
+# the WRONG sign -- raw daily RankIC vs next-day forward return over 2022-2024 was
+# -0.0603 (30 CSI500 names) / -0.0542 (80 names), versus the pre-registered +1 taken
+# from the report's CSI800 / full-market MONTHLY cell. The sign did NOT transfer to our
+# CSI500-daily cell. The evaluation KEEPS the pre-registered sign +1 per contract (no
+# sign flip, no cadence/universe/neutralization change), so the Predictive axis is
+# expected to fail and the deployment verdict to be Reject -- that failing verdict IS
+# the recorded result.
+
+project:
+  name: quantitative_trading_pr_e_amp_marginal_anomaly_vol
+  timezone: Asia/Shanghai
+data:
+  source: tushare
+  freq: D
+  start: '2021-07-01'
+  end: '2026-06-30'
+  external_secret_file: /home/shaofl/Projects/financial_projects/.config.json
+  tushare_token_key: tushare.token
+  output_name: amp_marginal_anomaly_vol_daily
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+universe:
+  type: index
+  index_code: 000905.SH
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: false
+    st: false
+    limit_up_down: false
+# factors = the confirmed BOOK used for the Incremental axis (value + low-vol). The
+# SUBJECT factor (amp_marginal_anomaly_vol_20) is minute-derived and computed by the
+# runner from the intraday cache -- it is NOT a config-listed daily factor.
+factors:
+- name: value_ep
+  enabled: true
+- name: value_bp
+  enabled: true
+- name: volatility_20
+  enabled: true
+  params:
+    window: 20
+    price_col: close
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  # winsorize is a P0 no-op in this codebase; the EvalConfig declares winsorize=None
+  # accordingly (nothing is clipped), so the report never overstates preprocessing.
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  # Industry + market-cap neutralization (SW-L1), matching the report's neutral column
+  # and the EvalConfig neutralization declaration.
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+alpha:
+  model: equal_weight
+  params: {}
+portfolio:
+  # Required by the schema but unused: this runner evaluates a factor, it does not
+  # build/execute a portfolio.
+  constructor: topn_equal_weight
+  top_n: 50
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+backtest:
+  # Required by the schema but unused (no backtest is run). The EvalConfig uses a DAILY
+  # rebalance (contract default), independent of this field.
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+analytics:
+  forward_return_periods:
+  - 1
+  quantiles: 5
+  benchmark: null
+# OOS split (window midpoint) so the OOS section runs and the Predictive axis can be
+# assessed (sign consistency across both holdout subperiods).
+oos:
+  split_date: '2024-01-01'
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
