@@ -1,14 +1,16 @@
 """Daily factors DERIVED from intraday (minute) bars but executed close-to-close.
 
 The members today are :class:`JumpAmountCorrFactor` (PR-C, the Kaiyuan report §6
-"price-jump turnover correlation" factor) and :class:`MinuteIdealAmplitudeFactor`
-(PR-D, the Kaiyuan report §30 "minute ideal amplitude" factor). Like the value /
+"price-jump turnover correlation" factor), :class:`MinuteIdealAmplitudeFactor`
+(PR-D, the Kaiyuan report §30 "minute ideal amplitude" factor) and
+:class:`AmpMarginalAnomalyVolFactor` (PR-E, the Changjiang high-frequency-factor
+series #19 "amplitude marginal-anomaly relative-volatility" factor). Like the value /
 MMP factors, the heavy computation runs UPSTREAM (``data.clean.intraday_aggregate``
-/ ``data.clean.intraday_amplitude`` aggregate 1min bars into a daily
-``MultiIndex(date, symbol)`` column) and the Factor here simply SELECTS its column
-off the panel the runner already enriched. Keeping the minute aggregation in the
-data-clean layer preserves the layering: ``factors`` never fetches and never sees a
-forward return.
+/ ``data.clean.intraday_amplitude`` / ``data.clean.intraday_amp_anomaly`` aggregate
+1min bars into a daily ``MultiIndex(date, symbol)`` column) and the Factor here simply
+SELECTS its column off the panel the runner already enriched. Keeping the minute
+aggregation in the data-clean layer preserves the layering: ``factors`` never fetches
+and never sees a forward return.
 
 WHY ``is_intraday=False`` FOR A MINUTE-DERIVED FACTOR (deliberate, documented):
     ``FactorSpec.is_intraday`` flags an intraday-EXECUTION contract — the minute
@@ -30,6 +32,13 @@ import pandas as pd
 from data.clean.intraday_aggregate import (
     JUMP_LOOKBACK_DAYS,
     JUMP_MIN_PAIRS,
+)
+from data.clean.intraday_amp_anomaly import (
+    AMP_ANOMALY_FREQ,
+    AMP_ANOMALY_LOOKBACK_DAYS,
+    AMP_ANOMALY_MIN_POOL,
+    AMP_ANOMALY_MIN_SELECTED,
+    AMP_ANOMALY_SIGMA_K,
 )
 from data.clean.intraday_amplitude import (
     IDEAL_AMP_LAMBDA,
@@ -205,4 +214,105 @@ class MinuteIdealAmplitudeFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
-__all__ = ["JumpAmountCorrFactor", "MinuteIdealAmplitudeFactor"]
+class AmpMarginalAnomalyVolFactor(Factor):
+    """Amplitude marginal-anomaly relative-volatility factor (daily, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by ``data.clean.intraday_amp_anomaly.compute_amp_marginal_anomaly_vol``);
+    it does NO minute work of its own, mirroring :class:`JumpAmountCorrFactor` /
+    :class:`MinuteIdealAmplitudeFactor` and the value / financial factors that surface
+    an enriched column.
+
+    Args:
+        lookback_days: trailing trading-day window; part of the factor DEFINITION
+            (a pinned interpretation of the report), not a tuned knob. It only names
+            the column so a non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"amp_marginal_anomaly_vol_{AMP_ANOMALY_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = AMP_ANOMALY_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"amp-marginal-anomaly-vol lookback_days must be a positive integer; "
+                f"got {lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"amp_marginal_anomaly_vol_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=+1: the report's IC is POSITIVE across its universes (raw
+        CSI800 +4.47% / full-market +4.92%; market-cap + industry neutral +4.11% /
+        +5.56%) — a HIGH anomaly-bar relative volatility predicts HIGHER forward
+        returns. The sign is fixed BEFORE the run (a validated prototype must
+        reproduce it). NOTE the report's sample is CSI800 / full-market on a MONTHLY
+        series while our eval cell is CSI500 daily, so the report numbers are a LOOSE
+        reference only (disclosed, never mislabeled). is_intraday=False by the module
+        docstring's reasoning: minute INPUT but a DAILY signal traded close-to-close.
+        min_history_bars=0: the warm-up is DATA-dependent (a value appears once
+        >= ``AMP_ANOMALY_MIN_POOL`` valid pooled pairs accumulate in the trailing
+        window), not a fixed leading count — the honest NaN rate is reported by
+        data_coverage.
+
+        The description spells out the FIVE pinned interpretations of the
+        under-specified report (bar freq, lookback, threshold, weighted-vol operator,
+        within-day lag) so a reader sees exactly what was assumed.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Amplitude marginal-anomaly relative volatility (Changjiang HF-factor "
+                f"series #19). PINNED interpretations of an under-specified report: "
+                f"(1) {AMP_ANOMALY_FREQ} bars DERIVED from the 1min cache "
+                f"(available_time = max source, PIT-faithful); (2) trailing "
+                f"{self._lookback_days} trading days (PIT-truncated at 14:50 per bar); "
+                f"(3) select bars with |Δamp| > μ + {AMP_ANOMALY_SIGMA_K:g}σ of the "
+                f"pooled |Δamp|; (4) factor = ddof=1 std of the RETURNS on the selected "
+                f"bars; (5) Δamp and bar-return are WITHIN-DAY lagged (each day's first "
+                f"bar has neither). amp = high/low - 1. Derived from 1min bars but a "
+                f"DAILY signal traded close-to-close; >= {AMP_ANOMALY_MIN_POOL} valid "
+                f"pooled pairs and >= {AMP_ANOMALY_MIN_SELECTED} selected bars required "
+                f"else NaN."
+            ),
+            expected_ic_sign=1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar fields the upstream aggregation is derived from. Declared for
+            # honest provenance disclosure (data_coverage lists them); the daily panel
+            # surfaces the pre-aggregated column itself.
+            input_fields=("high", "low", "close"),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily amp-marginal-anomaly-vol column off ``panel``.
+
+        The runner runs ``compute_amp_marginal_anomaly_vol`` on the minute cache
+        upstream and joins the result as ``self.name``; here we only surface it, so this
+        factor does no temporal logic and cannot introduce lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"AmpMarginalAnomalyVolFactor needs the pre-aggregated '{self.name}' "
+                f"column on the panel (produced upstream by "
+                f"compute_amp_marginal_anomaly_vol and joined by the runner); panel has "
+                f"{list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
+__all__ = [
+    "AmpMarginalAnomalyVolFactor",
+    "JumpAmountCorrFactor",
+    "MinuteIdealAmplitudeFactor",
+]
