@@ -1,9 +1,10 @@
 """Daily factors DERIVED from intraday (minute) bars but executed close-to-close.
 
-The single member today is :class:`JumpAmountCorrFactor` (PR-C), the Kaiyuan
-report §6 "price-jump turnover correlation" factor. Like the value / MMP factors,
-the heavy computation runs UPSTREAM (``data.clean.intraday_aggregate.
-compute_jump_amount_corr`` aggregates 1min bars into a daily
+The members today are :class:`JumpAmountCorrFactor` (PR-C, the Kaiyuan report §6
+"price-jump turnover correlation" factor) and :class:`MinuteIdealAmplitudeFactor`
+(PR-D, the Kaiyuan report §30 "minute ideal amplitude" factor). Like the value /
+MMP factors, the heavy computation runs UPSTREAM (``data.clean.intraday_aggregate``
+/ ``data.clean.intraday_amplitude`` aggregate 1min bars into a daily
 ``MultiIndex(date, symbol)`` column) and the Factor here simply SELECTS its column
 off the panel the runner already enriched. Keeping the minute aggregation in the
 data-clean layer preserves the layering: ``factors`` never fetches and never sees a
@@ -29,6 +30,11 @@ import pandas as pd
 from data.clean.intraday_aggregate import (
     JUMP_LOOKBACK_DAYS,
     JUMP_MIN_PAIRS,
+)
+from data.clean.intraday_amplitude import (
+    IDEAL_AMP_LAMBDA,
+    IDEAL_AMP_LOOKBACK_DAYS,
+    IDEAL_AMP_MIN_MINUTES,
 )
 from factors.base import Factor
 from factors.spec import FactorSpec
@@ -115,4 +121,88 @@ class JumpAmountCorrFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
-__all__ = ["JumpAmountCorrFactor"]
+class MinuteIdealAmplitudeFactor(Factor):
+    """Minute ideal-amplitude factor (daily signal, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by ``data.clean.intraday_amplitude.compute_minute_ideal_amplitude``);
+    it does NO minute work of its own, mirroring :class:`JumpAmountCorrFactor` and
+    the value / financial factors that surface an enriched column.
+
+    Args:
+        lookback_days: trailing trading-day window; part of the factor DEFINITION
+            (reproduced from the report), not a tuned knob. It only names the column
+            so a non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"minute_ideal_amp_{IDEAL_AMP_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = IDEAL_AMP_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"minute-ideal-amplitude lookback_days must be a positive integer; "
+                f"got {lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"minute_ideal_amp_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=-1: the report's RankIC mean is -7.6% (full market, N=10,
+        lambda=25%) — a HIGH minute ideal amplitude predicts LOWER forward returns.
+        The sign is fixed BEFORE the run (a validated prototype must reproduce it).
+        is_intraday=False by the module docstring's reasoning: minute INPUT but a
+        DAILY signal traded close-to-close. min_history_bars=0: the warm-up is
+        DATA-dependent (a value appears once >= ``IDEAL_AMP_MIN_MINUTES`` valid
+        pooled minutes accumulate in the trailing window), not a fixed leading
+        count — the honest NaN rate is reported by data_coverage.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Minute ideal amplitude (Kaiyuan report §30): pool the 1min bars of "
+                f"the trailing {self._lookback_days} trading days (PIT-truncated at "
+                f"14:50 per bar), rank the pooled minutes by RAW close, and return "
+                f"V_high - V_low where V_high/V_low are the mean per-minute amplitude "
+                f"(high/low - 1) of the top / bottom floor({IDEAL_AMP_LAMBDA:g}*n) "
+                f"minutes by close. Derived from 1min bars but a DAILY signal traded "
+                f"close-to-close; >= {IDEAL_AMP_MIN_MINUTES} valid pooled minutes "
+                f"required else NaN."
+            ),
+            expected_ic_sign=-1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar fields the upstream aggregation is derived from. Declared
+            # for honest provenance disclosure (data_coverage lists them); the daily
+            # panel surfaces the pre-aggregated column itself.
+            input_fields=("high", "low", "close"),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily minute-ideal-amplitude column off ``panel``.
+
+        The runner runs ``compute_minute_ideal_amplitude`` on the minute cache
+        upstream and joins the result as ``self.name``; here we only surface it, so
+        this factor does no temporal logic and cannot introduce lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"MinuteIdealAmplitudeFactor needs the pre-aggregated '{self.name}' "
+                f"column on the panel (produced upstream by "
+                f"compute_minute_ideal_amplitude and joined by the runner); panel has "
+                f"{list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
+__all__ = ["JumpAmountCorrFactor", "MinuteIdealAmplitudeFactor"]
