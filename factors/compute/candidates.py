@@ -29,9 +29,21 @@ import pandas as pd
 
 from factors.base import Factor
 from factors.compute.momentum import MomentumFactor
+from factors.spec import FactorSpec
 
 # daily_basic-derived value fields the pipeline can enrich + surface (P3-5).
 VALUE_FIELDS: tuple[str, ...] = ("value_ep", "value_bp")
+
+# Per-field evaluation contract metadata for the value pack. expected_ic_sign=+1
+# for both: the classic value prior (cheap earns more than expensive), and the
+# ONE hypothesis this project has confirmed on independent samples — P3-5 test
+# IC 3/3 positive (0.037~0.056), P3-7 SUPPORTED on 2/2 holdout cells (SSE50 +
+# CSI300, magnitude decayed), P3-8 GENERALIZES to CSI500 (test IC +0.0145 /
+# +0.0127). Sign confirmed; profitability at portfolio level is NOT.
+_VALUE_META: dict[str, str] = {
+    "value_ep": "Earnings yield 1/pe (daily_basic, published same day; pe<=0 -> NaN).",
+    "value_bp": "Book yield 1/pb (daily_basic, published same day; pb<=0 -> NaN).",
+}
 
 
 class ReversalFactor(Factor):
@@ -47,6 +59,29 @@ class ReversalFactor(Factor):
     def __init__(self, window: int = 20, price_col: str = "close") -> None:
         self._momentum = MomentumFactor(window=window, price_col=price_col)
         self.name = f"reversal_{window}"
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=-1: reversal IS -momentum by construction, so its
+        hypothesis is the exact negation of MomentumFactor's +1 prior (short-
+        horizon losers bounce back). Project evidence: no signal — P3-5 found
+        reversal_5/20 sign-flipping across cells.
+        """
+        base = self._momentum.spec
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=f"Short-horizon reversal: the exact negative of {base.factor_id}.",
+            expected_ic_sign=-base.expected_ic_sign,
+            is_intraday=False,
+            forward_return_horizon=base.forward_return_horizon,
+            return_basis=base.return_basis,
+            input_fields=base.input_fields,
+            family="reversal",
+            min_history_bars=base.min_history_bars,
+        )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
         return (-self._momentum.compute(panel)).rename(self.name)
@@ -69,6 +104,35 @@ class VolatilityFactor(Factor):
         self._window = window
         self._price_col = price_col
         self.name = f"volatility_{window}"
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=-1: the low-volatility anomaly (low-vol stocks earn
+        MORE than high-vol ones), i.e. the factor as defined (higher = more
+        volatile) should correlate NEGATIVELY with forward returns. This is the
+        project's second independently-confirmed hypothesis: P3-5 test IC 3/3
+        negative (-0.044~-0.079), P3-7 SUPPORTED on 2/2 holdout cells, P3-8
+        GENERALIZES to CSI500 (test IC -0.0272).
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Trailing {self._window}-bar volatility: std (ddof=1) of daily "
+                f"{self._price_col} returns over a FULL window."
+            ),
+            expected_ic_sign=-1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            input_fields=(self._price_col,),
+            family="lowvol",
+            # pct_change loses row 0 and the rolling std needs ``window`` returns
+            # -> the leading ``window`` rows are NaN.
+            min_history_bars=self._window,
+        )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
         if self._price_col not in panel.columns:
@@ -106,6 +170,34 @@ class LiquidityFactor(Factor):
         self._window = window
         self._amount_col = amount_col
         self.name = f"liquidity_{window}"
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=-1: the illiquidity-premium prior — less-traded stocks
+        earn more, so this factor (higher = MORE traded) should correlate
+        NEGATIVELY with forward returns. Project evidence: P3-5 test IC 3/3
+        negative but small in magnitude; P3-6 showed adding it to the
+        value+lowvol subset is no free lunch (better on 1 cell, worse on 2).
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Log of the trailing {self._window}-bar mean turnover "
+                f"'{self._amount_col}' (non-positive mean -> NaN)."
+            ),
+            expected_ic_sign=-1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            input_fields=(self._amount_col,),
+            family="liquidity",
+            # rolling mean over ``window`` amounts -> first valid row is
+            # ``window-1`` (no pct_change involved, unlike volatility).
+            min_history_bars=self._window - 1,
+        )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
         if self._amount_col not in panel.columns:
@@ -152,6 +244,36 @@ class OvernightMomentumFactor(Factor):
         self._close_col = close_col
         self.name = f"overnight_mom_{window}"
 
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=+1: the overnight-return premium prior (persistent
+        overnight demand keeps paying), i.e. momentum-like in direction. Project
+        evidence is mixed/weak: P3-5 test IC 2/3 positive (+0.008/+0.016) and
+        negative on the 2020-2022 cell.
+
+        NOT is_intraday: it is derived from DAILY open/close bars, so it carries
+        no minute decision-cutoff / execution contract.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Sum of the last {self._window} overnight log returns "
+                f"log({self._open_col}[t] / {self._close_col}[t-1])."
+            ),
+            expected_ic_sign=+1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            input_fields=(self._open_col, self._close_col),
+            family="momentum",
+            # row 0 has no prior close and the rolling sum needs ``window`` full
+            # overnight returns -> the leading ``window`` rows are NaN.
+            min_history_bars=self._window,
+        )
+
     def compute(self, panel: pd.DataFrame) -> pd.Series:
         missing = [c for c in (self._open_col, self._close_col) if c not in panel.columns]
         if missing:
@@ -187,6 +309,27 @@ class ValueFactor(Factor):
             )
         self.name = field
         self._field = field
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property because the id IS the chosen field.
+
+        expected_ic_sign=+1 for both fields — see ``_VALUE_META`` above for the
+        prior and the project's independent confirmation (P3-5/P3-7/P3-8).
+        ``min_history_bars=0``: the ratio is published same-day, no warm-up.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=_VALUE_META[self._field],
+            expected_ic_sign=+1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            input_fields=(self._field,),
+            family="value",
+            min_history_bars=0,
+        )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
         if self._field not in panel.columns:
