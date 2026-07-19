@@ -253,6 +253,31 @@ def _cmd_run_eval_minute_ideal_amplitude(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_eval_amp_marginal_anomaly_vol(args: argparse.Namespace) -> int:
+    """Run the two real amp-marginal-anomaly-vol factor evaluations (cache-only) + reports."""
+    from qt.eval_amp_marginal_anomaly_vol import run_eval_amp_marginal_anomaly_vol
+
+    try:
+        result = run_eval_amp_marginal_anomaly_vol(args.config)
+    except (ConfigError, ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    nb, wb = result.no_book_metrics, result.with_book_metrics
+    print(
+        f"OK run-eval-amp-marginal-anomaly-vol: covered={result.covered_symbols}/"
+        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
+        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
+        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
+        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
+        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
+        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
+        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
+        f"dashboards: {result.reports.no_book_dashboard} | "
+        f"{result.reports.with_book_dashboard}"
+    )
+    return 0
+
+
 def _cmd_data_update(args: argparse.Namespace) -> int:
     """Warm/update the tushare caches (P4-3); never runs a backtest."""
     from qt.data_updater import format_summary, run_data_update
@@ -397,6 +422,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_mia.add_argument("--config", required=True, help="Path to the YAML config.")
     p_mia.set_defaults(func=_cmd_run_eval_minute_ideal_amplitude)
+
+    p_amav = sub.add_parser(
+        "run-eval-amp-marginal-anomaly-vol",
+        help="Run the amp-marginal-anomaly-vol factor evaluation (CSI500, cache-only).",
+    )
+    p_amav.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_amav.set_defaults(func=_cmd_run_eval_amp_marginal_anomaly_vol)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),
