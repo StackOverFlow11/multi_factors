@@ -1,0 +1,170 @@
+# PR-J — Eighth real factor evaluation: VALLEY/RIDGE VWAP RATIO.
+#
+# Reproduces the FOURTH factor of the Kaiyuan market-microstructure series #27 (开源证券
+# 《高频成交量的峰、岭、谷信息——市场微观结构研究系列（27）》, reportId 4957417, §7.1) — the
+# "谷岭加权价格比因子" — as a first-class ValleyRidgeVwapRatioFactor and runs it through the
+# FROZEN StandardFactorEvaluator on REAL cached A-share data. CACHE-ONLY: the minute read
+# is provably live-call-free; daily / universe / covariate endpoints go through the
+# read-through cache (warm -> 0 gap fetches).
+#
+# WHY THIS FACTOR, NOW: PR-I (valley VWAP / WHOLE-VISIBLE-DAY VWAP) is the strongest factor
+# of this loop -- both assessed axes PASS. PR-J holds everything else fixed and swaps ONLY
+# the denominator to the RIDGE VWAP, so the two behavioural groups of the report's
+# peak/ridge/valley taxonomy collide head-on. If the price-level signal survives the swap
+# it is a property of the FAMILY; if it does not, PR-I depended on that specific
+# denominator. Either outcome is a legitimate result and is reported as such.
+#
+# SAME MACHINE as PR-F / PR-H / PR-I. The minute classification is REUSED from
+# data/clean/intraday_volume_prv.py (not re-implemented): PIT-truncate each day at 14:50,
+# classify every visible minute against its SAME-SLOT strictly-prior 20-day baseline
+# (ERUPTIVE if vol > mu + sigma, else a VALLEY 量谷); a RIDGE 量岭 is an eruptive minute that
+# is NOT an isolated peak. Because the classification is shared verbatim, a different
+# verdict here cannot be an artefact of a differently-implemented taxonomy.
+#
+# PINNED choices (disclosed on the factor spec):
+#   (1) the RIDGE mask is 'eruptive AND NOT an isolated peak'. This is WIDER than the
+#       literal "eruptive next to an eruptive": it also covers session-boundary eruptions
+#       and eruptions whose neighbour is unclassifiable, i.e. every eruptive bar whose
+#       isolation is UNPROVABLE. It is the exact complement of PR-F's conservative peak
+#       rule, so valley|peak|ridge stays an exact partition of the classifiable bars and no
+#       eruptive bar is silently dropped. An isolated PEAK contributes to NEITHER leg;
+#   (2) each VWAP uses the aggregation identity sum(p*v)/sum(v) == sum(amount)/sum(volume);
+#   (3) bars with non-finite or non-positive volume OR amount are dropped from BOTH sums;
+#       the guard runs at the summation step only, so PR-F's same-slot baseline -- and
+#       therefore volume_peak_count / peak_interval_kurtosis / valley_relative_vwap -- is
+#       bit-identical;
+#   (4) RAW (unadjusted) prices are correct here: the adjustment factor is constant within
+#       a day and cancels exactly in the ratio (same reasoning as PR-I / PR-D / I5b);
+#   (5) DEVIATION FROM THE REPORT, disclosed and NOT silently equated: both legs span the
+#       PIT-VISIBLE window 09:31-14:50 only, while the report uses the FULL day. Reading
+#       the closing auction would be lookahead at our 14:50 decision time;
+#   (6) ASYMMETRIC BAR FLOOR -- a day is VALID iff it has >= 100 classifiable bars AND
+#       >= 20 TRADABLE valley bars AND >= 10 TRADABLE ridge bars (both counted AFTER the
+#       positive-trade guard) AND positive volume in both denominators; NaN below 10 valid
+#       days. The ridge floor is deliberately LOWER than the valley floor because a ridge
+#       bar must erupt AND fail the isolation test, making ridges structurally far scarcer;
+#       holding both legs to 20 would discard sound days and bias the surviving sample
+#       towards unusually turbulent sessions. This threshold is a PINNED interpretation,
+#       not a tuned knob, and the runner REPORTS the realized ridge-bar distribution, the
+#       day-validity rate and the counterfactual valid-day count at a 20-ridge floor, so a
+#       coverage regression against PR-I shows up as a number rather than being hidden.
+#
+# Pre-registered sign = +1 (report full-market RankIC +6.98% / RankICIR 3.56, long-short
+# 15.83%/yr, IR 1.83, monthly win rate 72.3%, only 2023 negative in 13 years; CSI500
+# sub-domain long-short 10.49% / IR 1.34, the closest comparable to this cell). Semantics
+# per the report: a HIGH valley/ridge price ratio means retail over-reaction pushed the
+# eruptive minutes' price DOWN relative to the calm ones, so the stock is depressed and
+# performs better going forward. NOTE the report is a MONTHLY, market-cap + industry
+# neutral FULL-MARKET series on Wind data -- our eval cell is CSI500 daily with industry +
+# size neutral, so those numbers are a LOOSE reference only and are NOT written in as
+# expected values. Raw minute volume (cached as-is) has split-day magnitude jumps that
+# pollute the 20-day sigma; the report (Wind) does not adjust for this either, so it is
+# disclosed and NOT corrected.
+#
+# Eval CELL is IDENTICAL to PR-C .. PR-I: universe = CSI500 (000905.SH), PIT membership;
+# window = 2021-07-01 .. 2026-06-30 (the project's minute-coverage window); daily
+# rebalance; OOS split 2024-01-01; book = value_ep/value_bp/volatility_20; fee 0.001. The
+# ONLY substantive difference is the subject factor, which is minute-derived and computed
+# by the runner from the intraday cache -- it is NOT a config-listed daily factor. Because
+# the cell matches PR-I exactly, this run is directly comparable to the factor it is meant
+# to stress. The evaluator runs TWICE (see qt/eval_valley_ridge_vwap_ratio.py): once with
+# NO book (Incremental NOT_ASSESSED) and once with the confirmed book -- which matters more
+# than usual here, since a relative PRICE LEVEL is a plausible cousin of a value signal and
+# the with-book run is what says whether this is a genuinely new bet.
+
+project:
+  name: quantitative_trading_pr_j_valley_ridge_vwap_ratio
+  timezone: Asia/Shanghai
+data:
+  source: tushare
+  freq: D
+  start: '2021-07-01'
+  end: '2026-06-30'
+  external_secret_file: /home/shaofl/Projects/financial_projects/.config.json
+  tushare_token_key: tushare.token
+  output_name: valley_ridge_vwap_ratio_daily
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+universe:
+  type: index
+  index_code: 000905.SH
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: false
+    st: false
+    limit_up_down: false
+# factors = the confirmed BOOK used for the Incremental axis (value + low-vol). The
+# SUBJECT factor (valley_ridge_vwap_ratio_20) is minute-derived and computed by the runner
+# from the intraday cache -- it is NOT a config-listed daily factor.
+factors:
+- name: value_ep
+  enabled: true
+- name: value_bp
+  enabled: true
+- name: volatility_20
+  enabled: true
+  params:
+    window: 20
+    price_col: close
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  # winsorize is a P0 no-op in this codebase; the EvalConfig declares winsorize=None
+  # accordingly (nothing is clipped), so the report never overstates preprocessing.
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  # Industry + market-cap neutralization (SW-L1), matching the report's neutral column
+  # and the EvalConfig neutralization declaration.
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+alpha:
+  model: equal_weight
+  params: {}
+portfolio:
+  # Required by the schema but unused: this runner evaluates a factor, it does not
+  # build/execute a portfolio.
+  constructor: topn_equal_weight
+  top_n: 50
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+backtest:
+  # Required by the schema but unused (no backtest is run). The EvalConfig uses a DAILY
+  # rebalance (contract default), independent of this field.
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+analytics:
+  forward_return_periods:
+  - 1
+  quantiles: 5
+  benchmark: null
+# OOS split (window midpoint) so the OOS section runs and the Predictive axis can be
+# assessed (sign consistency across both holdout subperiods).
+oos:
+  split_date: '2024-01-01'
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true

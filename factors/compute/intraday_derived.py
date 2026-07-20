@@ -58,6 +58,11 @@ from data.clean.intraday_peak_interval import (
     PEAK_INTERVAL_LOOKBACK_DAYS,
     PEAK_INTERVAL_MIN_INTERVALS,
 )
+from data.clean.intraday_valley_ridge_vwap import (
+    VALLEY_RIDGE_LOOKBACK_DAYS,
+    VALLEY_RIDGE_MIN_RIDGE_BARS,
+    VALLEY_RIDGE_MIN_VALLEY_BARS,
+)
 from data.clean.intraday_valley_vwap import (
     VALLEY_VWAP_LOOKBACK_DAYS,
     VALLEY_VWAP_MIN_VALLEY_BARS,
@@ -755,6 +760,132 @@ class ValleyRelativeVwapFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
+class ValleyRidgeVwapRatioFactor(Factor):
+    """Valley/ridge VWAP-ratio factor (daily signal, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by
+    ``data.clean.intraday_valley_ridge_vwap.compute_valley_ridge_vwap_ratio``); it does
+    NO minute work of its own, mirroring :class:`JumpAmountCorrFactor` /
+    :class:`MinuteIdealAmplitudeFactor` / :class:`AmpMarginalAnomalyVolFactor` /
+    :class:`VolumePeakCountFactor` / :class:`IntradayAmpCutFactor` /
+    :class:`PeakIntervalKurtosisFactor` / :class:`ValleyRelativeVwapFactor` and the value
+    / financial factors that surface an enriched column.
+
+    Args:
+        lookback_days: trailing VALID trading-day window averaged; part of the factor
+            DEFINITION (reproduced from the report), not a tuned knob. It only names the
+            column so a non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"valley_ridge_vwap_ratio_{VALLEY_RIDGE_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = VALLEY_RIDGE_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"valley-ridge-vwap-ratio lookback_days must be a positive integer; got "
+                f"{lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"valley_ridge_vwap_ratio_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=+1: the report's full-market RankIC is +6.98% (RankICIR 3.56,
+        long-short 15.83%/yr, IR 1.83, monthly win rate 72.3%, only 2023 negative across
+        13 years), and its CSI500 sub-domain long-short is 10.49% / IR 1.34, the closest
+        comparable to our eval cell. Semantics per the report: a HIGH valley/ridge price
+        ratio means retail over-reaction pushed the eruptive minutes' price DOWN relative
+        to the calm ones, so the stock is depressed and performs better going forward.
+        The sign is fixed BEFORE the run (a validated prototype must reproduce it). NOTE
+        the report is a MONTHLY, market-cap + industry neutral full-market series on Wind
+        data while our eval cell is CSI500 daily with industry + size neutral, so the
+        report numbers are a LOOSE reference only (disclosed, never mislabeled, never
+        written in as an expected value). is_intraday=False by the module docstring's
+        reasoning: minute INPUT but a DAILY signal traded close-to-close.
+        min_history_bars=0: the warm-up is DATA-dependent (a value appears once enough
+        VALID days accumulate), not a fixed leading count — the honest NaN rate is
+        reported by data_coverage.
+
+        The description spells out the RELATION TO PR-I (same reused classification, same
+        VWAP identity, DENOMINATOR swapped from the whole visible day to the ridge bars)
+        plus the pinned choices — above all the ASYMMETRIC bar floor, which exists
+        because ridge bars are structurally far scarcer than valley bars.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Valley/ridge VWAP ratio (Kaiyuan microstructure series #27, FOURTH "
+                f"factor 谷岭加权价格比). SAME minute classification as PR-F "
+                f"volume_peak_count / PR-H peak_interval_kurtosis / PR-I "
+                f"valley_relative_vwap (REUSED from data.clean.intraday_volume_prv, not "
+                f"re-implemented): 1min bars PIT-truncated at 14:50, a minute is ERUPTIVE "
+                f"if vol > μ + {VOLUME_PRV_SIGMA_K:g}σ of its SAME-SLOT strictly-prior "
+                f"{VOLUME_PRV_BASELINE_DAYS}-day baseline, else it is a VALLEY (量谷). "
+                f"DENOMINATOR SWAPPED vs PR-I: instead of the whole visible day's VWAP "
+                f"the divisor is the RIDGE (量岭) VWAP, so the two behavioural groups are "
+                f"contrasted head-on — daily ratio = (valley VWAP) / (ridge VWAP), "
+                f"averaged over the trailing {self._lookback_days} VALID days. PINNED "
+                f"choices: (1) the RIDGE mask is 'eruptive AND NOT an isolated peak', "
+                f"which is WIDER than 'eruptive next to an eruptive' — it also covers "
+                f"session-boundary eruptions and eruptions with an unclassifiable "
+                f"neighbour, keeping valley|peak|ridge an exact partition of the "
+                f"classifiable bars; an isolated PEAK contributes to NEITHER leg; "
+                f"(2) each VWAP uses the aggregation identity Σ(p·v)/Σv = Σamount/Σvolume; "
+                f"(3) bars with non-finite or non-positive volume or amount are dropped "
+                f"from BOTH sums (guard applied at summation only, so PR-F's baseline is "
+                f"untouched); (4) RAW unadjusted prices are correct here because the "
+                f"adjustment factor is constant within a day and cancels in the ratio; "
+                f"(5) DEVIATION FROM THE REPORT, disclosed: both legs span the "
+                f"PIT-VISIBLE window 09:31-14:50 only, not the full session — reading the "
+                f"close would be lookahead at our 14:50 decision time; (6) a day is VALID "
+                f"iff it has >= {VOLUME_PRV_MIN_CLASSIFIABLE} classifiable bars AND >= "
+                f"{VALLEY_RIDGE_MIN_VALLEY_BARS} TRADABLE valley bars AND >= "
+                f"{VALLEY_RIDGE_MIN_RIDGE_BARS} TRADABLE ridge bars (both counted AFTER "
+                f"the guard) AND positive volume in both denominators — the ridge floor "
+                f"is deliberately LOWER because a ridge bar must erupt AND fail the "
+                f"isolation test, making ridges structurally far scarcer than valleys, "
+                f"and the realized ridge-bar distribution plus day-validity rate are "
+                f"REPORTED by the runner rather than left implicit; NaN below "
+                f"{VOLUME_PRV_MIN_VALID_DAYS} valid days. Derived from 1min bars but a "
+                f"DAILY signal traded close-to-close."
+            ),
+            expected_ic_sign=1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar fields the upstream aggregation is derived from. Declared for
+            # honest provenance disclosure (data_coverage lists them); the daily panel
+            # surfaces the pre-aggregated column itself.
+            input_fields=("volume", "amount"),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily valley/ridge VWAP-ratio column off ``panel``.
+
+        The runner runs ``compute_valley_ridge_vwap_ratio`` per symbol on the minute
+        cache upstream and joins the result as ``self.name``; here we only surface it, so
+        this factor does no temporal logic and cannot introduce lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"ValleyRidgeVwapRatioFactor needs the pre-aggregated '{self.name}' "
+                f"column on the panel (produced upstream by "
+                f"compute_valley_ridge_vwap_ratio and joined by the runner); panel has "
+                f"{list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
 __all__ = [
     "AmpMarginalAnomalyVolFactor",
     "IntradayAmpCutFactor",
@@ -762,5 +893,6 @@ __all__ = [
     "MinuteIdealAmplitudeFactor",
     "PeakIntervalKurtosisFactor",
     "ValleyRelativeVwapFactor",
+    "ValleyRidgeVwapRatioFactor",
     "VolumePeakCountFactor",
 ]
