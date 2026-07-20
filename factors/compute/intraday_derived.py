@@ -62,6 +62,12 @@ from data.clean.intraday_ridge_return import (
     RIDGE_RETURN_LOOKBACK_DAYS,
     RIDGE_RETURN_MIN_RIDGE_BARS,
 )
+from data.clean.intraday_valley_quantile import (
+    VALLEY_QUANTILE_LOOKBACK_DAYS,
+    VALLEY_QUANTILE_MIN_CROSS_SECTION,
+    VALLEY_QUANTILE_MIN_VALLEY_BARS,
+    VALLEY_QUANTILE_REVERSAL_DAYS,
+)
 from data.clean.intraday_valley_ridge_vwap import (
     VALLEY_RIDGE_LOOKBACK_DAYS,
     VALLEY_RIDGE_MIN_RIDGE_BARS,
@@ -1023,6 +1029,146 @@ class RidgeMinuteReturnFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
+class ValleyPriceQuantileFactor(Factor):
+    """Valley weighted-price-quantile factor (daily signal, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by
+    ``data.clean.intraday_valley_quantile.compute_valley_price_quantile_stats`` and then
+    reversal-neutralized by ``residualize_on_reversal``); it does NO minute work of its
+    own, mirroring the eight precedents in this module.
+
+    Args:
+        lookback_days: trailing VALID trading-day window averaged; part of the factor
+            DEFINITION (reproduced from the report), not a tuned knob. It only names the
+            column so a non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"valley_price_quantile_{VALLEY_QUANTILE_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = VALLEY_QUANTILE_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"valley-price-quantile lookback_days must be a positive integer; got "
+                f"{lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"valley_price_quantile_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=+1 (report full-market RankIC +6.34%, RankICIR 4.32, long leg
+        13.1%/yr, long-short 20.22%/yr, IR 3.29, max drawdown 10.18%, monthly win rate
+        80.4%; CSI500 sub-domain long-short 11.71% / IR 1.76 — the closest comparable to
+        our eval cell). Semantics per the report: a HIGH position of the calm-minute
+        (valley) price within the day's range means the informed, unhurried part of the
+        day traded near the top of the range -> higher future return. The sign is fixed
+        BEFORE the run (a validated prototype must reproduce it). NOTE the report is a
+        MONTHLY, market-cap + industry neutral full-market series on Wind data while our
+        eval cell is CSI500 daily with industry + size neutral, so the report numbers are
+        a LOOSE reference only (disclosed, never mislabeled, never written in as an
+        expected value). is_intraday=False: minute INPUT but a DAILY signal traded
+        close-to-close. min_history_bars=0: the warm-up is DATA-dependent, not a fixed
+        leading count — the honest NaN rate is reported by data_coverage.
+
+        The description spells out the two subtleties that make this factor harder than
+        its five siblings: the PREV_CLOSE-extended range read at OUR 14:50 visibility
+        rather than the report's true daily close, and the reversal neutralization taken
+        at T-1 so day d's 15:00 close is never an input to day d's value.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Valley weighted-price-quantile (Kaiyuan microstructure series #27, "
+                f"SIXTH factor 量谷加权价格分位点). SAME minute classification as PR-F "
+                f"volume_peak_count / PR-H peak_interval_kurtosis / PR-I "
+                f"valley_relative_vwap / PR-J valley_ridge_vwap_ratio / PR-K "
+                f"ridge_minute_return (REUSED from data.clean.intraday_volume_prv, not "
+                f"re-implemented): 1min bars PIT-truncated at 14:50, a minute is ERUPTIVE "
+                f"if vol > μ + {VOLUME_PRV_SIGMA_K:g}σ of its SAME-SLOT strictly-prior "
+                f"{VOLUME_PRV_BASELINE_DAYS}-day baseline, and a VALLEY (量谷) is a "
+                f"classifiable NON-eruptive minute. NEW STATISTIC vs PR-F..PR-K: a price "
+                f"POSITION rather than a count, a timing moment, a price RATIO or a "
+                f"return — each valid day scores WHERE the valley VWAP sits inside the "
+                f"day's price range, and the factor averages that over the trailing "
+                f"{self._lookback_days} VALID days before a cross-sectional reversal "
+                f"neutralization. PINNED choices: (1) the range is [min(visible low, "
+                f"prev_close), max(visible high, prev_close)] where prev_close is the "
+                f"LAST VISIBLE (<=14:50) RAW CLOSE of the PREVIOUS trading day — a "
+                f"DISCLOSED DEVIATION from the report, which uses the true previous "
+                f"daily close; the previous 15:00 close is not itself a lookahead at a "
+                f"14:50 decision, so this is a SINGLE-VISIBILITY-DEFINITION choice (every "
+                f"price in the factor comes from one source under one cutoff), not a "
+                f"leakage fix; (2) the daily quantile (valley VWAP - lo)/(hi - lo) is NOT "
+                f"clipped — a VWAP outside the range means the range is wrong and must be "
+                f"visible rather than sanitized; (3) THE REVERSAL NEUTRALIZATION IS TAKEN "
+                f"AT T-1: rev20 = -(close_(d-1)/close_(d-{VALLEY_QUANTILE_REVERSAL_DAYS + 1}) "
+                f"- 1) on FRONT-ADJUSTED daily closes from the panel (NO new data source). "
+                f"The report's naive form uses close_d, which is 15:00 information and "
+                f"WOULD be a lookahead at our 14:50 decision — day d's close is therefore "
+                f"never an input to day d's factor value; front-adjusted closes are "
+                f"required because the ratio spans {VALLEY_QUANTILE_REVERSAL_DAYS} "
+                f"trading days; (4) RAW minute prices for the range and the VWAP, with a "
+                f"DISCLOSED imperfection: prev_close crosses the overnight boundary, so on "
+                f"an ex-dividend / split date the previous raw close sits on the old scale "
+                f"and widens the range, biasing that day's quantile toward the middle — "
+                f"confined to a few ex-dates per symbol per year and diluted by the "
+                f"{self._lookback_days}-day mean, disclosed rather than silently "
+                f"corrected; (5) a PRICE guard (finite, high >= low > 0) admits a bar to "
+                f"the range while a TRADE guard (finite positive volume AND amount) "
+                f"admits it to the VWAP, both applied at the summation step only so PR-F's "
+                f"baseline stays bit-identical; (6) a day is VALID iff it has >= "
+                f"{VOLUME_PRV_MIN_CLASSIFIABLE} classifiable bars AND >= "
+                f"{VALLEY_QUANTILE_MIN_VALLEY_BARS} TRADABLE valley bars AND positive "
+                f"valley volume AND an available prev_close AND hi > lo — so a symbol's "
+                f"FIRST visible day never produces a value; (7) the residualization is "
+                f"PER DATE on the covered cross-section, with < "
+                f"{VALLEY_QUANTILE_MIN_CROSS_SECTION} paired symbols, a missing rev20, or "
+                f"a degenerate (zero-variance) rev20 all yielding NaN rather than a "
+                f"zero-filled or unresidualized value passed off as neutralized; (8) "
+                f"DEVIATION FROM THE REPORT, disclosed: everything spans the PIT-VISIBLE "
+                f"window 09:31-14:50 only, not the full session. NaN below "
+                f"{VOLUME_PRV_MIN_VALID_DAYS} valid days. Derived from 1min bars but a "
+                f"DAILY signal traded close-to-close."
+            ),
+            expected_ic_sign=1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar fields the upstream aggregation is derived from, plus the daily
+            # close the T-1 reversal neutralization regresses against. Declared for honest
+            # provenance disclosure (data_coverage lists them); the daily panel surfaces
+            # the pre-aggregated column itself.
+            input_fields=("volume", "amount", "high", "low", "close"),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily valley-price-quantile column off ``panel``.
+
+        The runner runs ``compute_valley_price_quantile_stats`` per symbol on the minute
+        cache and ``residualize_on_reversal`` once on the assembled panel upstream, then
+        joins the result as ``self.name``; here we only surface it, so this factor does no
+        temporal logic and cannot introduce lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"ValleyPriceQuantileFactor needs the pre-aggregated '{self.name}' "
+                f"column on the panel (produced upstream by "
+                f"compute_valley_price_quantile_stats + residualize_on_reversal and "
+                f"joined by the runner); panel has {list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
 __all__ = [
     "AmpMarginalAnomalyVolFactor",
     "IntradayAmpCutFactor",
@@ -1030,6 +1176,7 @@ __all__ = [
     "MinuteIdealAmplitudeFactor",
     "PeakIntervalKurtosisFactor",
     "RidgeMinuteReturnFactor",
+    "ValleyPriceQuantileFactor",
     "ValleyRelativeVwapFactor",
     "ValleyRidgeVwapRatioFactor",
     "VolumePeakCountFactor",
