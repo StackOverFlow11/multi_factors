@@ -90,20 +90,75 @@ def _empty_series(name: str) -> pd.Series:
     return pd.Series([], index=index, dtype=float, name=name)
 
 
-def _peak_count_for_symbol(
+def prepare_visible_minute_bars(
+    bars: pd.DataFrame, *, decision_time: str = DEFAULT_DECISION_TIME
+) -> pd.DataFrame:
+    """PIT-truncate ``bars`` at ``decision_time`` and add ``trade_date`` / ``slot``.
+
+    The shared front half of every peak-taxonomy factor: keep only the bars whose
+    ``available_time`` is at or before their own ``trade_date + decision_time`` (so
+    history days and the signal day are truncated identically), drop non-finite /
+    negative volumes (invalid data that would poison the same-slot μ/σ), and add the
+    minute-of-day ``slot`` that aligns the SAME time-of-day across days.
+
+    ``bars`` must ALREADY be schema-validated by the caller
+    (:func:`~data.clean.intraday_schema.validate_intraday_bars`) — this helper is the
+    post-validation preparation step, kept separate so the entry points keep their own
+    validate-then-check-params ordering.
+
+    Args:
+        bars: normalized 1min bars, ``MultiIndex(time, symbol)``; one or many symbols.
+        decision_time: per-bar PIT cutoff time-of-day (default 14:50:00).
+
+    Returns:
+        A fresh ``RangeIndex`` frame with columns ``symbol`` / ``bar_end`` /
+        ``available_time`` / ``volume`` / ``trade_date`` / ``slot`` (possibly empty).
+        Pure: never mutates ``bars``.
+    """
+    work = bars.reset_index()[
+        [SYMBOL_LEVEL, "bar_end", "available_time", "volume"]
+    ].copy()
+    work["trade_date"] = work["bar_end"].dt.normalize()
+    # PIT truncation FIRST (per-bar timestamps): each bar's cutoff is its own
+    # trade_date + decision_time, so every day is truncated to [open, cutoff].
+    cutoff = work["trade_date"] + pd.Timedelta(decision_time)
+    visible = work.loc[work["available_time"] <= cutoff].copy()
+    if visible.empty:
+        return visible
+
+    # Guard bad volume BEFORE anything else: a non-finite / negative volume is invalid
+    # data that would poison the same-slot μ/σ. (Split-day magnitude jumps are NOT
+    # corrected — disclosed, matching the report's Wind treatment.)
+    vol = visible["volume"].to_numpy(dtype=float)
+    visible = visible.loc[np.isfinite(vol) & (vol >= 0.0)].copy()
+    if visible.empty:
+        return visible
+
+    # slot = minute-of-day (minutes since midnight); bars are minute-aligned so this is
+    # exact and aligns the SAME time-of-day across days for the same-slot baseline.
+    visible["slot"] = (
+        (visible["bar_end"] - visible["trade_date"]) // pd.Timedelta(minutes=1)
+    ).astype(int)
+    return visible
+
+
+def peak_mask_for_symbol(
     g: pd.DataFrame,
     *,
-    baseline_days: int,
-    baseline_min_obs: int,
-    sigma_k: float,
-    lookback_days: int,
-    min_valid_days: int,
-    min_classifiable: int,
-) -> tuple[list[pd.Timestamp], list[float]]:
-    """Daily volume-peak-count values for ONE symbol from its PIT-visible bars.
+    baseline_days: int = VOLUME_PRV_BASELINE_DAYS,
+    baseline_min_obs: int = VOLUME_PRV_BASELINE_MIN_OBS,
+    sigma_k: float = VOLUME_PRV_SIGMA_K,
+) -> pd.DataFrame:
+    """Per-minute PEAK / classifiable mask for ONE symbol's PIT-visible bars.
+
+    This is THE volume-peak identification of the report (§2), shared by every factor in
+    the peak family so the taxonomy is defined in exactly one place: same-slot
+    strictly-prior μ/σ baseline -> eruptive vs mild -> a peak is an eruptive minute whose
+    both 1-minute same-session neighbours are mild.
 
     ``g`` holds columns ``trade_date`` / ``slot`` / ``bar_end`` / ``volume`` for a
-    SINGLE symbol (a fresh ``RangeIndex``). The same-slot STRICTLY-PRIOR baseline is
+    SINGLE symbol (a fresh ``RangeIndex``, as produced by
+    :func:`prepare_visible_minute_bars`). The same-slot STRICTLY-PRIOR baseline is
     computed on a day x slot pivot (rolling over the day axis then ``shift(1)``), so no
     per-``(day, slot)`` python loop is needed and the current day never enters its own
     baseline. Peak detection is done back in long form with a within-day 60s-gap
@@ -111,6 +166,11 @@ def _peak_count_for_symbol(
     neighbour" at once). No cross-symbol leakage — ``g`` is one symbol's slice — and no
     cross-day leakage — the baseline is strictly prior and the neighbour test never
     crosses a day boundary (grouped by ``trade_date``).
+
+    Returns:
+        ``g`` sorted by ``(trade_date, bar_end)`` on a fresh ``RangeIndex`` with the
+        added boolean columns ``classifiable`` (a strictly-prior baseline existed) and
+        ``peak``. Pure: never mutates ``g``.
     """
     # day x slot volume matrix: rows are the symbol's trading days, columns are the
     # minute-of-day slots; a missing (day, slot) cell is NaN (no bar that minute).
@@ -167,6 +227,30 @@ def _peak_count_for_symbol(
         & next_mild
     )
     work["peak"] = peak
+    return work
+
+
+def _peak_count_for_symbol(
+    g: pd.DataFrame,
+    *,
+    baseline_days: int,
+    baseline_min_obs: int,
+    sigma_k: float,
+    lookback_days: int,
+    min_valid_days: int,
+    min_classifiable: int,
+) -> tuple[list[pd.Timestamp], list[float]]:
+    """Daily volume-peak-count values for ONE symbol from its PIT-visible bars.
+
+    Identifies the peaks with the shared :func:`peak_mask_for_symbol` and reduces them to
+    the trailing-``lookback_days``-VALID-day count.
+    """
+    work = peak_mask_for_symbol(
+        g,
+        baseline_days=baseline_days,
+        baseline_min_obs=baseline_min_obs,
+        sigma_k=sigma_k,
+    )
 
     peak_count = work.groupby("trade_date")["peak"].sum()
     classifiable_count = work.groupby("trade_date")["classifiable"].sum()
@@ -237,30 +321,9 @@ def compute_volume_peak_count(
     if len(bars) == 0:
         return _empty_series(name)
 
-    work = bars.reset_index()[
-        [SYMBOL_LEVEL, "bar_end", "available_time", "volume"]
-    ].copy()
-    work["trade_date"] = work["bar_end"].dt.normalize()
-    # PIT truncation FIRST (per-bar timestamps): each bar's cutoff is its own
-    # trade_date + decision_time, so every day is truncated to [open, cutoff].
-    cutoff = work["trade_date"] + pd.Timedelta(decision_time)
-    visible = work.loc[work["available_time"] <= cutoff].copy()
+    visible = prepare_visible_minute_bars(bars, decision_time=decision_time)
     if visible.empty:
         return _empty_series(name)
-
-    # Guard bad volume BEFORE anything else: a non-finite / negative volume is invalid
-    # data that would poison the same-slot μ/σ. (Split-day magnitude jumps are NOT
-    # corrected — disclosed, matching the report's Wind treatment.)
-    vol = visible["volume"].to_numpy(dtype=float)
-    visible = visible.loc[np.isfinite(vol) & (vol >= 0.0)].copy()
-    if visible.empty:
-        return _empty_series(name)
-
-    # slot = minute-of-day (minutes since midnight); bars are minute-aligned so this is
-    # exact and aligns the SAME time-of-day across days for the same-slot baseline.
-    visible["slot"] = (
-        (visible["bar_end"] - visible["trade_date"]) // pd.Timedelta(minutes=1)
-    ).astype(int)
 
     index_tuples: list[tuple] = []
     values: list[float] = []
@@ -292,4 +355,6 @@ __all__ = [
     "VOLUME_PRV_MIN_VALID_DAYS",
     "VOLUME_PRV_SIGMA_K",
     "compute_volume_peak_count",
+    "peak_mask_for_symbol",
+    "prepare_visible_minute_bars",
 ]
