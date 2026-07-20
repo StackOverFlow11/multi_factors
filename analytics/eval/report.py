@@ -123,6 +123,11 @@ def extract_verdict_inputs(
         monotonicity_spearman=_payload_number(
             returns, "monotonicity_spearman", float("nan")
         ),
+        # design §6 v0.8: the GATED monotonicity. Absent (a pre-v0.8 IR) -> NaN ->
+        # the verdict falls back to the pooled field and DISCLOSES it.
+        monotonicity_spearman_by_date=_payload_number(
+            returns, "monotonicity_spearman_by_date", float("nan")
+        ),
         # Incremental axis facts (design §6, v0.5). A Skipped purity section (no
         # book) leaves the payload empty -> known_factors_supplied defaults False
         # -> the axis is NOT_ASSESSED. A supplied-but-unmeasurable orthogonalized
@@ -141,6 +146,12 @@ def extract_verdict_inputs(
             purity, "incremental_ic_ir_ci_high", float("nan")
         ),
         net_long_short_by_cost=by_cost,
+        # design §6 v0.8: needed to align a spread by hypothesis without adding the
+        # cost back (cost = gross - net). Absent -> NaN -> a sign=-1 aligned spread
+        # reads UNKNOWN rather than silently mis-signed.
+        gross_long_short_mean=_payload_number(
+            returns, "gross_long_short_mean", float("nan")
+        ),
         oos_available=bool(_payload_flag(oos, "oos_available", False)),
         oos_sign_consistent=bool(_payload_flag(oos, "sign_consistent", False)),
         oos_sign_flipped=bool(_payload_flag(oos, "sign_flipped", False)),

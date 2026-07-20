@@ -52,6 +52,8 @@ from analytics.eval.stats import (
     newey_west_lag,
     newey_west_t,
     sortino,
+    spearman,
+    spearman_by_date,
 )
 from analytics.factor import compute_ic
 from factors.spec import FactorSpec
@@ -1896,3 +1898,163 @@ def test_factors_layer_never_imports_analytics():
         )
     ]
     assert offenders == []
+
+
+# --------------------------------------------------------------------------
+# v0.8 fix #2: monotonicity_spearman_by_date — a RANK statistic for a rank axis.
+# --------------------------------------------------------------------------
+
+
+def _quantile_frame(rows: list[list[float]]) -> pd.DataFrame:
+    """dates x buckets(1..N), the shape ``quantile_return_matrix`` produces."""
+    return pd.DataFrame(
+        rows,
+        index=pd.bdate_range("2024-01-02", periods=len(rows), name=DATE),
+        columns=pd.Index(range(1, len(rows[0]) + 1), name="quantile"),
+    )
+
+
+def test_per_date_monotonicity_survives_the_outlier_days_that_flip_the_pooled_one():
+    """THE proof of the v0.8 monotonicity fix.
+
+    Every single date orders its buckets EXACTLY as the hypothesis says (low
+    bucket -> low return, monotone up). But on two days the market only realizes
+    returns in the bottom three buckets, and those returns are ~1000x the normal
+    scale. Those two days dominate the cross-date ARITHMETIC MEAN of buckets 1-3
+    and drag them above buckets 4-5 — so the POOLED Spearman reads the factor as
+    REVERSED even though no individual day ever was.
+
+    This is the PR-K / PR-G "smile" shape (one outlier bucket driving the pooled
+    figure) reproduced in miniature, and it is why a rank-based Predictive axis
+    must not be gated on a magnitude-sensitive statistic.
+    """
+    normal = [0.001, 0.002, 0.003, 0.004, 0.005]
+    outlier = [1.0, 1.1, 1.2, float("nan"), float("nan")]
+    frame = _quantile_frame([normal] * 20 + [outlier] * 2)
+
+    bucket_means = [frame[q].mean() for q in frame.columns]
+    pooled = spearman([float(q) for q in frame.columns], bucket_means)
+    by_date = spearman_by_date(frame)
+
+    assert pooled == pytest.approx(-0.5)     # REVERSED — the defect
+    assert by_date == pytest.approx(1.0)     # every day was perfectly ordered
+    # and the direction gate (v0.7, threshold 0.0) reads them oppositely
+    assert pooled < 0.0 < by_date
+
+
+def test_per_date_monotonicity_matches_the_pooled_one_on_clean_monotone_data():
+    """No outliers, no gaps: the two statistics must agree, so the v0.8 field is a
+    ROBUSTNESS change, not a different measurement."""
+    frame = _quantile_frame([[0.001, 0.002, 0.003, 0.004, 0.005]] * 12)
+    bucket_means = [frame[q].mean() for q in frame.columns]
+    assert spearman([float(q) for q in frame.columns], bucket_means) == pytest.approx(1.0)
+    assert spearman_by_date(frame) == pytest.approx(1.0)
+    # and it reads a cleanly REVERSED panel as -1.0, not as "no opinion"
+    assert spearman_by_date(_quantile_frame([[0.005, 0.004, 0.003, 0.002, 0.001]] * 12)) \
+        == pytest.approx(-1.0)
+
+
+def test_a_date_with_fewer_than_three_finite_buckets_is_skipped_not_counted():
+    """Two points always give a perfect +/-1 rank correlation, which would be pure
+    noise injected at full weight. Such a date contributes NOTHING — not a zero."""
+    good = [0.001, 0.002, 0.003, 0.004, 0.005]
+    thin = [0.005, 0.004, float("nan"), float("nan"), float("nan")]  # 2 buckets, reversed
+    with_thin = spearman_by_date(_quantile_frame([good] * 6 + [thin] * 3))
+    without_thin = spearman_by_date(_quantile_frame([good] * 6))
+    assert with_thin == pytest.approx(without_thin) == pytest.approx(1.0)
+    # a three-bucket date, by contrast, IS counted
+    three = [0.005, 0.004, 0.003, float("nan"), float("nan")]      # reversed
+    assert spearman_by_date(_quantile_frame([good] * 3 + [three] * 3)) == pytest.approx(0.0)
+
+
+def test_per_date_monotonicity_is_unknown_rather_than_zero_when_no_date_qualifies():
+    nan = float("nan")
+    assert math.isnan(spearman_by_date(_quantile_frame([[0.1, 0.2, nan, nan, nan]] * 5)))
+    # all buckets tied on every date: Spearman undefined, so UNKNOWN, not 0.0
+    assert math.isnan(spearman_by_date(_quantile_frame([[0.2] * 5] * 5)))
+    assert math.isnan(spearman_by_date(pd.DataFrame()))
+
+
+def test_return_risk_reports_both_monotonicity_statistics(rng):
+    """The pooled field is KEPT (historical comparability) alongside the new one."""
+    panel, factor = planted_signal_setup(rng)
+    report = StandardFactorEvaluator().evaluate(
+        factor, make_spec(), make_cfg(), EvalContext(price_panel=panel)
+    )
+    payload = report.by_name()["return_risk"].payload
+    assert payload["monotonicity_spearman"] == pytest.approx(1.0)
+    by_date = payload["monotonicity_spearman_by_date"]
+    assert math.isfinite(by_date) and -1.0 <= by_date <= 1.0
+
+
+# --------------------------------------------------------------------------
+# v0.8 fix #1 at the standard layer: the aligned spread series/CI.
+# --------------------------------------------------------------------------
+
+
+def _aligned_mean_from_ci(payload) -> float:
+    """The aligned base spread's MEAN, recovered from its symmetric N_eff CI."""
+    return (payload["net_long_short_base_ci_low"] + payload["net_long_short_base_ci_high"]) / 2.0
+
+
+def test_aligned_base_spread_subtracts_cost_after_flipping_the_legs(rng):
+    """sign=-1: aligned = -gross - cost, NOT -(gross - cost) = -net.
+
+    Recovered from the payload's own numbers, so this pins the real evaluator
+    output rather than a re-derivation of the formula.
+    """
+    panel, factor = planted_signal_setup(rng, sign=-1)
+    report = StandardFactorEvaluator().evaluate(
+        factor, make_spec(expected_ic_sign=-1), make_cfg(),
+        EvalContext(price_panel=panel, fee_rate=0.001),
+    )
+    payload = report.by_name()["return_risk"].payload
+    gross = payload["gross_long_short_mean"]
+    net = payload["net_long_short_by_cost"][1.0]
+    cost = gross - net
+    assert cost > 0                                   # trading is never free
+    aligned = _aligned_mean_from_ci(payload)
+    assert aligned == pytest.approx(-gross - cost, rel=1e-9)
+    # the pre-v0.8 reading handed the cost back as profit; it must be exactly
+    # 2 * cost better than the truth, and must NOT be what we report.
+    assert aligned == pytest.approx(-net - 2 * cost, rel=1e-9)
+    assert aligned < -net
+
+
+def test_aligned_base_spread_is_bit_identical_to_the_net_at_positive_sign(rng):
+    """The sign=+1 regression lock: aligned mean == net mean, exactly."""
+    panel, factor = planted_signal_setup(rng)
+    report = StandardFactorEvaluator().evaluate(
+        factor, make_spec(), make_cfg(),
+        EvalContext(price_panel=panel, fee_rate=0.001),
+    )
+    payload = report.by_name()["return_risk"].payload
+    assert _aligned_mean_from_ci(payload) == pytest.approx(
+        payload["net_long_short_by_cost"][1.0], rel=1e-12
+    )
+
+
+def test_a_higher_fee_makes_the_negative_sign_aligned_spread_worse_not_better(rng):
+    """The behavioural signature of the defect, at the standard layer.
+
+    The SAME trades at a higher fee must degrade the reported aligned performance.
+    Under the pre-v0.8 `sign * net` the extra fee was ADDED to a sign=-1 factor's
+    aligned spread, so raising the fee IMPROVED its reported NAV — a factor could
+    be made to look better simply by charging it more to trade.
+    """
+    panel, factor = planted_signal_setup(rng, sign=-1)
+    spec, cfg = make_spec(expected_ic_sign=-1), make_cfg()
+    cheap = StandardFactorEvaluator().evaluate(
+        factor, spec, cfg, EvalContext(price_panel=panel, fee_rate=0.0005)
+    ).by_name()["return_risk"].payload
+    dear = StandardFactorEvaluator().evaluate(
+        factor, spec, cfg, EvalContext(price_panel=panel, fee_rate=0.004)
+    ).by_name()["return_risk"].payload
+
+    # same trades either way: the gross leg difference is untouched by the fee
+    assert dear["gross_long_short_mean"] == pytest.approx(
+        cheap["gross_long_short_mean"], rel=1e-12
+    )
+    assert _aligned_mean_from_ci(dear) < _aligned_mean_from_ci(cheap)
+    assert dear["aligned_spread_final_nav"] < cheap["aligned_spread_final_nav"]
+    assert dear["aligned_spread_annual_return"] < cheap["aligned_spread_annual_return"]

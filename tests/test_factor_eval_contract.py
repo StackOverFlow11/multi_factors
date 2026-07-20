@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 
 import pytest
 
@@ -37,6 +38,10 @@ from analytics.eval import (
     decide_verdict,
 )
 from analytics.eval.render import MAX_VALUE_CHARS
+
+# The v0.8 spread fix lived in an exact arithmetic expression, so the lock has to
+# be on that expression itself, not on a PASS/FAIL that happens to agree with it.
+from analytics.eval.verdict import _aligned_net, _all_spreads_negative, _base_spread
 from factors.base import Factor
 from factors.compute.candidates import (
     VALUE_FIELDS,
@@ -1298,6 +1303,12 @@ def test_negative_sign_factor_is_judged_in_its_own_direction():
         ic_nw_t=-3.5,
         monotonicity_spearman=-0.9,          # high-vol bucket underperforms
         net_long_short_by_cost=((1.0, -0.05),),  # QN - Q1 negative: as predicted
+        # v0.8: aligning a NET spread needs the GROSS leg difference, because the
+        # cost (gross - net = 0.01) must stay SUBTRACTED after the legs are
+        # flipped: aligned = -(-0.04) - 0.01 = +0.03. Supplying only the net (as
+        # this fixture did pre-v0.8) now reads UNKNOWN rather than being scored
+        # with the costs handed back as profit.
+        gross_long_short_mean=-0.04,
         known_factors_supplied=True,
         incremental_ic_ir=-0.6,              # residual IC negative: as predicted
         incremental_ic_mean=-0.04,
@@ -2207,3 +2218,175 @@ def test_template_method_verdict_reflects_a_skipped_oos_section():
     assert report.verdict.predictive.verdict == AXIS_INSUFFICIENT_DATA
     assert any("no out-of-sample split" in r for r in report.verdict.reasons)
     assert "_Skipped: no oos_split configured_" in report.render()
+
+
+# --------------------------------------------------------------------------
+# v0.8 fix #1: the hypothesis-aligned NET spread must SUBTRACT cost, not add it
+# back (design §6, v0.8). The aligned spread is `sign * gross - cost`, never
+# `sign * net` — the latter expands at sign=-1 to `-gross + cost`.
+# --------------------------------------------------------------------------
+
+
+def test_aligned_net_at_positive_sign_returns_the_net_untouched():
+    """sign=+1 is BIT-IDENTICAL to the pre-v0.8 expression (`1 * net == net`)."""
+    for gross, net in ((0.05, 0.04), (0.000125, -0.001983), (-0.02, -0.03)):
+        assert _aligned_net(net, gross, 1) == net
+    # and it does not even need the gross: an unknown gross must not turn a
+    # perfectly known sign=+1 spread into UNKNOWN.
+    assert _aligned_net(0.04, float("nan"), 1) == 0.04
+
+
+def test_aligned_net_at_negative_sign_flips_the_legs_then_subtracts_cost():
+    """The worked example from the v0.8 task card, to the last digit.
+
+    gross = 0.000125, net(1x) = -0.001983  =>  cost = 0.002108
+    aligned = -gross - cost = -0.000125 - 0.002108 = -0.002233
+    The pre-v0.8 `sign * net` gave +0.001983 — a POSITIVE spread conjured out of
+    a factor that loses money gross AND pays 0.002108 to trade.
+    """
+    gross, net = 0.000125, -0.001983
+    assert _aligned_net(net, gross, -1) == pytest.approx(-0.002233, abs=1e-12)
+    # the defective reading, named so a regression cannot quietly restore it
+    assert _aligned_net(net, gross, -1) != pytest.approx(-1 * net, abs=1e-9)
+
+
+def test_aligned_net_is_always_worse_than_the_gross_flip_by_exactly_the_cost():
+    """Cost is a DRAG in both directions: aligned = sign*gross - cost, always."""
+    gross, net = 0.000125, -0.001983
+    cost = gross - net
+    assert cost > 0
+    assert _aligned_net(net, gross, -1) == pytest.approx(-gross - cost, abs=1e-12)
+
+
+def test_base_spread_reads_the_aligned_cost_subtracted_value_at_sign_minus_one():
+    inputs = VerdictInputs(
+        expected_ic_sign=-1,
+        net_long_short_by_cost=((1.0, -0.001983), (2.0, -0.004091)),
+        gross_long_short_mean=0.000125,
+    )
+    assert _base_spread(inputs) == pytest.approx(-0.002233, abs=1e-12)
+
+
+def test_all_spreads_negative_is_true_when_every_aligned_scenario_is_negative():
+    """sign=-1, gross known, cost subtracted -> every scenario negative -> the
+    Tradable axis has a KNOWN failure to convict on."""
+    inputs = VerdictInputs(
+        expected_ic_sign=-1,
+        net_long_short_by_cost=((1.0, -0.001983), (2.0, -0.004091), (4.0, -0.008307)),
+        gross_long_short_mean=0.000125,
+    )
+    assert _all_spreads_negative(inputs) is True
+    r = decide_verdict(
+        VerdictInputs(
+            expected_ic_sign=-1,
+            **_SAMPLE_OK,
+            **_TRADABLE,
+            net_long_short_by_cost=(
+                (1.0, -0.001983), (2.0, -0.004091), (4.0, -0.008307),
+            ),
+            gross_long_short_mean=0.000125,
+        )
+    )
+    assert r.tradable.verdict == AXIS_FAIL
+    assert any("EVERY cost scenario" in x for x in r.tradable.reasons)
+
+
+def test_an_unknown_gross_makes_a_negative_sign_aligned_spread_unknown():
+    """UNKNOWN NEVER CONVICTS, and never passes either: without the gross the cost
+    cannot be recovered from the net, so the aligned spread is not a fact."""
+    inputs = VerdictInputs(
+        expected_ic_sign=-1,
+        net_long_short_by_cost=((1.0, -0.001983), (2.0, -0.004091)),
+        # gross_long_short_mean deliberately absent -> NaN
+    )
+    assert math.isnan(_base_spread(inputs))
+    assert _all_spreads_negative(inputs) is False
+    r = decide_verdict(
+        VerdictInputs(
+            expected_ic_sign=-1,
+            **_SAMPLE_OK,
+            **_TRADABLE,
+            net_long_short_by_cost=((1.0, -0.001983), (2.0, -0.004091)),
+        )
+    )
+    assert r.tradable.verdict == AXIS_INSUFFICIENT_DATA
+
+
+def test_positive_sign_tradable_axis_is_unchanged_by_the_v08_fix():
+    """The whole sign=+1 world must be bit-identical: same verdicts with the gross
+    supplied, absent, or nonsense — it is never consulted at sign=+1."""
+    for gross in (0.06, float("nan"), -99.0):
+        r = decide_verdict(
+            _inputs(**_STRONG, **_OOS_OK, **_TRADABLE, gross_long_short_mean=gross)
+        )
+        assert r.tradable.verdict == AXIS_PASS
+        kwargs = {**_STRONG, **_OOS_OK, **_TRADABLE}
+        kwargs["net_long_short_by_cost"] = ((1.0, -0.01), (2.0, -0.03))
+        failed = decide_verdict(_inputs(**kwargs, gross_long_short_mean=gross))
+        assert failed.tradable.verdict == AXIS_FAIL
+
+
+# --------------------------------------------------------------------------
+# v0.8 fix #2: the Predictive axis gates on the PER-DATE monotonicity, and
+# discloses when it had to fall back to the pooled one.
+# --------------------------------------------------------------------------
+
+
+def test_predictive_gate_reads_the_per_date_monotonicity_over_the_pooled_one():
+    """When both are present the per-date figure decides — and it decides BOTH
+    ways, so this is not just 'the new field is accepted'."""
+    # pooled says REVERSED, per-date says correctly ordered -> the axis is not
+    # convicted by the magnitude-sensitive statistic.
+    rescued = decide_verdict(
+        _inputs(
+            **{**_STRONG, "monotonicity_spearman": -0.5,
+               "monotonicity_spearman_by_date": 0.7},
+            **_OOS_OK,
+        )
+    )
+    assert rescued.predictive.verdict == AXIS_PASS
+    # pooled looks fine, per-date says REVERSED -> FAIL. The new gate has teeth.
+    convicted = decide_verdict(
+        _inputs(
+            **{**_STRONG, "monotonicity_spearman": 0.9,
+               "monotonicity_spearman_by_date": -0.3},
+            **_OOS_OK,
+        )
+    )
+    assert convicted.predictive.verdict == AXIS_FAIL
+    assert any("monotonicity" in x for x in convicted.predictive.reasons)
+
+
+def test_a_missing_per_date_monotonicity_falls_back_and_says_so():
+    """A pre-v0.8 IR stays judgeable, but the report must not pretend the weaker
+    statistic is the new one."""
+    r = decide_verdict(_inputs(**_STRONG, **_OOS_OK))  # pooled only
+    assert r.predictive.verdict == AXIS_PASS
+    assert any("FELL BACK" in x for x in r.predictive.reasons)
+    assert any("magnitude-sensitive" in x for x in r.predictive.reasons)
+
+
+def test_no_fallback_note_when_the_per_date_monotonicity_is_supplied():
+    r = decide_verdict(
+        _inputs(**{**_STRONG, "monotonicity_spearman_by_date": 0.7}, **_OOS_OK)
+    )
+    assert r.predictive.verdict == AXIS_PASS
+    assert not any("FELL BACK" in x for x in r.predictive.reasons)
+
+
+def test_the_negative_sign_monotonicity_gate_is_still_direction_aligned():
+    """v0.7's direction gate is unchanged: sign=-1 wants a NEGATIVE raw per-date
+    monotonicity, and a positive one is the reversal that FAILs."""
+    common = dict(
+        expected_ic_sign=-1, **_SAMPLE_OK, **_OOS_OK,
+        ic_ir=-0.8, ic_ir_ci_low=-1.05, ic_ir_ci_high=-0.55,
+        ic_win_rate=0.7, ic_nw_t=-3.5,
+    )
+    ok = decide_verdict(
+        VerdictInputs(**common, monotonicity_spearman_by_date=-0.7)
+    )
+    assert ok.predictive.verdict == AXIS_PASS
+    reversed_ = decide_verdict(
+        VerdictInputs(**common, monotonicity_spearman_by_date=0.7)
+    )
+    assert reversed_.predictive.verdict == AXIS_FAIL

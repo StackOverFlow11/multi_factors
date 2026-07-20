@@ -65,6 +65,7 @@ from analytics.eval.stats import (
     newey_west_t,
     sortino,
     spearman,
+    spearman_by_date,
 )
 from analytics.factor import ic_summary
 from analytics.performance import performance_summary
@@ -329,14 +330,17 @@ class StandardFactorEvaluator(FactorEvaluator):
         net_by_cost: dict[float, float] = {}
         cumulative_by_cost: dict[float, float] = {}
         base_net = None
+        base_cost = None
         for multiplier in ir.cfg.cost_scenarios:
-            net = gross - ir.ctx.fee_rate * multiplier * leg_turnover
+            cost = ir.ctx.fee_rate * multiplier * leg_turnover
+            net = gross - cost
             net_by_cost[float(multiplier)] = as_float(net.mean())
             cumulative_by_cost[float(multiplier)] = as_float(
                 (1.0 + net.dropna()).prod() - 1.0
             )
             if abs(multiplier - 1.0) < 1e-9:
                 base_net = net
+                base_cost = cost
 
         payload: dict[str, object] = {
             "long_short_legs": f"Q{top} - Q{bottom}",
@@ -345,9 +349,21 @@ class StandardFactorEvaluator(FactorEvaluator):
             "quantile_periods_with_return": bucket_periods,
             # RAW Spearman of bucket index vs bucket mean return; the verdict is
             # the ONE place that multiplies by expected_ic_sign.
+            #
+            # POOLED (v0.1..v0.7 semantics, DELIBERATELY UNCHANGED): correlates
+            # against cross-date arithmetic means, so it is unbounded and carries
+            # MAGNITUDE structure. Kept as a reported field — historical reports
+            # stay comparable — but as of v0.8 it is NOT what the Predictive axis
+            # gates on, because a rank-based axis must not be decided by a
+            # magnitude-sensitive statistic.
             "monotonicity_spearman": spearman(
                 [float(q) for q in buckets], [bucket_mean[int(q)] for q in buckets]
             ),
+            # PER-DATE version (v0.8, the GATED one): each date's Spearman over the
+            # buckets is capped in [-1, 1] BEFORE averaging across dates, exactly
+            # like the rank IC. Robust to a few extreme-return days concentrating
+            # in one bucket. RAW; the verdict applies expected_ic_sign.
+            "monotonicity_spearman_by_date": spearman_by_date(quantiles),
             "gross_long_short_mean": as_float(gross.mean()),
             "net_long_short_by_cost": net_by_cost,
             "net_long_short_cumulative_by_cost": cumulative_by_cost,
@@ -358,8 +374,19 @@ class StandardFactorEvaluator(FactorEvaluator):
         # for the reader (b); the Tradable axis still gates on the POINT base spread
         # > 0 (the CI on this leg difference is point-only for now — c names only
         # ICIR / incremental ICIR as the lower-CI magnitude criteria).
-        if base_net is not None:
-            base_ci = mean_ci(sign * base_net, confidence=DEFAULT_CONFIDENCE)
+        # HYPOTHESIS-ALIGNED base-cost spread (v0.8 fix). The hypothesis decides
+        # WHICH LEG IS LONG; cost is a drag in BOTH directions. So flip the legs
+        # first, THEN subtract the cost:
+        #     aligned_net = sign * gross - cost
+        # The pre-v0.8 form `sign * net` expanded, at sign=-1, to `-gross + cost`
+        # — it ADDED the trading cost back as if shorting earned it. At sign=+1
+        # this is bit-identical to the old expression (1 * gross - cost == net).
+        aligned_base = None
+        if base_net is not None and base_cost is not None:
+            aligned_base = sign * gross - base_cost
+
+        if aligned_base is not None:
+            base_ci = mean_ci(aligned_base, confidence=DEFAULT_CONFIDENCE)
             payload["net_long_short_base_se"] = base_ci["se"]
             payload["net_long_short_base_ci_low"] = base_ci["ci_low"]
             payload["net_long_short_base_ci_high"] = base_ci["ci_high"]
@@ -374,8 +401,8 @@ class StandardFactorEvaluator(FactorEvaluator):
                 f"annualization below is a fallback, not a derived fact."
             )
 
-        if base_net is not None and base_net.notna().sum() >= 2:
-            aligned = (sign * base_net).dropna()
+        if aligned_base is not None and aligned_base.notna().sum() >= 2:
+            aligned = aligned_base.dropna()
             nav = (1.0 + aligned).cumprod()
             simple = performance_summary(nav, periods_per_year=ir.periods_per_year)
             payload["aligned_spread_annual_return"] = simple["annual_return"]

@@ -393,6 +393,43 @@ def spearman(x: pd.Series | list, y: pd.Series | list) -> float:
     return float(pair["x"].corr(pair["y"], method="spearman"))
 
 
+def spearman_by_date(
+    quantile_returns: pd.DataFrame, min_buckets: int = 3
+) -> float:
+    """Mean over dates of the PER-DATE Spearman(bucket index, bucket return).
+
+    Structurally parallel to the rank IC (design §6, v0.8): each date's statistic
+    is BOUNDED in [-1, 1] before the cross-date average, so a handful of extreme
+    return days cannot dominate it. The pooled :func:`spearman` version correlates
+    against cross-date ARITHMETIC MEANS, which are unbounded and magnitude
+    sensitive — one outlier bucket-day can flip it while the daily-capped rank IC
+    barely moves.
+
+    A date is SKIPPED — contributing nothing, never a zero — when it carries fewer
+    than ``min_buckets`` finite bucket returns (too few points for a meaningful
+    rank correlation), or when its surviving buckets are all tied (Spearman
+    undefined there). NaN when NO date qualifies: unknown, not 0.0.
+
+    RAW, like :func:`spearman`: the hypothesis sign is applied by the verdict.
+    """
+    if quantile_returns.empty or quantile_returns.shape[1] < min_buckets:
+        return float("nan")
+    index = [float(q) for q in quantile_returns.columns]
+    daily: list[float] = []
+    for _, row in quantile_returns.iterrows():
+        values = [float(v) for v in row.to_numpy(dtype=float)]
+        if sum(1 for v in values if math.isfinite(v)) < min_buckets:
+            continue
+        # spearman() drops the non-finite pairs itself, keeping each surviving
+        # bucket paired with its OWN index (not a renumbered 1..k).
+        rho = spearman(index, values)
+        if math.isfinite(rho):
+            daily.append(rho)
+    if not daily:
+        return float("nan")
+    return float(sum(daily) / len(daily))
+
+
 def as_float(value: object) -> float:
     """Coerce to a plain float for a payload; anything unusable becomes NaN."""
     try:
@@ -414,4 +451,5 @@ __all__ = [
     "newey_west_t",
     "sortino",
     "spearman",
+    "spearman_by_date",
 ]

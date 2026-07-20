@@ -93,6 +93,15 @@ TWO CONVENTIONS THAT MAKE THE RULES SIGN-SAFE
        ``net_long_short_by_cost`` is the plain (top - bottom) leg difference. The
        HYPOTHESIS (``expected_ic_sign``) is applied in exactly ONE place — here —
        so a low-vol factor (sign -1) reads in its own direction.
+
+       APPLYING THE SIGN TO A NET SPREAD IS NOT A MULTIPLICATION (v0.8). The
+       hypothesis decides WHICH LEG IS LONG; the trading cost is a drag in EITHER
+       direction. So the aligned spread flips the legs and THEN subtracts cost —
+       ``sign * gross - cost`` — never ``sign * net``, which at sign -1 expands to
+       ``-gross + cost`` and hands the factor its own costs back as profit. This
+       is why ``gross_long_short_mean`` is an input: the cost is recovered as
+       ``gross - net``, and an unknown gross makes the ALIGNED spread unknown
+       (which, per the rule above, then neither convicts nor passes).
     2. ``ic_win_rate`` and the orthogonalized ICs are hypothesis-relative by the
        same rule: direction is applied by multiplying with ``expected_ic_sign``.
 
@@ -308,7 +317,16 @@ class VerdictInputs:
     ic_ir_ci_high: float = float("nan")
     ic_win_rate: float = float("nan")  # predictive_power (hypothesis-relative)
     ic_nw_t: float = float("nan")      # predictive_power
-    monotonicity_spearman: float = float("nan")   # return_risk (RAW)
+    #: return_risk: POOLED Spearman(bucket index, cross-date MEAN bucket return),
+    #: RAW. Unbounded and magnitude-sensitive; as of v0.8 it is a REPORTED figure
+    #: and only the FALLBACK for the gate below.
+    monotonicity_spearman: float = float("nan")
+    #: return_risk: the v0.8 GATED monotonicity — the mean over dates of each
+    #: date's own Spearman across the buckets, each capped in [-1, 1] before
+    #: averaging (structurally parallel to the rank IC). RAW. NaN = UNKNOWN, which
+    #: falls back to ``monotonicity_spearman`` with the substitution DISCLOSED in
+    #: the axis reasons, so an IR built before v0.8 stays judgeable.
+    monotonicity_spearman_by_date: float = float("nan")
     oos_available: bool = False        # oos_generalization
     oos_sign_consistent: bool = False  # expected sign holds in BOTH subperiods
     oos_sign_flipped: bool = False     # explicit flip -> Predictive FAIL
@@ -333,6 +351,11 @@ class VerdictInputs:
     # -- return_risk / execution facts -----------------------------------
     #: return_risk: {cost multiplier: net (top - bottom) return}, RAW sign.
     net_long_short_by_cost: tuple[tuple[float, float], ...] = ()
+    #: return_risk: mean GROSS (top - bottom) leg difference, RAW sign, before any
+    #: cost. Required to align a spread by hypothesis WITHOUT adding the cost back
+    #: (see :func:`_aligned_net`): the per-scenario cost is recovered as
+    #: ``gross - net``. NaN = UNKNOWN -> a sign=-1 aligned spread is UNKNOWN too.
+    gross_long_short_mean: float = float("nan")
     tradable: bool | None = None       # execution_capacity; None = not supplied
     capacity_sufficient: bool | None = None  # None = not supplied
 
@@ -500,25 +523,79 @@ def _sample_gate_failures(
     return failures
 
 
+def _aligned_net(net: float, gross: float, sign: int) -> float:
+    """Hypothesis-aligned NET spread: ``sign * gross - cost`` (design §6, v0.8).
+
+    The hypothesis decides WHICH LEG IS LONG. Cost is a drag REGARDLESS of
+    direction. So the legs are flipped by the sign FIRST and the cost is
+    subtracted AFTER::
+
+        cost        = gross - net          (= fee * multiplier * leg_turnover)
+        aligned_net = sign * gross - cost
+
+    Before v0.8 this was computed as ``sign * net``, which at ``sign = -1``
+    expands to ``-gross + cost``: the trading cost was ADDED BACK, as though
+    reversing the legs also reversed who pays the fees. It flattered every
+    sign=-1 factor by exactly ``2 * cost``.
+
+    ``sign = +1`` returns ``net`` UNCHANGED and needs no ``gross`` — algebraically
+    ``+1 * gross - (gross - net) == net``, and returning ``net`` directly keeps
+    the old path bit-identical instead of round-tripping it through a subtraction.
+
+    An unknown (non-finite) ``gross`` at ``sign = -1`` yields NaN: the cost cannot
+    be recovered from ``net`` alone, so the aligned spread is UNKNOWN — and
+    unknown is neither evidence for nor against (it never convicts, never passes).
+    """
+    if sign >= 0:
+        return net
+    if not (math.isfinite(gross) and math.isfinite(net)):
+        return float("nan")
+    return -gross - (gross - net)
+
+
 def _base_spread(inputs: VerdictInputs) -> float:
     """Hypothesis-aligned net long-short return at the BASE (1.0x) cost."""
     for multiplier, value in inputs.net_long_short_by_cost:
         if abs(multiplier - 1.0) < 1e-9:
-            return inputs.expected_ic_sign * value
+            return _aligned_net(
+                value, inputs.gross_long_short_mean, inputs.expected_ic_sign
+            )
     return float("nan")
 
 
 def _all_spreads_negative(inputs: VerdictInputs) -> bool:
     """True only when EVERY known cost scenario is non-positive (design §6).
 
-    An empty/unknown set is NOT "all negative" — unknown is not evidence.
+    An empty/unknown set is NOT "all negative" — unknown is not evidence. A
+    sign=-1 run with an unknown gross therefore yields NO scenarios and cannot
+    convict (:func:`_aligned_net` returns NaN, which is filtered out here).
     """
     aligned = [
-        inputs.expected_ic_sign * v
+        _aligned_net(v, inputs.gross_long_short_mean, inputs.expected_ic_sign)
         for _, v in inputs.net_long_short_by_cost
-        if math.isfinite(v)
     ]
-    return bool(aligned) and all(v <= 0 for v in aligned)
+    known = [a for a in aligned if math.isfinite(a)]
+    return bool(known) and all(a <= 0 for a in known)
+
+
+def _gated_monotonicity(inputs: VerdictInputs) -> tuple[float, bool]:
+    """The RAW monotonicity the Predictive axis gates on + whether it FELL BACK.
+
+    v0.8 gates on ``monotonicity_spearman_by_date`` (per-date Spearman, each capped
+    in [-1, 1] before averaging) rather than the pooled ``monotonicity_spearman``:
+    the Predictive axis is a RANK claim, and the pooled statistic is an unbounded
+    MAGNITUDE statistic — a few extreme return days landing in one bucket can flip
+    it while the daily-capped rank IC barely moves. Gating a rank axis on a
+    magnitude statistic is the category error being corrected.
+
+    Returns ``(value, used_fallback)``. When the per-date figure is UNKNOWN (an IR
+    produced before v0.8, or too few finite buckets on every date) the pooled field
+    is used instead and ``used_fallback`` is True, so the caller can DISCLOSE the
+    substitution rather than silently judge on the weaker statistic.
+    """
+    if math.isfinite(inputs.monotonicity_spearman_by_date):
+        return inputs.monotonicity_spearman_by_date, False
+    return inputs.monotonicity_spearman, True
 
 
 def _has_in_sample_point_signal(inputs: VerdictInputs, thr: VerdictThresholds) -> bool:
@@ -530,7 +607,8 @@ def _has_in_sample_point_signal(inputs: VerdictInputs, thr: VerdictThresholds) -
     lower-bound test (design §6, v0.6) is applied SEPARATELY, only to decide PASS vs
     "promising but unconfirmed" for a factor that DID clear on the point.
     """
-    aligned_monotonicity = inputs.expected_ic_sign * inputs.monotonicity_spearman
+    monotonicity, _ = _gated_monotonicity(inputs)
+    aligned_monotonicity = inputs.expected_ic_sign * monotonicity
     return (
         _clears_magnitude(inputs.ic_ir, thr.min_abs_icir)
         and _clears_magnitude(inputs.ic_nw_t, thr.min_abs_nw_t)
@@ -592,6 +670,21 @@ def _predictive_axis(inputs: VerdictInputs, thr: VerdictThresholds) -> AxisVerdi
     if reasons:
         return AxisVerdict(AXIS_INSUFFICIENT_DATA, tuple(reasons))
 
+    # The monotonicity actually gated on (design §6, v0.8). When the per-date
+    # figure is absent we judge on the pooled one, but we SAY SO — a silent
+    # substitution would hide that the decision rests on the magnitude-sensitive
+    # statistic the v0.8 fix exists to stop gating on.
+    _, mono_fallback = _gated_monotonicity(inputs)
+    mono_notes: tuple[str, ...] = ()
+    if mono_fallback:
+        mono_notes = (
+            "monotonicity gate FELL BACK to the pooled 'monotonicity_spearman': "
+            "the per-date figure ('monotonicity_spearman_by_date', design §6 v0.8) "
+            "was not supplied or not measurable. The pooled statistic is unbounded "
+            "and magnitude-sensitive, so this monotonicity judgement is weaker "
+            "than a v0.8 run's.",
+        )
+
     # 3. FAIL: a measured negative finding (OOS sign not consistent, or no point
     #    signal at all). POINT-based — a wide CI is handled below, not here.
     point_signal = _has_in_sample_point_signal(inputs, thr)
@@ -608,7 +701,7 @@ def _predictive_axis(inputs: VerdictInputs, thr: VerdictThresholds) -> AxisVerdi
                 "in-sample POINT metrics do NOT clear the predictive thresholds "
                 "(ICIR / NW-t / win rate / monotonicity)."
             )
-        return AxisVerdict(AXIS_FAIL, tuple(reasons))
+        return AxisVerdict(AXIS_FAIL, tuple(reasons) + mono_notes)
 
     # 4/5. Point signal present + OOS consistent. The #3 lower-CI test decides
     #      PASS vs "promising but unconfirmed" (INSUFFICIENT_DATA). This is ABOVE
@@ -624,7 +717,8 @@ def _predictive_axis(inputs: VerdictInputs, thr: VerdictThresholds) -> AxisVerdi
                 f"{thr.min_abs_icir}; point |ICIR| {abs(inputs.ic_ir):.3f}, "
                 f"|NW-t| {abs(inputs.ic_nw_t):.2f}, win rate "
                 f"{inputs.ic_win_rate:.3f}.",
-            ),
+            )
+            + mono_notes,
         )
     lower_txt = "UNKNOWN" if not math.isfinite(icir_lower) else f"{icir_lower:+.3f}"
     return AxisVerdict(
@@ -635,7 +729,8 @@ def _predictive_axis(inputs: VerdictInputs, thr: VerdictThresholds) -> AxisVerdi
             f"pre-registered bar {thr.min_abs_icir}: promising, but not confirmed. "
             f"The sample size passed the gate; the ESTIMATE is still too imprecise "
             f"to claim a PASS (a wider bar than the raw count implies).",
-        ),
+        )
+        + mono_notes,
     )
 
 
