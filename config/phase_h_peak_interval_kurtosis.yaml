@@ -1,0 +1,142 @@
+# PR-H — Sixth real factor evaluation: volume-peak INTERVAL KURTOSIS.
+#
+# Reproduces the SECOND factor of the Kaiyuan market-microstructure series #27 (开源证券
+# 《高频成交量的峰、岭、谷信息——市场微观结构研究系列（27）》, reportId 4957417, §6) — the
+# "量峰间隔峰度因子" — as a first-class PeakIntervalKurtosisFactor and runs it through the
+# FROZEN StandardFactorEvaluator on REAL cached A-share data. CACHE-ONLY: the minute read
+# is provably live-call-free; daily / universe / covariate endpoints go through the
+# read-through cache (warm -> 0 gap fetches).
+#
+# SAME MACHINE as PR-F, DIFFERENT STATISTIC. The volume-peak identification is REUSED
+# from data/clean/intraday_volume_prv.py (not re-implemented): PIT-truncate each day at
+# 14:50, classify every visible minute against its SAME-SLOT strictly-prior 20-day
+# baseline (eruptive if vol > μ + σ else mild), and a PEAK is an eruptive minute whose
+# both 1-minute same-session neighbours are mild. This factor then measures the GAPS
+# between consecutive same-day peaks, pools the trailing 20 VALID trading days, and takes
+# the pool's kurtosis. A day with < 2 peaks contributes 0 intervals but is still a valid
+# day; NaN below 20 pooled intervals or on a zero-variance pool.
+#
+# TWO PINNED interpretations of an under-specified report (disclosed on the factor spec):
+#   (1) an interval is measured in TRADING MINUTES -- the tradable-slot difference inside
+#       the day's visible bar sequence -- so the lunch break costs nothing (peaks at 11:29
+#       and 13:02 are 3 apart, not 93) and a wall-clock ~90-minute spike can never
+#       dominate the distribution;
+#   (2) kurtosis = FISHER excess, BIAS-CORRECTED (the pandas .kurt() / scipy
+#       fisher=True bias=False convention; a normal sample sits at 0, not 3).
+#
+# Pre-registered sign = +1 (report full-market RankIC +7.19% / RankICIR 4.63, long-short
+# 23.3%/yr, IR 3.39, max drawdown 7.37%, monthly win rate 82.4%, 13/13 positive years --
+# the most stable factor in the report). NOTE the report is a MONTHLY, market-cap +
+# industry neutral FULL-MARKET series on Wind data -- our eval cell is CSI500 daily with
+# industry + size neutral, so those numbers are a LOOSE reference only. The report gives
+# NO CSI500 sub-domain figure for THIS factor and none is invented here. Raw minute volume
+# (cached as-is) has split-day magnitude jumps that pollute the 20-day σ; the report
+# (Wind) does not adjust for this either, so it is disclosed and NOT corrected.
+#
+# Eval CELL is IDENTICAL to PR-C / PR-D / PR-E / PR-F / PR-G: universe = CSI500
+# (000905.SH), PIT membership; window = 2021-07-01 .. 2026-06-30 (the project's
+# minute-coverage window); daily rebalance; OOS split 2024-01-01; book =
+# value_ep/value_bp/volatility_20; fee 0.001. The ONLY substantive difference is the
+# subject factor, which is minute-derived and computed by the runner from the intraday
+# cache -- it is NOT a config-listed daily factor. Because the cell matches PR-F exactly,
+# this run is directly comparable to its sibling: same peaks, different statistic. The
+# evaluator runs TWICE (see qt/eval_peak_interval_kurtosis.py): once with NO book
+# (Incremental NOT_ASSESSED) and once with the confirmed book to measure whether the
+# peak-interval kurtosis adds alpha BEYOND value / low-vol.
+
+project:
+  name: quantitative_trading_pr_h_peak_interval_kurtosis
+  timezone: Asia/Shanghai
+data:
+  source: tushare
+  freq: D
+  start: '2021-07-01'
+  end: '2026-06-30'
+  external_secret_file: /home/shaofl/Projects/financial_projects/.config.json
+  tushare_token_key: tushare.token
+  output_name: peak_interval_kurtosis_daily
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+universe:
+  type: index
+  index_code: 000905.SH
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: false
+    st: false
+    limit_up_down: false
+# factors = the confirmed BOOK used for the Incremental axis (value + low-vol). The
+# SUBJECT factor (peak_interval_kurtosis_20) is minute-derived and computed by the runner
+# from the intraday cache -- it is NOT a config-listed daily factor.
+factors:
+- name: value_ep
+  enabled: true
+- name: value_bp
+  enabled: true
+- name: volatility_20
+  enabled: true
+  params:
+    window: 20
+    price_col: close
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  # winsorize is a P0 no-op in this codebase; the EvalConfig declares winsorize=None
+  # accordingly (nothing is clipped), so the report never overstates preprocessing.
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  # Industry + market-cap neutralization (SW-L1), matching the report's neutral column
+  # and the EvalConfig neutralization declaration.
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+alpha:
+  model: equal_weight
+  params: {}
+portfolio:
+  # Required by the schema but unused: this runner evaluates a factor, it does not
+  # build/execute a portfolio.
+  constructor: topn_equal_weight
+  top_n: 50
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+backtest:
+  # Required by the schema but unused (no backtest is run). The EvalConfig uses a DAILY
+  # rebalance (contract default), independent of this field.
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+analytics:
+  forward_return_periods:
+  - 1
+  quantiles: 5
+  benchmark: null
+# OOS split (window midpoint) so the OOS section runs and the Predictive axis can be
+# assessed (sign consistency across both holdout subperiods).
+oos:
+  split_date: '2024-01-01'
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
