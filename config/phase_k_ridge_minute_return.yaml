@@ -1,0 +1,189 @@
+# PR-K — Ninth real factor evaluation: RIDGE MINUTE RETURN.
+#
+# Reproduces the FIFTH factor of the Kaiyuan market-microstructure series #27 (开源证券
+# 《高频成交量的峰、岭、谷信息——市场微观结构研究系列（27）》, reportId 4957417, §3) — the
+# "量岭分钟收益因子" — as a first-class RidgeMinuteReturnFactor and runs it through the FROZEN
+# StandardFactorEvaluator on REAL cached A-share data. CACHE-ONLY: the minute read is
+# provably live-call-free; daily / universe / covariate endpoints go through the
+# read-through cache (warm -> 0 gap fetches).
+#
+# WHY THIS FACTOR, NOW: the four prior reproductions from this report covered a COUNT
+# (PR-F volume_peak_count, weak), a TIMING moment (PR-H peak_interval_kurtosis, null) and
+# two PRICE LEVELS (PR-I valley_relative_vwap and PR-J valley_ridge_vwap_ratio, both
+# passing). This factor is a RETURN — a fourth statistic family on the SAME classification
+# machine — and it is the report's ONLY NEGATIVE peak/ridge/valley factor, so the run also
+# tests whether the SIGN transfers along with the family rather than only the magnitude.
+#
+# SAME MACHINE as PR-F / PR-H / PR-I / PR-J. The minute classification is REUSED from
+# data/clean/intraday_volume_prv.py (not re-implemented, and not modified by this PR):
+# PIT-truncate each day at 14:50, classify every visible minute against its SAME-SLOT
+# strictly-prior 20-day baseline (ERUPTIVE if vol > mu + sigma, else a VALLEY 量谷); a RIDGE
+# 量岭 is an eruptive minute that is NOT an isolated peak. Because the classification is
+# shared verbatim, a different verdict here cannot be an artefact of a differently
+# implemented taxonomy.
+#
+# PINNED choices (the report specifies NONE of them; all disclosed on the factor spec):
+#   (1) the RIDGE mask is 'eruptive AND NOT an isolated peak' (PR-J's, unchanged), so
+#       valley|peak|ridge stays an exact partition of the classifiable bars and an isolated
+#       PEAK's return is counted on NEITHER side;
+#   (2) the minute return is close_t/close_(t-1) - 1 with a WITHIN-DAY lag against the
+#       previous VISIBLE bar of the same date -- each day's FIRST visible bar therefore
+#       carries no return and no return ever crosses a day boundary. Exact 60s adjacency is
+#       deliberately NOT required, so a bar opening a new session block (13:01, after the
+#       lunch break) returns against the last bar before the gap: a genuine price change
+#       rather than a silently discarded one. The same-slot baseline defuses the obvious
+#       selection worry, since the 13:01 slot is compared against its OWN history;
+#   (3) RAW (unadjusted) closes are correct here: the adjustment factor is constant within
+#       a day and cancels in close_t/close_(t-1), and the within-day lag already excludes
+#       the one bar that could straddle an ex-date (same reasoning as PR-I / PR-J / I5b);
+#   (4) a return is formed only when BOTH closes are finite and strictly positive; the
+#       guard runs at the return step only, so PR-F's same-slot baseline -- and therefore
+#       volume_peak_count / peak_interval_kurtosis / valley_relative_vwap /
+#       valley_ridge_vwap_ratio -- is bit-identical;
+#   (5) the daily aggregate is a SIMPLE SUM of the selected returns, NOT Pi(1+r)-1. Ridge
+#       minutes are NON-CONTIGUOUS within the day -- scattered eruptive moments, not a held
+#       position -- so a holding-period/compounding reading does not apply, and at minute
+#       scale the two conventions differ negligibly. The report says only "累计收益", so this
+#       is a disclosed interpretation, not a silent equivalence;
+#   (6) the trailing 20-day aggregate is LIKEWISE a sum (the factor accumulates across
+#       days, where PR-J's ratio averaged);
+#   (7) a day is VALID iff it has >= 100 classifiable bars AND >= 10 ridge bars CARRYING A
+#       VALID RETURN (counted AFTER the guard, so the day's first bar cannot qualify a day
+#       it contributes nothing to); NaN below 10 valid days. That is the SAME scarcity
+#       floor PR-J pinned for its ridge leg -- a ridge bar must erupt AND fail the
+#       isolation test, making ridges structurally far rarer than valleys -- so the two
+#       runs' coverage is directly comparable. The runner REPORTS the realized ridge-bar
+#       distribution, the return-guard attrition, the day-validity rate and the
+#       counterfactual valid-day count at a floor of 20, so a coverage regression shows up
+#       as a number rather than being hidden;
+#   (8) DEVIATION FROM THE REPORT, disclosed and NOT silently equated: everything spans the
+#       PIT-VISIBLE window 09:31-14:50 only, while the report uses the FULL day. Reading
+#       the closing auction would be lookahead at our 14:50 decision time.
+#
+# Pre-registered sign = -1 (report full-market RankIC -6.29% / RankICIR -3.55, long leg
+# 7.47%/yr, long-short 14.98%/yr, IR 1.73, max drawdown 13.84%, monthly win rate 70.3%).
+# The report gives NO CSI500 sub-domain figure for this factor, so none is quoted -- the
+# spec must not fabricate one. Semantics per the report: ridge minutes are retail
+# follow-the-crowd trading, and their accumulated return measures that crowd's
+# OVER-REACTION -- the more ridge-minute return a stock has piled up, the more
+# over-extended it is and the worse it performs going forward. NOTE the report is a
+# MONTHLY, market-cap + industry neutral FULL-MARKET series on Wind data -- our eval cell
+# is CSI500 daily with industry + size neutral, so those numbers are a LOOSE reference only
+# and are NOT written in as expected values. Raw minute volume (cached as-is) has split-day
+# magnitude jumps that pollute the 20-day sigma; the report (Wind) does not adjust for this
+# either, so it is disclosed and NOT corrected.
+#
+# ⚠️ SIGN = -1 TRIGGERS A KNOWN FROZEN-LAYER DEFECT. The evaluator's aligned_spread_* fields
+# compute sign * (gross - cost), which for a negative sign becomes -gross + cost -- the
+# trading cost is ADDED BACK instead of deducted. The frozen layer is deliberately NOT
+# patched by this PR. Read this run's tradability from net_long_short_by_cost (sign-
+# agnostic and correct), which the runner extracts and logs explicitly; treat every
+# aligned_spread_* field in the two reports as unreliable.
+#
+# Eval CELL is IDENTICAL to PR-C .. PR-J: universe = CSI500 (000905.SH), PIT membership;
+# window = 2021-07-01 .. 2026-06-30 (the project's minute-coverage window); daily rebalance;
+# OOS split 2024-01-01; book = value_ep/value_bp/volatility_20; fee 0.001. The ONLY
+# substantive difference is the subject factor, which is minute-derived and computed by the
+# runner from the intraday cache -- it is NOT a config-listed daily factor. Because the cell
+# matches its siblings exactly, this run is directly comparable to them. The evaluator runs
+# TWICE (see qt/eval_ridge_minute_return.py): once with NO book (Incremental NOT_ASSESSED)
+# and once with the confirmed book -- which matters here because a trailing SUM OF RETURNS
+# is a plausible cousin of a reversal signal, and the with-book run is what says whether
+# this is a genuinely new bet.
+
+project:
+  name: quantitative_trading_pr_k_ridge_minute_return
+  timezone: Asia/Shanghai
+data:
+  source: tushare
+  freq: D
+  start: '2021-07-01'
+  end: '2026-06-30'
+  external_secret_file: /home/shaofl/Projects/financial_projects/.config.json
+  tushare_token_key: tushare.token
+  output_name: ridge_minute_return_daily
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+universe:
+  type: index
+  index_code: 000905.SH
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: false
+    st: false
+    limit_up_down: false
+# factors = the confirmed BOOK used for the Incremental axis (value + low-vol). The SUBJECT
+# factor (ridge_minute_return_20) is minute-derived and computed by the runner from the
+# intraday cache -- it is NOT a config-listed daily factor.
+factors:
+- name: value_ep
+  enabled: true
+- name: value_bp
+  enabled: true
+- name: volatility_20
+  enabled: true
+  params:
+    window: 20
+    price_col: close
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  # winsorize is a P0 no-op in this codebase; the EvalConfig declares winsorize=None
+  # accordingly (nothing is clipped), so the report never overstates preprocessing.
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  # Industry + market-cap neutralization (SW-L1), matching the report's neutral column and
+  # the EvalConfig neutralization declaration.
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+alpha:
+  model: equal_weight
+  params: {}
+portfolio:
+  # Required by the schema but unused: this runner evaluates a factor, it does not
+  # build/execute a portfolio.
+  constructor: topn_equal_weight
+  top_n: 50
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+backtest:
+  # Required by the schema but unused (no backtest is run). The EvalConfig uses a DAILY
+  # rebalance (contract default), independent of this field.
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+analytics:
+  forward_return_periods:
+  - 1
+  quantiles: 5
+  benchmark: null
+# OOS split (window midpoint) so the OOS section runs and the Predictive axis can be
+# assessed (sign consistency across both holdout subperiods).
+oos:
+  split_date: '2024-01-01'
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true

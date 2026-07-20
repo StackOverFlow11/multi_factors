@@ -58,6 +58,10 @@ from data.clean.intraday_peak_interval import (
     PEAK_INTERVAL_LOOKBACK_DAYS,
     PEAK_INTERVAL_MIN_INTERVALS,
 )
+from data.clean.intraday_ridge_return import (
+    RIDGE_RETURN_LOOKBACK_DAYS,
+    RIDGE_RETURN_MIN_RIDGE_BARS,
+)
 from data.clean.intraday_valley_ridge_vwap import (
     VALLEY_RIDGE_LOOKBACK_DAYS,
     VALLEY_RIDGE_MIN_RIDGE_BARS,
@@ -886,12 +890,146 @@ class ValleyRidgeVwapRatioFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
+class RidgeMinuteReturnFactor(Factor):
+    """Ridge minute-return factor (daily signal, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by ``data.clean.intraday_ridge_return.compute_ridge_minute_return``); it does
+    NO minute work of its own, mirroring :class:`JumpAmountCorrFactor` /
+    :class:`MinuteIdealAmplitudeFactor` / :class:`AmpMarginalAnomalyVolFactor` /
+    :class:`VolumePeakCountFactor` / :class:`IntradayAmpCutFactor` /
+    :class:`PeakIntervalKurtosisFactor` / :class:`ValleyRelativeVwapFactor` /
+    :class:`ValleyRidgeVwapRatioFactor` and the value / financial factors that surface an
+    enriched column.
+
+    Args:
+        lookback_days: trailing VALID trading-day window summed; part of the factor
+            DEFINITION (reproduced from the report), not a tuned knob. It only names the
+            column so a non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"ridge_minute_return_{RIDGE_RETURN_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = RIDGE_RETURN_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"ridge-minute-return lookback_days must be a positive integer; got "
+                f"{lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"ridge_minute_return_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=-1: this is the report's ONLY NEGATIVE peak/ridge/valley factor
+        (full-market RankIC -6.29%, RankICIR -3.55, long leg 7.47%/yr, long-short
+        14.98%/yr, IR 1.73, max drawdown 13.84%, monthly win rate 70.3%). The report gives
+        NO CSI500 sub-domain figure for this factor, so none is quoted here. Semantics per
+        the report: ridge minutes are retail follow-the-crowd trading and their
+        accumulated return measures that crowd's OVER-REACTION — the more ridge-minute
+        return a stock has piled up, the more over-extended it is and the worse it
+        performs going forward. The sign is fixed BEFORE the run (a validated prototype
+        must reproduce it). NOTE the report is a MONTHLY, market-cap + industry neutral
+        full-market series on Wind data while our eval cell is CSI500 daily with industry
+        + size neutral, so the report numbers are a LOOSE reference only (disclosed, never
+        mislabeled, never written in as an expected value). is_intraday=False by the
+        module docstring's reasoning: minute INPUT but a DAILY signal traded
+        close-to-close. min_history_bars=0: the warm-up is DATA-dependent (a value appears
+        once enough VALID days accumulate), not a fixed leading count — the honest NaN
+        rate is reported by data_coverage.
+
+        The description spells out the RELATION TO PR-F..PR-J (same reused classification,
+        a RETURN statistic instead of a count / timing moment / price level) plus the
+        pinned choices — above all the SIMPLE-SUM convention, the within-day return lag and
+        the raw closes, none of which the report specifies.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Ridge minute-return (Kaiyuan microstructure series #27, FIFTH factor "
+                f"量岭分钟收益). SAME minute classification as PR-F volume_peak_count / "
+                f"PR-H peak_interval_kurtosis / PR-I valley_relative_vwap / PR-J "
+                f"valley_ridge_vwap_ratio (REUSED from data.clean.intraday_volume_prv, "
+                f"not re-implemented): 1min bars PIT-truncated at 14:50, a minute is "
+                f"ERUPTIVE if vol > μ + {VOLUME_PRV_SIGMA_K:g}σ of its SAME-SLOT "
+                f"strictly-prior {VOLUME_PRV_BASELINE_DAYS}-day baseline, and a RIDGE "
+                f"(量岭) is an eruptive minute that is NOT an isolated peak. NEW "
+                f"STATISTIC vs PR-F..PR-J: a RETURN rather than a count, a timing moment "
+                f"or a price level — each day sums the minute returns of its ridge bars "
+                f"and the factor sums those daily sums over the trailing "
+                f"{self._lookback_days} VALID days. PINNED choices (the report specifies "
+                f"none of them): (1) the RIDGE mask is 'eruptive AND NOT an isolated "
+                f"peak', keeping valley|peak|ridge an exact partition of the classifiable "
+                f"bars — an isolated PEAK's return is counted on NEITHER side; (2) the "
+                f"minute return is close_t/close_(t-1) - 1 with a WITHIN-DAY lag against "
+                f"the previous VISIBLE bar of the same date, so each day's FIRST visible "
+                f"bar carries no return and no return ever crosses a day boundary; exact "
+                f"60s adjacency is deliberately NOT required, so a bar opening a new "
+                f"session block (13:01, after lunch) returns against the last bar before "
+                f"the gap — a genuine price change rather than a discarded one; (3) RAW "
+                f"unadjusted closes are correct here because the adjustment factor is "
+                f"constant within a day and cancels in the ratio, and the within-day lag "
+                f"already excludes the one bar that could straddle an ex-date; (4) a "
+                f"return is formed only when both closes are finite and strictly positive "
+                f"(guard applied at the return step only, so PR-F's baseline is "
+                f"untouched); (5) the daily aggregate is a SIMPLE SUM Σr, NOT a compound "
+                f"Π(1+r)-1 — ridge minutes are non-contiguous within the day so a "
+                f"holding-period reading does not apply, and at minute scale the two "
+                f"differ negligibly; (6) the trailing aggregate is likewise a SUM across "
+                f"days; (7) a day is VALID iff it has >= {VOLUME_PRV_MIN_CLASSIFIABLE} "
+                f"classifiable bars AND >= {RIDGE_RETURN_MIN_RIDGE_BARS} ridge bars "
+                f"CARRYING A VALID RETURN (counted AFTER the guard) — the same scarcity "
+                f"floor PR-J pinned for its ridge leg, since a ridge bar must erupt AND "
+                f"fail the isolation test; the realized ridge-bar distribution and "
+                f"day-validity rate are REPORTED by the runner rather than left implicit; "
+                f"(8) DEVIATION FROM THE REPORT, disclosed: everything spans the "
+                f"PIT-VISIBLE window 09:31-14:50 only, not the full session — reading the "
+                f"close would be lookahead at our 14:50 decision time. NaN below "
+                f"{VOLUME_PRV_MIN_VALID_DAYS} valid days. Derived from 1min bars but a "
+                f"DAILY signal traded close-to-close."
+            ),
+            expected_ic_sign=-1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar fields the upstream aggregation is derived from. Declared for
+            # honest provenance disclosure (data_coverage lists them); the daily panel
+            # surfaces the pre-aggregated column itself.
+            input_fields=("volume", "close"),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily ridge-minute-return column off ``panel``.
+
+        The runner runs ``compute_ridge_minute_return`` per symbol on the minute cache
+        upstream and joins the result as ``self.name``; here we only surface it, so this
+        factor does no temporal logic and cannot introduce lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"RidgeMinuteReturnFactor needs the pre-aggregated '{self.name}' column "
+                f"on the panel (produced upstream by compute_ridge_minute_return and "
+                f"joined by the runner); panel has {list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
 __all__ = [
     "AmpMarginalAnomalyVolFactor",
     "IntradayAmpCutFactor",
     "JumpAmountCorrFactor",
     "MinuteIdealAmplitudeFactor",
     "PeakIntervalKurtosisFactor",
+    "RidgeMinuteReturnFactor",
     "ValleyRelativeVwapFactor",
     "ValleyRidgeVwapRatioFactor",
     "VolumePeakCountFactor",
