@@ -2,15 +2,17 @@
 
 The members today are :class:`JumpAmountCorrFactor` (PR-C, the Kaiyuan report §6
 "price-jump turnover correlation" factor), :class:`MinuteIdealAmplitudeFactor`
-(PR-D, the Kaiyuan report §30 "minute ideal amplitude" factor) and
+(PR-D, the Kaiyuan report §30 "minute ideal amplitude" factor),
 :class:`AmpMarginalAnomalyVolFactor` (PR-E, the Changjiang high-frequency-factor
-series #19 "amplitude marginal-anomaly relative-volatility" factor). Like the value /
-MMP factors, the heavy computation runs UPSTREAM (``data.clean.intraday_aggregate``
-/ ``data.clean.intraday_amplitude`` / ``data.clean.intraday_amp_anomaly`` aggregate
-1min bars into a daily ``MultiIndex(date, symbol)`` column) and the Factor here simply
-SELECTS its column off the panel the runner already enriched. Keeping the minute
-aggregation in the data-clean layer preserves the layering: ``factors`` never fetches
-and never sees a forward return.
+series #19 "amplitude marginal-anomaly relative-volatility" factor) and
+:class:`VolumePeakCountFactor` (PR-F, the Kaiyuan microstructure series #27
+"volume-peak-minute-count" factor). Like the value / MMP factors, the heavy
+computation runs UPSTREAM (``data.clean.intraday_aggregate`` /
+``data.clean.intraday_amplitude`` / ``data.clean.intraday_amp_anomaly`` /
+``data.clean.intraday_volume_prv`` aggregate 1min bars into a daily
+``MultiIndex(date, symbol)`` column) and the Factor here simply SELECTS its column off
+the panel the runner already enriched. Keeping the minute aggregation in the data-clean
+layer preserves the layering: ``factors`` never fetches and never sees a forward return.
 
 WHY ``is_intraday=False`` FOR A MINUTE-DERIVED FACTOR (deliberate, documented):
     ``FactorSpec.is_intraday`` flags an intraday-EXECUTION contract — the minute
@@ -44,6 +46,14 @@ from data.clean.intraday_amplitude import (
     IDEAL_AMP_LAMBDA,
     IDEAL_AMP_LOOKBACK_DAYS,
     IDEAL_AMP_MIN_MINUTES,
+)
+from data.clean.intraday_volume_prv import (
+    VOLUME_PRV_BASELINE_DAYS,
+    VOLUME_PRV_BASELINE_MIN_OBS,
+    VOLUME_PRV_LOOKBACK_DAYS,
+    VOLUME_PRV_MIN_CLASSIFIABLE,
+    VOLUME_PRV_MIN_VALID_DAYS,
+    VOLUME_PRV_SIGMA_K,
 )
 from factors.base import Factor
 from factors.spec import FactorSpec
@@ -311,8 +321,108 @@ class AmpMarginalAnomalyVolFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
+class VolumePeakCountFactor(Factor):
+    """Volume-peak-minute-count factor (daily signal, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by ``data.clean.intraday_volume_prv.compute_volume_peak_count``); it does
+    NO minute work of its own, mirroring :class:`JumpAmountCorrFactor` /
+    :class:`MinuteIdealAmplitudeFactor` / :class:`AmpMarginalAnomalyVolFactor` and the
+    value / financial factors that surface an enriched column.
+
+    Args:
+        lookback_days: trailing VALID trading-day count window; part of the factor
+            DEFINITION (a pinned interpretation of the report), not a tuned knob. It
+            only names the column so a non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"volume_peak_count_{VOLUME_PRV_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = VOLUME_PRV_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"volume-peak-count lookback_days must be a positive integer; got "
+                f"{lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"volume_peak_count_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=+1: the report's IC is POSITIVE (full-market RankIC +10.62% /
+        RankICIR 4.36; CSI500 sub-domain long-short +14.96%/yr) — more volume peaks
+        (informed-trading participation) predicts HIGHER forward returns. The sign is
+        fixed BEFORE the run (a validated prototype must reproduce it). NOTE the report
+        is a MONTHLY, market-cap + industry neutral series on Wind data while our eval
+        cell is CSI500 daily with industry + size neutral, so the report numbers are a
+        LOOSE reference only (disclosed, never mislabeled). is_intraday=False by the
+        module docstring's reasoning: minute INPUT but a DAILY signal traded
+        close-to-close. min_history_bars=0: the warm-up is DATA-dependent (a value
+        appears once >= ``VOLUME_PRV_MIN_VALID_DAYS`` valid days accumulate in the
+        trailing window, and a day is valid only once its same-slot baselines fill in),
+        not a fixed leading count — the honest NaN rate is reported by data_coverage.
+
+        The description spells out the pinned interpretations of the under-specified
+        report (PIT truncation, strictly-prior same-slot baseline, μ+σ eruptive
+        threshold, mild-neighbour peak rule, valid-day gate) so a reader sees exactly
+        what was assumed.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Volume-peak-minute count (Kaiyuan microstructure series #27). PINNED "
+                f"interpretations of an under-specified report: (1) 1min bars "
+                f"PIT-truncated at 14:50 per bar; (2) same-slot baseline = μ/σ (ddof=1) "
+                f"of the STRICTLY-PRIOR {VOLUME_PRV_BASELINE_DAYS} trading days' "
+                f"same-slot volume, needing >= {VOLUME_PRV_BASELINE_MIN_OBS} obs else "
+                f"unclassifiable; (3) a minute is ERUPTIVE if vol > μ + "
+                f"{VOLUME_PRV_SIGMA_K:g}σ else MILD; (4) a PEAK is an eruptive minute "
+                f"whose both 1-minute same-session neighbours exist and are mild "
+                f"(ridge / session-boundary / unclassifiable-neighbour minutes are not "
+                f"peaks); (5) factor = peak-minute count over the trailing "
+                f"{self._lookback_days} VALID days (>= {VOLUME_PRV_MIN_CLASSIFIABLE} "
+                f"classifiable bars) including d, NaN below "
+                f"{VOLUME_PRV_MIN_VALID_DAYS} valid days. Derived from 1min bars but a "
+                f"DAILY signal traded close-to-close."
+            ),
+            expected_ic_sign=1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar field the upstream aggregation is derived from. Declared for
+            # honest provenance disclosure (data_coverage lists it); the daily panel
+            # surfaces the pre-aggregated column itself.
+            input_fields=("volume",),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily volume-peak-count column off ``panel``.
+
+        The runner runs ``compute_volume_peak_count`` on the minute cache upstream and
+        joins the result as ``self.name``; here we only surface it, so this factor does
+        no temporal logic and cannot introduce lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"VolumePeakCountFactor needs the pre-aggregated '{self.name}' column "
+                f"on the panel (produced upstream by compute_volume_peak_count and "
+                f"joined by the runner); panel has {list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
 __all__ = [
     "AmpMarginalAnomalyVolFactor",
     "JumpAmountCorrFactor",
     "MinuteIdealAmplitudeFactor",
+    "VolumePeakCountFactor",
 ]
