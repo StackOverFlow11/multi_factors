@@ -378,6 +378,64 @@ def _cmd_run_eval_valley_relative_vwap(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fmt_metric(value: object, spec: str = ".4f") -> str:
+    """Format a metric that a SKIPPED section may legitimately leave absent.
+
+    ``stability_cost`` is Skipped whenever no period has a quantile label (a coverage
+    degenerate case that the scarcity-gated ridge family can plausibly hit), and its
+    payload keys then come back as None. Rendering "n/a" keeps a thin run's summary
+    readable instead of raising a TypeError out of the print itself — after the reports
+    have already been written, and outside the command's error handling.
+    """
+    if value is None:
+        return "n/a"
+    try:
+        return format(value, spec)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _cmd_run_eval_ridge_minute_return(args: argparse.Namespace) -> int:
+    """Run the two real ridge-minute-return evaluations (cache-only) + reports."""
+    from qt.eval_ridge_minute_return import run_eval_ridge_minute_return
+
+    try:
+        result = run_eval_ridge_minute_return(args.config)
+    except (ConfigError, ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    nb, wb = result.no_book_metrics, result.with_book_metrics
+    net = (
+        " ".join(
+            f"{m:g}x={v:+.6f}" for m, v in sorted(nb["net_long_short_by_cost"].items())
+        )
+        or "n/a"
+    )
+    print(
+        f"OK run-eval-ridge-minute-return: covered={result.covered_symbols}/"
+        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
+        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
+        # Ridge bars are structurally scarce and the return guard narrows them further;
+        # the realized distribution and the day-validity rate are surfaced so a coverage
+        # regression is visible.
+        f"{result.ridge_coverage.render()}\n"
+        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
+        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
+        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
+        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
+        # sign=-1 makes the frozen layer's aligned_spread_* unreliable (it adds costs back
+        # instead of deducting them); the sign-agnostic net spreads are printed instead.
+        f"net long-short by cost (aligned_spread_* UNRELIABLE at sign=-1): {net}\n"
+        f"turnover={_fmt_metric(nb['long_short_turnover'])} "
+        f"rank_autocorr_lag1={_fmt_metric(nb['rank_autocorr_lag1'])} "
+        f"half_life={_fmt_metric(nb['half_life_periods'], '.2f')}\n"
+        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
+        f"dashboards: {result.reports.no_book_dashboard} | "
+        f"{result.reports.with_book_dashboard}"
+    )
+    return 0
+
+
 def _cmd_run_eval_valley_ridge_vwap_ratio(args: argparse.Namespace) -> int:
     """Run the two real valley/ridge VWAP-ratio evaluations (cache-only) + reports."""
     from qt.eval_valley_ridge_vwap_ratio import run_eval_valley_ridge_vwap_ratio
@@ -592,6 +650,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_vrr.add_argument("--config", required=True, help="Path to the YAML config.")
     p_vrr.set_defaults(func=_cmd_run_eval_valley_ridge_vwap_ratio)
+
+    p_rmr = sub.add_parser(
+        "run-eval-ridge-minute-return",
+        help="Run the ridge-minute-return factor evaluation (CSI500, cache-only).",
+    )
+    p_rmr.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_rmr.set_defaults(func=_cmd_run_eval_ridge_minute_return)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),
