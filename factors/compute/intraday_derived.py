@@ -35,6 +35,11 @@ from data.clean.intraday_aggregate import (
     JUMP_LOOKBACK_DAYS,
     JUMP_MIN_PAIRS,
 )
+from data.clean.intraday_amount_ratio import (
+    PEAK_RIDGE_LOOKBACK_DAYS,
+    PEAK_RIDGE_MIN_PEAK_BARS,
+    PEAK_RIDGE_MIN_RIDGE_BARS,
+)
 from data.clean.intraday_amp_anomaly import (
     AMP_ANOMALY_FREQ,
     AMP_ANOMALY_LOOKBACK_DAYS,
@@ -1175,12 +1180,151 @@ class ValleyPriceQuantileFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
+class PeakRidgeAmountRatioFactor(Factor):
+    """Peak/ridge traded-amount ratio factor (daily signal, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by
+    ``data.clean.intraday_amount_ratio.compute_peak_ridge_amount_ratio``); it does NO
+    minute work of its own, mirroring :class:`JumpAmountCorrFactor` /
+    :class:`MinuteIdealAmplitudeFactor` / :class:`AmpMarginalAnomalyVolFactor` /
+    :class:`VolumePeakCountFactor` / :class:`IntradayAmpCutFactor` /
+    :class:`PeakIntervalKurtosisFactor` / :class:`ValleyRelativeVwapFactor` /
+    :class:`ValleyRidgeVwapRatioFactor` / :class:`RidgeMinuteReturnFactor` /
+    :class:`ValleyPriceQuantileFactor` and the value / financial factors that surface an
+    enriched column.
+
+    Args:
+        lookback_days: trailing VALID trading-day window POOLED by both amount legs; part
+            of the factor DEFINITION (reproduced from the report), not a tuned knob. It
+            only names the column so a non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"peak_ridge_amount_ratio_{PEAK_RIDGE_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = PEAK_RIDGE_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"peak-ridge-amount-ratio lookback_days must be a positive integer; got "
+                f"{lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"peak_ridge_amount_ratio_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=+1 READ FROM THE REPORT, not inferred from data and not merely
+        argued from semantics: §7.2 states "峰岭成交比因子 RankIC 均值 10.28%，RankICIR
+        4.07" — an explicitly POSITIVE RankIC — with a long leg of 16.06%/yr, long-short
+        27.13%/yr, IR 2.89, max drawdown 7.88%, 74.3% monthly win rate and every year
+        positive 2013–2025. The report's §1 taxonomy summary agrees independently ("对于
+        量峰时点，分钟数、成交额类因子更加有效，反映知情交易参与度，为正向因子", with the
+        ridge leg's amount factors marked negative-alpha), so peak-over-ridge is positive
+        on both counts. The sign is fixed BEFORE the run (a validated prototype must
+        reproduce it). NOTE the report is a MONTHLY, market-cap + industry neutral
+        full-market series on Wind data while our eval cell is CSI500 daily with industry
+        + size neutral, so the report numbers are a LOOSE reference only (disclosed, never
+        mislabeled, never written in as an expected value). is_intraday=False by the module
+        docstring's reasoning: minute INPUT but a DAILY signal traded close-to-close.
+        min_history_bars=0: the warm-up is DATA-dependent (a value appears once enough
+        VALID days accumulate), not a fixed leading count — the honest NaN rate is reported
+        by data_coverage.
+
+        The description spells out the AGGREGATION FORM, which is the one place this
+        factor's definition departs from its siblings: the report specifies a RATIO OF
+        20-DAY SUMS, not the mean of daily ratios that §7.1 (PR-J) specifies.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Peak/ridge traded-amount ratio (Kaiyuan microstructure series #27, "
+                f"SEVENTH factor 峰岭成交比, §7.2). SAME minute classification as PR-F "
+                f"volume_peak_count / PR-H peak_interval_kurtosis / PR-I "
+                f"valley_relative_vwap / PR-J valley_ridge_vwap_ratio (REUSED from "
+                f"data.clean.intraday_volume_prv, not re-implemented): 1min bars "
+                f"PIT-truncated at 14:50, a minute is ERUPTIVE if vol > μ + "
+                f"{VOLUME_PRV_SIGMA_K:g}σ of its SAME-SLOT strictly-prior "
+                f"{VOLUME_PRV_BASELINE_DAYS}-day baseline; a PEAK is an ISOLATED eruption "
+                f"and a RIDGE is 'eruptive AND NOT a peak'. This is the first factor of "
+                f"the loop carrying NO price information: both legs are pure traded VALUE, "
+                f"so it separates 'only price information survives in this taxonomy' from "
+                f"'the peak/ridge split itself carries alpha'. AGGREGATION = RATIO OF "
+                f"SUMS: Σ peak amount over the trailing {self._lookback_days} VALID days "
+                f"divided by Σ ridge amount over the SAME days — the report's literal "
+                f"wording ('计算 20 日量峰总成交额与量岭总成交额，二者做比'), which "
+                f"DIFFERS from §7.1's mean-of-daily-ratios and is followed as written; it "
+                f"is also the better-behaved estimator, since a single day with a nearly "
+                f"vanishing ridge amount would dominate a mean of daily ratios. PINNED "
+                f"choices: (1) PEAK is the numerator, RIDGE the denominator, fixed both by "
+                f"the name 峰岭 and by the report's stated semantics (informed trading "
+                f"RELATIVE TO retail participation); (2) the masks are PR-J's exactly, so "
+                f"valley|peak|ridge stays an exact partition of the classifiable bars and "
+                f"a VALLEY bar enters NEITHER leg — this factor reads only the two "
+                f"ERUPTIVE groups; (3) bars with non-finite or non-positive amount are "
+                f"dropped from both legs and both bar counts (guard applied at summation "
+                f"only, so PR-F's baseline is untouched); volume is deliberately NOT in "
+                f"the guard because this factor never divides by volume; (4) RAW "
+                f"unadjusted amounts are exactly correct: traded VALUE in RMB is not "
+                f"rescaled by any split/dividend adjustment factor, so unlike PR-L there "
+                f"is no ex-date caveat and unlike PR-I/PR-J no within-day cancellation "
+                f"argument is even needed; (5) DEVIATION FROM THE REPORT, disclosed: both "
+                f"legs span the PIT-VISIBLE window 09:31-14:50 only, not the full session "
+                f"— reading the close would be lookahead at our 14:50 decision time; (6) a "
+                f"day is VALID iff it has >= {VOLUME_PRV_MIN_CLASSIFIABLE} classifiable "
+                f"bars AND >= {PEAK_RIDGE_MIN_PEAK_BARS} TRADABLE peak bars AND >= "
+                f"{PEAK_RIDGE_MIN_RIDGE_BARS} TRADABLE ridge bars (both counted AFTER the "
+                f"guard) AND positive amount in both legs — the PEAK floor is deliberately "
+                f"LOWER, the REVERSE of PR-J's asymmetry, because a peak must erupt AND be "
+                f"ISOLATED, making peaks the scarcer leg of THIS pair; the realized "
+                f"peak-bar distribution, the day-validity rate and the counterfactual "
+                f"valid-day count at a peak floor of 10 are all REPORTED by the runner "
+                f"rather than left implicit; NaN below {VOLUME_PRV_MIN_VALID_DAYS} valid "
+                f"days. Derived from 1min bars but a DAILY signal traded close-to-close."
+            ),
+            expected_ic_sign=1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar fields the upstream aggregation is derived from: volume drives
+            # the REUSED classification, amount is the factor's whole quantity. Declared
+            # for honest provenance disclosure (data_coverage lists them); the daily panel
+            # surfaces the pre-aggregated column itself.
+            input_fields=("volume", "amount"),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily peak/ridge amount-ratio column off ``panel``.
+
+        The runner runs ``compute_peak_ridge_amount_ratio`` per symbol on the minute cache
+        upstream and joins the result as ``self.name``; here we only surface it, so this
+        factor does no temporal logic and cannot introduce lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"PeakRidgeAmountRatioFactor needs the pre-aggregated '{self.name}' "
+                f"column on the panel (produced upstream by "
+                f"compute_peak_ridge_amount_ratio and joined by the runner); panel has "
+                f"{list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
 __all__ = [
     "AmpMarginalAnomalyVolFactor",
     "IntradayAmpCutFactor",
     "JumpAmountCorrFactor",
     "MinuteIdealAmplitudeFactor",
     "PeakIntervalKurtosisFactor",
+    "PeakRidgeAmountRatioFactor",
     "RidgeMinuteReturnFactor",
     "ValleyPriceQuantileFactor",
     "ValleyRelativeVwapFactor",

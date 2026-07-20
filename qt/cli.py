@@ -436,6 +436,50 @@ def _cmd_run_eval_ridge_minute_return(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_eval_peak_ridge_amount_ratio(args: argparse.Namespace) -> int:
+    """Run the two real peak/ridge amount-ratio evaluations (cache-only) + reports."""
+    from qt.eval_peak_ridge_amount_ratio import run_eval_peak_ridge_amount_ratio
+
+    try:
+        result = run_eval_peak_ridge_amount_ratio(args.config)
+    except (ConfigError, ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    nb, wb = result.no_book_metrics, result.with_book_metrics
+    net = (
+        " ".join(
+            f"{m:g}x={v:+.6f}" for m, v in sorted(nb["net_long_short_by_cost"].items())
+        )
+        or "n/a"
+    )
+    print(
+        f"OK run-eval-peak-ridge-amount-ratio: covered={result.covered_symbols}/"
+        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
+        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
+        # PEAK bars are the structurally scarce leg of THIS pair (the reverse of PR-J);
+        # the realized distribution, the day-validity rate and the counterfactual at a
+        # peak floor of 10 are surfaced so the lowered gate is a number, not a claim.
+        f"{result.peak_coverage.render()}\n"
+        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
+        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
+        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
+        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
+        # sign=+1, so the frozen layer's aligned-spread cost-sign defect does NOT apply
+        # to this factor; net spreads are still printed for sibling comparability.
+        f"net long-short by cost: {net}\n"
+        f"ic_rank={_fmt_metric(nb['ic_mean'])} "
+        f"ic_pearson={_fmt_metric(nb['ic_pearson_mean'])} "
+        f"monotonicity={_fmt_metric(nb['monotonicity_spearman'])}\n"
+        f"turnover={_fmt_metric(nb['long_short_turnover'])} "
+        f"rank_autocorr_lag1={_fmt_metric(nb['rank_autocorr_lag1'])} "
+        f"half_life={_fmt_metric(nb['half_life_periods'], '.2f')}\n"
+        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
+        f"dashboards: {result.reports.no_book_dashboard} | "
+        f"{result.reports.with_book_dashboard}"
+    )
+    return 0
+
+
 def _cmd_run_eval_valley_price_quantile(args: argparse.Namespace) -> int:
     """Run the two real valley-price-quantile evaluations (cache-only) + reports."""
     from qt.eval_valley_price_quantile import run_eval_valley_price_quantile
@@ -714,6 +758,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_vpq.add_argument("--config", required=True, help="Path to the YAML config.")
     p_vpq.set_defaults(func=_cmd_run_eval_valley_price_quantile)
+
+    p_pra = sub.add_parser(
+        "run-eval-peak-ridge-amount-ratio",
+        help="Run the peak/ridge amount-ratio factor evaluation (CSI500, cache-only).",
+    )
+    p_pra.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_pra.set_defaults(func=_cmd_run_eval_peak_ridge_amount_ratio)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),
