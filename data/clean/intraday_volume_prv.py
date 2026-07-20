@@ -196,9 +196,12 @@ def peak_mask_for_symbol(
     Returns:
         ``g`` sorted by ``(trade_date, bar_end)`` on a fresh ``RangeIndex`` with the
         added boolean columns ``classifiable`` (a strictly-prior baseline existed),
-        ``valley`` (classifiable and NOT eruptive — the report's 量谷, what PR-I prices)
-        and ``peak``. ``valley`` and ``peak`` are disjoint: a peak is eruptive by
-        construction. Pure: never mutates ``g``.
+        ``valley`` (classifiable and NOT eruptive — the report's 量谷, what PR-I prices),
+        ``peak`` and ``ridge`` (eruptive but NOT an isolated peak — the report's 量岭,
+        what PR-J prices). The three masks PARTITION the classifiable bars exactly:
+        ``valley`` holds the mild ones and ``peak`` / ``ridge`` split the eruptive ones,
+        so ``valley | peak | ridge == classifiable`` and no two overlap. Pure: never
+        mutates ``g``.
     """
     # day x slot volume matrix: rows are the symbol's trading days, columns are the
     # minute-of-day slots; a missing (day, slot) cell is NaN (no bar that minute).
@@ -261,6 +264,19 @@ def peak_mask_for_symbol(
         & next_mild
     )
     work["peak"] = peak
+    # RIDGE (量岭) == eruptive AND NOT an isolated peak. Exposed as a first-class boolean
+    # so the ridge-PRICE family (PR-J) consumes THE SAME classification instead of
+    # re-deriving it and drifting. Purely additive: ``classifiable`` / ``valley`` /
+    # ``peak`` above are computed exactly as before and no consumer of this frame reads
+    # columns positionally.
+    #
+    # PINNED, and wider than the literal "eruptive next to an eruptive": an eruptive bar
+    # is a ridge whenever its isolation is NOT PROVABLE, which also covers the
+    # session-boundary bars (a neighbour missing across the lunch break / the cutoff /
+    # a gap) and the bars whose neighbour is unclassifiable. That is the exact complement
+    # of PR-F's deliberately conservative peak rule, so the taxonomy stays a clean
+    # partition (valley | peak | ridge == classifiable) with no bar silently dropped.
+    work["ridge"] = eruptive & ~peak
     return work
 
 
