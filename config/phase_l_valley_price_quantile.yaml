@@ -45,10 +45,18 @@
 #       does NOT apply to PR-I/PR-J/PR-K: those factors could argue the adjustment factor
 #       cancels because both legs sat inside ONE trading day, but prev_close crosses the
 #       overnight boundary, so on an ex-dividend / split date the previous raw close sits on
-#       the old price scale and artificially widens the range, biasing that day's quantile
-#       toward the middle. Confined to a few ex-dates per symbol per year and diluted by the
-#       20-day mean; DISCLOSED rather than silently corrected, because correcting it would mix
-#       an adjusted price into an otherwise raw, single-visibility construction;
+#       the OLD (higher) price scale while the day's own bars sit on the new one. The bias is
+#       ONE-SIDED, not symmetric: prev_close pulls hi UP (measured on real cache, 42
+#       top-widening vs 4 bottom-widening among true ex-dates), inflating the denominator
+#       hi - lo while the valley VWAP and lo stay on the new scale — which compresses that
+#       day's quantile toward the LOW END of an artificially wide range, NOT toward the
+#       middle. MEASURED on the 30-name prototype panel: 15.6% of valid days show ANY
+#       prev_close widening, but that is overwhelmingly ordinary overnight gapping, which is
+#       the INTENDED behaviour (the report's range includes the previous close precisely so a
+#       gap counts); only 0.73% of valid days are true ex-dates, and only ~0.21% are BOTH a
+#       true ex-date AND actually range-distorted, before the 20-day mean dilutes it further.
+#       DISCLOSED rather than silently corrected, because correcting it would mix an adjusted
+#       price into an otherwise raw, single-visibility construction;
 #   (5) a PRICE guard (finite, high >= low > 0) admits a bar to the range while a TRADE guard
 #       (finite positive volume AND amount) admits it to the VWAP — a zero-volume minute still
 #       quotes a real price. Both run at the summation step only, so PR-F's same-slot baseline

@@ -57,12 +57,20 @@ PINNED choices (deliberate and DISCLOSED, reproduced on the factor spec):
      IMPERFECTION. PR-I/PR-J/PR-K could argue the adjustment factor cancels because both
      of their legs sat inside ONE trading day. That argument does NOT fully hold here:
      ``prev_close`` crosses the overnight boundary, so on an EX-DIVIDEND / SPLIT date the
-     previous raw close sits on the old price scale and artificially widens the range,
-     biasing that day's ``q_day`` toward the middle. The effect is confined to the
-     handful of ex-dates per symbol per year and is diluted by the 20-day mean; it is
-     DISCLOSED here rather than silently corrected, because correcting it would mix an
-     adjusted price into an otherwise raw, single-visibility construction. Callers who
-     care can read the ex-date share off the coverage diagnostics.
+     previous raw close sits on the OLD (higher) price scale while the day's own bars sit
+     on the new one. The DIRECTION is therefore one-sided, not symmetric: ``prev_close``
+     pulls ``hi`` UP (measured on real cache: 42 top-widening vs 4 bottom-widening among
+     true ex-dates), inflating the denominator ``hi - lo`` while the valley VWAP and
+     ``lo`` stay on the new scale — which compresses that day's ``q_day`` toward the LOW
+     END of an artificially wide range, NOT toward the middle.
+     MEASURED on the 30-name prototype panel: 15.6% of valid days show ANY range
+     widening from ``prev_close``, but that is overwhelmingly ordinary overnight gapping,
+     which is the INTENDED behaviour (the report's range includes the previous close
+     precisely so a gap counts); only 0.73% of valid days are true ex-dates, and only
+     ~0.21% are BOTH a true ex-date AND actually range-distorted — before the 20-day mean
+     dilutes it further. DISCLOSED here rather than silently corrected, because
+     correcting it would mix an adjusted price into an otherwise raw, single-visibility
+     construction.
   5. THE RANGE USES A PRICE GUARD, THE VWAP USES A TRADE GUARD. A bar enters the
      high/low range if its prices are finite with ``high >= low > 0`` (a zero-volume
      minute still quotes a real price); it enters the VWAP only if BOTH ``volume`` and

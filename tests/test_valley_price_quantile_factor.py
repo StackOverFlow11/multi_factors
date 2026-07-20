@@ -17,10 +17,18 @@ makes this factor harder than its five siblings:
      factor. The naive ``-(close_d/close_{d-20} - 1)`` reads day d's CLOSE, which is 15:00
      information and a lookahead at our 14:50 decision. We use
      ``rev20 = -(close_{d-1}/close_{d-21} - 1)`` on FRONT-ADJUSTED daily closes.
-     ``test_reversal_uses_t_minus_1_close_not_day_d`` perturbs day d's close and asserts
-     the factor is UNCHANGED -- the single most important test in this PR -- and its
-     companion asserts perturbing ``close_{d-1}`` DOES move the factor, so the first test
-     cannot pass by the closes being ignored altogether.
+     ``test_reversal_uses_t_minus_1_close_not_day_d`` perturbs ONE SYMBOL's day-d close
+     and asserts the factor is UNCHANGED -- the single most important test in this PR.
+     The single-symbol shape is load-bearing: a UNIFORM bump of every cross-section
+     member's ``close_d`` sends the naive regressor to an AFFINE reparametrization of
+     itself, and intercept-OLS residuals are invariant under that, so a uniform bump
+     passes under BOTH bases and proves nothing. Two companions keep it honest:
+     ``test_perturbing_the_t_minus_1_close_does_move_the_factor`` shows the closes are
+     genuinely an input, and
+     ``test_uniform_close_d_bump_cannot_distinguish_the_two_reversal_bases`` records why
+     the uniform shape is inadmissible. Verified by monkeypatching ``reversal_20`` to the
+     naive ``shift(0)/shift(days)`` form: the critical test FAILS there and passes on the
+     real implementation.
 
 Hand cases build a constant BACKGROUND of 10 prior days so the same-slot baseline is
 exact (mu=100, sigma=0 -> the eruptive threshold is exactly 100) and, because
@@ -603,21 +611,63 @@ def test_reversal_uses_t_minus_1_close_not_day_d():
     on the very day we decide at 14:50. We use the T-1 basis instead, so day d's close is
     NOT an input to the factor value at d. If someone "simplifies" the implementation back
     to the report's naive form, this test fails.
+
+    THE PERTURBATION MUST BE SINGLE-SYMBOL, and that is not a stylistic choice. Bumping
+    EVERY cross-section member's ``close_d`` by the same factor ``k`` sends the naive
+    regressor ``1 - close_d/close_{d-20}`` to ``k*rev - (k-1)`` -- an AFFINE
+    reparametrization of x. Intercept-OLS residuals are invariant under exactly that
+    (``span{1, x} == span{1, a*x + b}``), which is the very property
+    ``test_residualization_is_invariant_to_the_reversal_sign_convention`` relies on. So a
+    uniform bump leaves the residuals bit-identical under BOTH the T-1 and the naive form
+    and can never tell them apart. Perturbing ONE symbol moves that symbol's regressor
+    relative to the rest of the cross-section, changes the fitted line, and therefore
+    moves every residual on the date -- under the naive form only. Verified by
+    monkeypatching ``reversal_20`` to the naive ``shift(0)/shift(days)`` form: this test
+    FAILS there and passes here.
     """
     bars, closes, dates, syms = _end_to_end_inputs()
     base = compute_valley_price_quantile(bars, closes, **_E2E_KW)
 
     d = dates[-3]  # a date with a finite factor value and a full history behind it
     bumped = closes.copy()
-    bumped.loc[(d, slice(None)), "close"] = (
-        bumped.loc[(d, slice(None)), "close"].to_numpy() * 1.5
-    )
+    # SINGLE symbol, so the change is NOT an affine map of the whole regressor vector.
+    bumped.loc[(d, syms[0]), "close"] = float(bumped.loc[(d, syms[0]), "close"]) * 1.5
     after = compute_valley_price_quantile(bars, bumped, **_E2E_KW)
 
     on_d_before = base[base.index.get_level_values("date") == d]
     on_d_after = after[after.index.get_level_values("date") == d]
     assert on_d_before.notna().any(), "test is vacuous unless d carries a finite value"
     pd.testing.assert_series_equal(on_d_before, on_d_after)
+
+
+def test_uniform_close_d_bump_cannot_distinguish_the_two_reversal_bases():
+    """Documents WHY the test above must perturb a single symbol.
+
+    A uniform bump is an affine reparametrization of the OLS regressor, so it leaves the
+    residuals unchanged even under the naive close_d form. Asserting that here keeps the
+    reasoning from being quietly lost: if someone later "simplifies" the critical test
+    back to a uniform bump, this test explains what they broke.
+    """
+    syms = [f"S{i}" for i in range(12)]
+    idx = pd.MultiIndex.from_arrays(
+        [[pd.Timestamp("2023-05-10")] * 12, syms], names=["date", "symbol"]
+    )
+    rng = np.random.default_rng(4)
+    qbar = pd.Series(rng.normal(size=12), index=idx)
+    rev = pd.Series(rng.normal(size=12), index=idx)
+
+    base = residualize_on_reversal(qbar, rev, min_cross_section=10, name="f")
+    # k=1.5 uniform bump of close_d maps rev -> 1.5*rev - 0.5 for EVERY symbol.
+    affine = residualize_on_reversal(qbar, 1.5 * rev - 0.5, min_cross_section=10, name="f")
+    np.testing.assert_allclose(
+        base.to_numpy(dtype=float), affine.to_numpy(dtype=float), atol=1e-12
+    )
+
+    # Moving ONE symbol is not affine on the vector, so it DOES move the residuals.
+    single = rev.copy()
+    single.iloc[0] = single.iloc[0] * 1.5 - 0.5
+    moved = residualize_on_reversal(qbar, single, min_cross_section=10, name="f")
+    assert not np.allclose(base.to_numpy(dtype=float), moved.to_numpy(dtype=float))
 
 
 def test_perturbing_the_t_minus_1_close_does_move_the_factor():
