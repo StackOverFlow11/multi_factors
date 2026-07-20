@@ -42,6 +42,13 @@ from data.clean.intraday_amp_anomaly import (
     AMP_ANOMALY_MIN_SELECTED,
     AMP_ANOMALY_SIGMA_K,
 )
+from data.clean.intraday_amp_cut import (
+    AMP_CUT_LAMBDA,
+    AMP_CUT_LOOKBACK_DAYS,
+    AMP_CUT_MIN_CROSS_SECTION,
+    AMP_CUT_MIN_DAY_MINUTES,
+    AMP_CUT_MIN_VALID_DAYS,
+)
 from data.clean.intraday_amplitude import (
     IDEAL_AMP_LAMBDA,
     IDEAL_AMP_LOOKBACK_DAYS,
@@ -420,8 +427,111 @@ class VolumePeakCountFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
+class IntradayAmpCutFactor(Factor):
+    """Intraday amplitude-cut factor (daily signal, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by ``data.clean.intraday_amp_cut.compute_amp_cut_stats`` +
+    ``combine_amp_cut_cross_section``); it does NO minute work of its own, mirroring
+    :class:`JumpAmountCorrFactor` / :class:`MinuteIdealAmplitudeFactor` /
+    :class:`AmpMarginalAnomalyVolFactor` / :class:`VolumePeakCountFactor` and the value /
+    financial factors that surface an enriched column.
+
+    Args:
+        lookback_days: trailing VALID trading-day window; part of the factor DEFINITION
+            (reproduced from the report), not a tuned knob. It only names the column so a
+            non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"intraday_amp_cut_{AMP_CUT_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = AMP_CUT_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"intraday-amp-cut lookback_days must be a positive integer; got "
+                f"{lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"intraday_amp_cut_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=-1: the report's rankIC mean is -0.067 (rankICIR -3.82, quintile
+        long-short 16.7%/yr at N=10, lambda=20%, 1-minute-return indicator) — a HIGH
+        intraday amplitude-cut value predicts LOWER forward returns; the V_mean and V_std
+        sub-factors are each negative too. The sign is fixed BEFORE the run (a validated
+        prototype must reproduce it). is_intraday=False by the module docstring's
+        reasoning: minute INPUT but a DAILY signal traded close-to-close. min_history_bars=
+        0: the warm-up is DATA-dependent (a value appears once >= ``AMP_CUT_MIN_VALID_DAYS``
+        valid days accumulate AND the cross-section has >= ``AMP_CUT_MIN_CROSS_SECTION``
+        finite pairs), not a fixed leading count — the honest NaN rate is reported by
+        data_coverage.
+
+        The description spells out the DISTINCTION FROM PR-D (``minute_ideal_amp``): PR-D
+        pools the 10-day minutes into ONE set and cuts by minute CLOSE PRICE; this factor
+        cuts EACH DAY by the 1-MINUTE RETURN, then takes the trailing-10-valid-day mean /
+        std of the daily cut and combines them cross-sectionally (the report finds the two
+        only ~30% correlated).
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Intraday amplitude cut (Kaiyuan microstructure series #30, SECOND "
+                f"factor 日内振幅切割). DISTINCT FROM PR-D minute_ideal_amp, which pools the "
+                f"trailing days' minutes into ONE set and cuts by minute CLOSE PRICE: "
+                f"this factor cuts EACH DAY independently by the 1-MINUTE RETURN "
+                f"r=close_t/close_{{t-1}}-1 (within-day lagged, first bar of each day has "
+                f"no r), taking V_day = V_high - V_low where V_high/V_low are the mean "
+                f"amp (high/low-1) of the top/bottom floor({AMP_CUT_LAMBDA:g}*n_day) bars "
+                f"by return (day valid iff >= {AMP_CUT_MIN_DAY_MINUTES} valid bars). "
+                f"Trailing {self._lookback_days} VALID days give V_mean / V_std (>= "
+                f"{AMP_CUT_MIN_VALID_DAYS} valid days else NaN); per date they are each "
+                f"cross-sectionally z-scored over the covered universe (>= "
+                f"{AMP_CUT_MIN_CROSS_SECTION} finite pairs else NaN) and averaged: factor "
+                f"= (z(V_mean) + z(V_std))/2. Derived from 1min bars but a DAILY signal "
+                f"traded close-to-close (report finds ~30% corr with minute_ideal_amp)."
+            ),
+            expected_ic_sign=-1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar fields the upstream aggregation is derived from. Declared for
+            # honest provenance disclosure (data_coverage lists them); the daily panel
+            # surfaces the pre-aggregated column itself.
+            input_fields=("high", "low", "close"),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily intraday-amp-cut column off ``panel``.
+
+        The runner runs ``compute_amp_cut_stats`` per symbol on the minute cache upstream,
+        assembles the full-universe ``(V_mean, V_std)`` panel, applies
+        ``combine_amp_cut_cross_section``, and joins the result as ``self.name``; here we
+        only surface it, so this factor does no temporal logic and cannot introduce
+        lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"IntradayAmpCutFactor needs the pre-aggregated '{self.name}' column on "
+                f"the panel (produced upstream by compute_amp_cut_stats + "
+                f"combine_amp_cut_cross_section and joined by the runner); panel has "
+                f"{list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
 __all__ = [
     "AmpMarginalAnomalyVolFactor",
+    "IntradayAmpCutFactor",
     "JumpAmountCorrFactor",
     "MinuteIdealAmplitudeFactor",
     "VolumePeakCountFactor",
