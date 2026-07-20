@@ -54,6 +54,10 @@ from data.clean.intraday_amplitude import (
     IDEAL_AMP_LOOKBACK_DAYS,
     IDEAL_AMP_MIN_MINUTES,
 )
+from data.clean.intraday_peak_interval import (
+    PEAK_INTERVAL_LOOKBACK_DAYS,
+    PEAK_INTERVAL_MIN_INTERVALS,
+)
 from data.clean.intraday_volume_prv import (
     VOLUME_PRV_BASELINE_DAYS,
     VOLUME_PRV_BASELINE_MIN_OBS,
@@ -529,10 +533,116 @@ class IntradayAmpCutFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
+class PeakIntervalKurtosisFactor(Factor):
+    """Volume-peak interval-kurtosis factor (daily signal, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by ``data.clean.intraday_peak_interval.compute_peak_interval_kurtosis``);
+    it does NO minute work of its own, mirroring :class:`JumpAmountCorrFactor` /
+    :class:`MinuteIdealAmplitudeFactor` / :class:`AmpMarginalAnomalyVolFactor` /
+    :class:`VolumePeakCountFactor` / :class:`IntradayAmpCutFactor` and the value /
+    financial factors that surface an enriched column.
+
+    Args:
+        lookback_days: trailing VALID trading-day window pooled for the kurtosis; part of
+            the factor DEFINITION (reproduced from the report), not a tuned knob. It only
+            names the column so a non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"peak_interval_kurtosis_{PEAK_INTERVAL_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = PEAK_INTERVAL_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"peak-interval-kurtosis lookback_days must be a positive integer; got "
+                f"{lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"peak_interval_kurtosis_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=+1: the report's full-market RankIC is +7.19% (RankICIR 4.63,
+        long-short 23.3%/yr, IR 3.39, max drawdown 7.37%, 13/13 positive years — the most
+        stable factor in the report). A peaky, fat-tailed peak-interval distribution means
+        informed trading arrives in BURSTS rather than evenly through the session. The
+        sign is fixed BEFORE the run (a validated prototype must reproduce it).
+        is_intraday=False for the same reason as the siblings: minute INPUT but a DAILY
+        signal traded close-to-close. min_history_bars=0: the warm-up is DATA-dependent (a
+        value appears once enough VALID days AND enough pooled intervals accumulate), not
+        a fixed leading count — the honest NaN rate is reported by data_coverage.
+
+        The description spells out the DISTINCTION FROM PR-F (``volume_peak_count``): the
+        SAME peak identification (reused, not re-implemented) reduced by a DIFFERENT
+        statistic — the shape of the gap distribution rather than the peak count — plus
+        the two interpretations the report leaves open (interval unit, kurtosis
+        convention).
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Volume-peak interval kurtosis (Kaiyuan microstructure series #27, "
+                f"SECOND factor 量峰间隔峰度). SAME peak identification as PR-F "
+                f"volume_peak_count (REUSED from data.clean.intraday_volume_prv, not "
+                f"re-implemented): 1min bars PIT-truncated at 14:50, a minute is ERUPTIVE "
+                f"if vol > μ + {VOLUME_PRV_SIGMA_K:g}σ of its SAME-SLOT strictly-prior "
+                f"{VOLUME_PRV_BASELINE_DAYS}-day baseline, and a PEAK is an eruptive "
+                f"minute whose both 1-minute same-session neighbours are mild. DIFFERENT "
+                f"STATISTIC: the gaps between consecutive same-day peaks, pooled over the "
+                f"trailing {self._lookback_days} VALID days (a day with < 2 peaks "
+                f"contributes 0 intervals but is still valid), reduced to their kurtosis. "
+                f"PINNED interpretations of an under-specified report: (1) an interval is "
+                f"measured in TRADING MINUTES — the tradable-slot difference inside the "
+                f"day's visible bar sequence, so the lunch break costs nothing (11:29 and "
+                f"13:02 peaks are 3 apart, not 93) and a wall-clock ~90-minute spike can "
+                f"never dominate the distribution; (2) kurtosis = FISHER excess, "
+                f"bias-corrected (the pandas .kurt() / scipy fisher=True bias=False "
+                f"convention; normal = 0). NaN unless >= "
+                f"{PEAK_INTERVAL_MIN_INTERVALS} intervals pooled and the pool has "
+                f"non-zero variance. Derived from 1min bars but a DAILY signal traded "
+                f"close-to-close."
+            ),
+            expected_ic_sign=1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar field the upstream aggregation is derived from. Declared for
+            # honest provenance disclosure (data_coverage lists it); the daily panel
+            # surfaces the pre-aggregated column itself.
+            input_fields=("volume",),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily peak-interval-kurtosis column off ``panel``.
+
+        The runner runs ``compute_peak_interval_kurtosis`` per symbol on the minute cache
+        upstream and joins the result as ``self.name``; here we only surface it, so this
+        factor does no temporal logic and cannot introduce lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"PeakIntervalKurtosisFactor needs the pre-aggregated '{self.name}' "
+                f"column on the panel (produced upstream by "
+                f"compute_peak_interval_kurtosis and joined by the runner); panel has "
+                f"{list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
 __all__ = [
     "AmpMarginalAnomalyVolFactor",
     "IntradayAmpCutFactor",
     "JumpAmountCorrFactor",
     "MinuteIdealAmplitudeFactor",
+    "PeakIntervalKurtosisFactor",
     "VolumePeakCountFactor",
 ]
