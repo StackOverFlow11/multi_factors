@@ -58,6 +58,10 @@ from data.clean.intraday_peak_interval import (
     PEAK_INTERVAL_LOOKBACK_DAYS,
     PEAK_INTERVAL_MIN_INTERVALS,
 )
+from data.clean.intraday_valley_vwap import (
+    VALLEY_VWAP_LOOKBACK_DAYS,
+    VALLEY_VWAP_MIN_VALLEY_BARS,
+)
 from data.clean.intraday_volume_prv import (
     VOLUME_PRV_BASELINE_DAYS,
     VOLUME_PRV_BASELINE_MIN_OBS,
@@ -638,11 +642,125 @@ class PeakIntervalKurtosisFactor(Factor):
         return panel[self.name].rename(self.name)
 
 
+class ValleyRelativeVwapFactor(Factor):
+    """Valley-relative VWAP factor (daily signal, minute-derived).
+
+    ``compute`` reads the pre-aggregated daily column the runner placed on the panel
+    (produced by ``data.clean.intraday_valley_vwap.compute_valley_relative_vwap``); it
+    does NO minute work of its own, mirroring :class:`JumpAmountCorrFactor` /
+    :class:`MinuteIdealAmplitudeFactor` / :class:`AmpMarginalAnomalyVolFactor` /
+    :class:`VolumePeakCountFactor` / :class:`IntradayAmpCutFactor` /
+    :class:`PeakIntervalKurtosisFactor` and the value / financial factors that surface an
+    enriched column.
+
+    Args:
+        lookback_days: trailing VALID trading-day window averaged; part of the factor
+            DEFINITION (reproduced from the report), not a tuned knob. It only names the
+            column so a non-default window cannot silently mislabel it.
+    """
+
+    name: str = f"valley_relative_vwap_{VALLEY_VWAP_LOOKBACK_DAYS}"
+
+    def __init__(self, lookback_days: int = VALLEY_VWAP_LOOKBACK_DAYS) -> None:
+        if not isinstance(lookback_days, int) or lookback_days < 1:
+            raise ValueError(
+                f"valley-relative-vwap lookback_days must be a positive integer; got "
+                f"{lookback_days!r}."
+            )
+        self._lookback_days = lookback_days
+        self.name = f"valley_relative_vwap_{lookback_days}"
+
+    @property
+    def lookback_days(self) -> int:
+        return self._lookback_days
+
+    @property
+    def spec(self) -> FactorSpec:
+        """Evaluation contract; a property so ``factor_id`` tracks the window.
+
+        expected_ic_sign=+1: the report's full-market RankIC is +8.69% (RankICIR 4.44,
+        long-short 25.35%/yr, IR 3.04, monthly win rate 79.7% — the strongest factor in
+        the report), and its CSI500 sub-domain long-short is 9.94% / IR 1.26, the closest
+        comparable to our eval cell. Semantics per the report: valley minutes are moments
+        of subdued sentiment where prices are unlikely to have over-reacted, so a HIGH
+        relative valley price predicts HIGHER forward returns. The sign is fixed BEFORE
+        the run (a validated prototype must reproduce it). NOTE the report is a MONTHLY,
+        market-cap + industry neutral full-market series on Wind data while our eval cell
+        is CSI500 daily with industry + size neutral, so the report numbers are a LOOSE
+        reference only (disclosed, never mislabeled, never written in as an expected
+        value). is_intraday=False by the module docstring's reasoning: minute INPUT but a
+        DAILY signal traded close-to-close. min_history_bars=0: the warm-up is
+        DATA-dependent (a value appears once enough VALID days accumulate), not a fixed
+        leading count — the honest NaN rate is reported by data_coverage.
+
+        The description spells out the DIFFERENT FAMILY vs PR-F / PR-H (the same reused
+        classification, but a PRICE LEVEL at the VALLEYS rather than a count or timing of
+        the PEAKS) plus the pinned choices, including the one place we KNOWINGLY DEVIATE
+        from the report: our day VWAP covers the PIT-visible window only.
+        """
+        return FactorSpec(
+            factor_id=self.name,
+            version="1.0",
+            description=(
+                f"Valley-relative VWAP (Kaiyuan microstructure series #27, THIRD factor "
+                f"量谷相对加权价格). SAME minute classification as PR-F volume_peak_count "
+                f"and PR-H peak_interval_kurtosis (REUSED from "
+                f"data.clean.intraday_volume_prv, not re-implemented): 1min bars "
+                f"PIT-truncated at 14:50, a minute is ERUPTIVE if vol > μ + "
+                f"{VOLUME_PRV_SIGMA_K:g}σ of its SAME-SLOT strictly-prior "
+                f"{VOLUME_PRV_BASELINE_DAYS}-day baseline, else it is a VALLEY (量谷). "
+                f"DIFFERENT FAMILY: instead of counting or timing the PEAKS this factor "
+                f"prices the VALLEYS — daily ratio = (valley VWAP) / (whole visible day "
+                f"VWAP), averaged over the trailing {self._lookback_days} VALID days. "
+                f"PINNED choices: (1) each VWAP uses the aggregation identity Σ(p·v)/Σv "
+                f"= Σamount/Σvolume, the day's REAL volume-weighted price rather than a "
+                f"close approximation; (2) bars with non-finite or non-positive volume "
+                f"or amount are dropped from BOTH sums (guard applied at summation only, "
+                f"so PR-F's baseline is untouched); (3) RAW unadjusted prices are correct "
+                f"here because the adjustment factor is constant within a day and cancels "
+                f"in the ratio; (4) DEVIATION FROM THE REPORT, disclosed: our day VWAP "
+                f"spans the PIT-VISIBLE window 09:31-14:50 only, not the full session — "
+                f"reading the close would be lookahead at our 14:50 decision time; "
+                f"(5) a day is VALID iff it has >= {VOLUME_PRV_MIN_CLASSIFIABLE} "
+                f"classifiable bars AND >= {VALLEY_VWAP_MIN_VALLEY_BARS} TRADABLE valley "
+                f"bars (counted after the guard) AND positive volume in both "
+                f"denominators; NaN below {VOLUME_PRV_MIN_VALID_DAYS} valid days. Derived "
+                f"from 1min bars but a DAILY signal traded close-to-close."
+            ),
+            expected_ic_sign=1,
+            is_intraday=False,
+            forward_return_horizon=1,
+            return_basis="close_to_close",
+            # The 1min bar fields the upstream aggregation is derived from. Declared for
+            # honest provenance disclosure (data_coverage lists them); the daily panel
+            # surfaces the pre-aggregated column itself.
+            input_fields=("volume", "amount"),
+            family="microstructure",
+            min_history_bars=0,
+        )
+
+    def compute(self, panel: pd.DataFrame) -> pd.Series:
+        """Select the pre-aggregated daily valley-relative-VWAP column off ``panel``.
+
+        The runner runs ``compute_valley_relative_vwap`` per symbol on the minute cache
+        upstream and joins the result as ``self.name``; here we only surface it, so this
+        factor does no temporal logic and cannot introduce lookahead.
+        """
+        if self.name not in panel.columns:
+            raise ValueError(
+                f"ValleyRelativeVwapFactor needs the pre-aggregated '{self.name}' column "
+                f"on the panel (produced upstream by compute_valley_relative_vwap and "
+                f"joined by the runner); panel has {list(panel.columns)}."
+            )
+        return panel[self.name].rename(self.name)
+
+
 __all__ = [
     "AmpMarginalAnomalyVolFactor",
     "IntradayAmpCutFactor",
     "JumpAmountCorrFactor",
     "MinuteIdealAmplitudeFactor",
     "PeakIntervalKurtosisFactor",
+    "ValleyRelativeVwapFactor",
     "VolumePeakCountFactor",
 ]

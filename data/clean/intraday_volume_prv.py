@@ -61,6 +61,8 @@ portfolio / runtime, and never sees a token.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 import pandas as pd
 
@@ -80,6 +82,12 @@ VOLUME_PRV_MIN_CLASSIFIABLE = 100  # a day is valid iff it has >= this many clas
 # the session close and any missing minute all differ, so they are not neighbours.
 _ONE_MINUTE_SECONDS = 60.0
 
+# The columns every peak-family factor needs. ``prepare_visible_minute_bars`` always
+# emits EXACTLY these (plus the derived ``trade_date`` / ``slot``); anything else a
+# caller needs is opt-in via ``extra_columns``, so the default output stays byte-identical
+# for the callers that predate the option.
+_BASE_VISIBLE_COLUMNS = [SYMBOL_LEVEL, "bar_end", "available_time", "volume"]
+
 
 def _empty_series(name: str) -> pd.Series:
     """Schema-shaped empty ``MultiIndex(date, symbol)`` factor Series."""
@@ -91,7 +99,10 @@ def _empty_series(name: str) -> pd.Series:
 
 
 def prepare_visible_minute_bars(
-    bars: pd.DataFrame, *, decision_time: str = DEFAULT_DECISION_TIME
+    bars: pd.DataFrame,
+    *,
+    decision_time: str = DEFAULT_DECISION_TIME,
+    extra_columns: Sequence[str] = (),
 ) -> pd.DataFrame:
     """PIT-truncate ``bars`` at ``decision_time`` and add ``trade_date`` / ``slot``.
 
@@ -109,15 +120,30 @@ def prepare_visible_minute_bars(
     Args:
         bars: normalized 1min bars, ``MultiIndex(time, symbol)``; one or many symbols.
         decision_time: per-bar PIT cutoff time-of-day (default 14:50:00).
+        extra_columns: additional ``bars`` columns to carry through, appended AFTER the
+            base columns. The truncation and the volume guard are unaffected — the extra
+            values merely ride along on the surviving rows — so the default ``()`` keeps
+            the output byte-identical for callers that do not need them (PR-F / PR-H).
+            PR-I passes ``("amount",)`` to compute a volume-weighted price.
 
     Returns:
         A fresh ``RangeIndex`` frame with columns ``symbol`` / ``bar_end`` /
-        ``available_time`` / ``volume`` / ``trade_date`` / ``slot`` (possibly empty).
-        Pure: never mutates ``bars``.
+        ``available_time`` / ``volume`` / ``trade_date`` / ``slot`` plus any
+        ``extra_columns`` (possibly empty). Pure: never mutates ``bars``.
     """
-    work = bars.reset_index()[
-        [SYMBOL_LEVEL, "bar_end", "available_time", "volume"]
-    ].copy()
+    extra = list(extra_columns)
+    unknown = [c for c in extra if c not in bars.columns]
+    if unknown:
+        raise ValueError(
+            f"prepare_visible_minute_bars extra_columns not present on bars: {unknown}; "
+            f"bars has {list(bars.columns)}."
+        )
+    clashing = [c for c in extra if c in _BASE_VISIBLE_COLUMNS]
+    if clashing:
+        raise ValueError(
+            f"prepare_visible_minute_bars extra_columns are already emitted: {clashing}."
+        )
+    work = bars.reset_index()[_BASE_VISIBLE_COLUMNS + extra].copy()
     work["trade_date"] = work["bar_end"].dt.normalize()
     # PIT truncation FIRST (per-bar timestamps): each bar's cutoff is its own
     # trade_date + decision_time, so every day is truncated to [open, cutoff].
@@ -169,8 +195,10 @@ def peak_mask_for_symbol(
 
     Returns:
         ``g`` sorted by ``(trade_date, bar_end)`` on a fresh ``RangeIndex`` with the
-        added boolean columns ``classifiable`` (a strictly-prior baseline existed) and
-        ``peak``. Pure: never mutates ``g``.
+        added boolean columns ``classifiable`` (a strictly-prior baseline existed),
+        ``valley`` (classifiable and NOT eruptive — the report's 量谷, what PR-I prices)
+        and ``peak``. ``valley`` and ``peak`` are disjoint: a peak is eruptive by
+        construction. Pure: never mutates ``g``.
     """
     # day x slot volume matrix: rows are the symbol's trading days, columns are the
     # minute-of-day slots; a missing (day, slot) cell is NaN (no bar that minute).
@@ -204,6 +232,12 @@ def peak_mask_for_symbol(
     eruptive = classifiable & (vol > thr_arr)
     mild = classifiable & ~eruptive
     work["classifiable"] = classifiable
+    # VALLEY (量谷 in the report's peak/ridge/valley taxonomy) == MILD: a classifiable,
+    # non-eruptive minute. Exposed as a first-class boolean so the valley-PRICE family
+    # (PR-I) consumes THE SAME classification instead of re-deriving it and drifting.
+    # Purely additive — ``classifiable`` and ``peak`` below are computed exactly as
+    # before and no consumer of this frame reads columns positionally.
+    work["valley"] = mild
     # Carry mild as 0/1 so the within-day neighbour shift stays numeric (a shifted bool
     # column would go through an object-dtype fillna and warn).
     work["mild_i"] = mild.astype(np.int8)
