@@ -1,0 +1,190 @@
+# PR-M — Eleventh real factor evaluation: PEAK/RIDGE AMOUNT RATIO. THE CLOSING FACTOR (10/10)
+# of this reproduction loop.
+#
+# Reproduces the SEVENTH factor of the Kaiyuan market-microstructure series #27 (开源证券
+# 《高频成交量的峰、岭、谷信息——市场微观结构研究系列（27）》, reportId 4957417, §7.2) — the
+# "峰岭成交比因子" — as a first-class PeakRidgeAmountRatioFactor and runs it through the FROZEN
+# StandardFactorEvaluator on REAL cached A-share data. CACHE-ONLY: the minute read is provably
+# live-call-free; daily / universe / covariate endpoints go through the read-through cache
+# (warm -> 0 gap fetches).
+#
+# WHY THIS FACTOR, LAST: the nine prior reproductions from this report covered a COUNT (PR-F
+# volume_peak_count, weak), a TIMING moment (PR-H peak_interval_kurtosis, null), two price
+# RATIOS (PR-I valley_relative_vwap and PR-J valley_ridge_vwap_ratio, both PASSING), a price
+# POSITION (PR-L valley_price_quantile, PASSING and strongest) and a RETURN (PR-K
+# ridge_minute_return, sign transferred but Reject). EVERY signal found so far has been a PRICE
+# signal. This factor is the AMOUNT family — the last untested one — and it carries no price
+# information at all: both legs are pure traded VALUE. It is therefore the single test that
+# separates "only price information survives in this taxonomy" from "the peak/ridge behavioural
+# split itself carries alpha". A PASS widens the finding; a REJECT sharpens it. Both are results.
+#
+# SAME MACHINE as PR-F / PR-H / PR-I / PR-J / PR-K / PR-L. The minute classification is REUSED
+# from data/clean/intraday_volume_prv.py (not re-implemented, and not modified by this PR):
+# PIT-truncate each day at 14:50, classify every visible minute against its SAME-SLOT
+# strictly-prior 20-day baseline (ERUPTIVE if vol > mu + sigma), a PEAK (量峰) being an ISOLATED
+# eruption and a RIDGE (量岭) an eruption that is not isolated. Because the classification is
+# shared verbatim, a different verdict here cannot be an artefact of a differently implemented
+# taxonomy.
+#
+# THE AGGREGATION IS A RATIO OF SUMS, AND THAT IS THE REPORT'S OWN WORDING — not the mean of
+# daily ratios PR-J used. §7.2 says "计算 20 日量峰总成交额与量岭总成交额，二者做比": pool each
+# leg over 20 days, then divide ONCE. §7.1 (PR-J) instead says "计算 20 日价格比均值", a mean of
+# daily ratios. The report draws the distinction itself in adjacent sections, so each is
+# followed as written. The difference is real, not cosmetic: a ratio of sums is AMOUNT-WEIGHTED
+# (busy days dominate) while a mean of ratios weights every valid day equally — and it is also
+# far better behaved here, since a single day whose ridge amount nearly vanishes would dominate
+# a mean of daily ratios. NOTE: the task card for this PR pinned the mean-of-ratios form; the
+# report overrides it and the deviation is recorded in the PR report.
+#
+# PINNED choices (all disclosed on the factor spec; the report specifies only the shape):
+#   (1) PEAK is the NUMERATOR and RIDGE the DENOMINATOR, fixed both by the name 峰岭 (peak
+#       first) and, independently, by the report's stated semantics — the factor measures
+#       "知情交易相对个人投资者交易的相对参与程度", informed trading RELATIVE TO retail;
+#   (2) the masks are PR-J's exactly, so valley|peak|ridge stays an exact partition of the
+#       classifiable bars. A VALLEY bar enters NEITHER leg: this factor reads only the two
+#       ERUPTIVE groups, which is the one way it could silently degenerate and is the subject
+#       of a dedicated invariance test;
+#   (3) a bar with non-finite or non-positive amount is dropped from BOTH legs AND from both
+#       bar counts, at the summation step only, so PR-F's same-slot baseline stays
+#       bit-identical. VOLUME is deliberately NOT part of this guard (unlike PR-I/PR-J), because
+#       this factor never divides by volume;
+#   (4) RAW unadjusted amounts are exactly correct here. Traded VALUE in RMB is not rescaled by
+#       any split/dividend adjustment factor — the adjustment moves price and share count in
+#       compensating directions. So unlike PR-L there is no ex-date caveat to disclose, and
+#       unlike PR-I/PR-J not even a "cancels within the day" argument is needed;
+#   (5) DEVIATION FROM THE REPORT, disclosed: both legs span the PIT-VISIBLE window 09:31-14:50
+#       only, while the report uses the FULL day. Reading the closing auction would be lookahead
+#       at our 14:50 decision time;
+#   (6) an ASYMMETRIC bar floor — >= 5 tradable PEAK bars against >= 10 tradable RIDGE bars.
+#       This asymmetry RUNS THE OPPOSITE WAY from PR-J's: there ridges were the scarce leg, here
+#       PEAKS are, because a peak must erupt AND be ISOLATED, and isolation is a strong
+#       condition on a name whose eruptions cluster. The floor is set low deliberately, and the
+#       realized peak-bar distribution, the day-validity rate and the COUNTERFACTUAL valid-day
+#       count at a peak floor of 10 are all REPORTED by the runner rather than left implicit;
+#   (7) a day is VALID iff it also has >= 100 classifiable bars and strictly positive amount in
+#       both legs; NaN below 10 valid days in the trailing window.
+#
+# Pre-registered sign = +1, READ FROM THE REPORT rather than inferred from data or argued from
+# semantics: §7.2 states "峰岭成交比因子 RankIC 均值 10.28%，RankICIR 4.07" — an explicitly
+# POSITIVE RankIC — with a long leg of 16.06%/yr, long-short 27.13%/yr, IR 2.89, max drawdown
+# 7.88%, 74.3% monthly win rate, and every year positive across 2013-2025. The report's §1
+# taxonomy summary agrees independently: "对于量峰时点，分钟数、成交额类因子更加有效，反映知情
+# 交易参与度，为正向因子", with the ridge leg's amount factors marked negative-alpha, so
+# peak-over-ridge is positive on both counts. NOTE the report is a MONTHLY, market-cap +
+# industry neutral FULL-MARKET series on Wind data — our eval cell is CSI500 daily with industry
+# + size neutral, so those numbers are a LOOSE reference only and are NOT written in as expected
+# values. The report gives no CSI500 sub-domain breakdown for this factor, so none is quoted.
+#
+# SIGN = +1 means this factor is NOT affected by the frozen layer's aligned-spread cost-sign
+# defect (which computes sign * (gross - cost) and therefore ADDS costs back only when the sign
+# is negative). As with PR-L the aligned_spread_* fields may be read directly here.
+# net_long_short_by_cost remains the primary tradability read, for sibling comparability.
+#
+# Eval CELL is IDENTICAL to PR-C .. PR-L: universe = CSI500 (000905.SH), PIT membership; window
+# = 2021-07-01 .. 2026-06-30 (the project's minute-coverage window); daily rebalance; OOS split
+# 2024-01-01; book = value_ep/value_bp/volatility_20; fee 0.001. The ONLY substantive difference
+# is the subject factor, which is minute-derived and computed by the runner from the intraday
+# cache — it is NOT a config-listed daily factor. Because the cell matches its siblings exactly,
+# this run is directly comparable to them. The evaluator runs TWICE (see
+# qt/eval_peak_ridge_amount_ratio.py): once with NO book (Incremental NOT_ASSESSED) and once
+# with the confirmed book. That second run carries a different weight here than for the price
+# factors: a traded-VALUE mix has no obvious kinship with a value or low-vol bet, so an
+# Incremental PASS would be a genuinely NEW exposure rather than a repackaged one.
+
+project:
+  name: quantitative_trading_pr_m_peak_ridge_amount_ratio
+  timezone: Asia/Shanghai
+data:
+  source: tushare
+  freq: D
+  start: '2021-07-01'
+  end: '2026-06-30'
+  external_secret_file: /home/shaofl/Projects/financial_projects/.config.json
+  tushare_token_key: tushare.token
+  output_name: peak_ridge_amount_ratio_daily
+  cache:
+    enabled: true
+    root_dir: artifacts/cache/tushare/v1
+    refresh_recent_days: 14
+    refresh_dimension_days: 30
+    force_refresh: []
+universe:
+  type: index
+  index_code: 000905.SH
+  symbols: []
+  min_listing_days: 60
+  filters:
+    missing_close: true
+    suspended: false
+    st: false
+    limit_up_down: false
+# factors = the confirmed BOOK used for the Incremental axis (value + low-vol). The SUBJECT
+# factor (peak_ridge_amount_ratio_20) is minute-derived and computed by the runner from the
+# intraday cache — it is NOT a config-listed daily factor.
+factors:
+- name: value_ep
+  enabled: true
+- name: value_bp
+  enabled: true
+- name: volatility_20
+  enabled: true
+  params:
+    window: 20
+    price_col: close
+processing:
+  drop_missing: true
+  standardize:
+    enabled: true
+    method: zscore
+  # winsorize is a P0 no-op in this codebase; the EvalConfig declares winsorize=None
+  # accordingly (nothing is clipped), so the report never overstates preprocessing.
+  winsorize:
+    enabled: false
+    method: mad
+    n: 3.0
+  # Industry + market-cap neutralization (SW-L1), matching the report's neutral column and
+  # the EvalConfig neutralization declaration. Unlike PR-L this factor has no
+  # neutralization of its own — the raw ratio goes straight into the standard pipeline.
+  neutralize:
+    enabled: true
+    industry_col: industry
+    size_col: market_cap
+    industry_level: L1
+alpha:
+  model: equal_weight
+  params: {}
+portfolio:
+  # Required by the schema but unused: this runner evaluates a factor, it does not
+  # build/execute a portfolio.
+  constructor: topn_equal_weight
+  top_n: 50
+  long_only: true
+  max_weight: null
+  turnover_cap: null
+backtest:
+  # Required by the schema but unused (no backtest is run). The EvalConfig uses a DAILY
+  # rebalance (contract default), independent of this field.
+  initial_nav: 1.0
+  rebalance: monthly
+  event_order: close_to_next_period
+  cash_return: 0.0
+cost:
+  fee_rate: 0.001
+  slippage_rate: 0.0
+  turnover_formula: l1
+analytics:
+  forward_return_periods:
+  - 1
+  quantiles: 5
+  benchmark: null
+# OOS split (window midpoint) so the OOS section runs and the Predictive axis can be
+# assessed (sign consistency across both holdout subperiods).
+oos:
+  split_date: '2024-01-01'
+output:
+  root_dir: artifacts
+  data_dir: artifacts/data
+  factor_dir: artifacts/factors
+  report_dir: artifacts/reports
+  log_dir: artifacts/logs
+  overwrite: true
