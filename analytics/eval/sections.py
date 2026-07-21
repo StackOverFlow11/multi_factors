@@ -54,9 +54,24 @@ VERDICT_KEYS: dict[str, tuple[str, ...]] = {
         "ic_win_rate",
         "ic_nw_t",
     ),
-    # monotonicity_spearman: RAW Spearman(bucket index, bucket mean return).
+    # monotonicity_spearman: RAW Spearman(bucket index, bucket mean return) over
+    # the POOLED (date-equal-weighted) bucket means — unbounded and magnitude
+    # sensitive, so (v0.8) it is REPORTED but no longer gates.
+    # monotonicity_spearman_by_date: (v0.8) the gated one — Spearman per date
+    # (bounded [-1, 1] before averaging, structurally parallel to the rank IC),
+    # then averaged. The verdict falls back to the pooled field when it is
+    # absent and SAYS SO in its reasons.
     # net_long_short_by_cost: {cost multiplier: net (top - bottom) return}, RAW.
-    "return_risk": ("monotonicity_spearman", "net_long_short_by_cost"),
+    # gross_long_short_mean: (v0.8) the GROSS (pre-cost) leg difference — the
+    # verdict needs it to align a net spread, since aligning is
+    # `sign * gross - cost` and cost = gross - net cannot be recovered from the
+    # net alone.
+    "return_risk": (
+        "monotonicity_spearman",
+        "monotonicity_spearman_by_date",
+        "net_long_short_by_cost",
+        "gross_long_short_mean",
+    ),
     # The Incremental axis (design §6, v0.5). known_factors_supplied = was a
     # known-factor BOOK supplied at all (False -> the axis is NOT_ASSESSED);
     # incremental_ic_ir / incremental_ic_mean = mean(orthIC)/std(orthIC) and
