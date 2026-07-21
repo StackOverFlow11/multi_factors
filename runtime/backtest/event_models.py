@@ -13,7 +13,12 @@ Each model bundles a *schedule* with a *pricing* and *feasibility* time-basis:
 
 Both schedules come from :func:`runtime.backtest.events.monthly_anchor_pairs`, so
 daily and intraday rebalance on the same calendar; only the time basis differs.
-The intraday model never prices off the daily panel.
+
+The intraday model never takes a PRICE from the daily panel: decisions and fills
+read minute bars only, so no EOD price can leak into a 14:50 decision. It does
+read one non-price field from that panel — ``adj_factor`` — to divide out
+corporate actions when measuring a holding return, since the cached minute bars
+are raw. See :meth:`IntradayTailEventModel.holding_returns`.
 """
 
 from __future__ import annotations
@@ -110,9 +115,11 @@ class IntradayTailEventModel:
 
     The rebalance schedule is the same monthly calendar as the daily model, but
     each period's decision is timestamped at ``decision_time`` and its execution
-    at the start of the execution window. Per-symbol entry/exit prices are the
-    earliest valid 1min close in the execution window (``next_minute_close``);
-    holding returns are ``exec_price(exit) / exec_price(entry) - 1``.
+    at the start of the execution window. Per-symbol entry/exit prices come from
+    the earliest valid 1min bar in the execution window (``next_minute_close``),
+    priced on the config's ``execution_price_basis`` (default that bar's VWAP =
+    ``amount / volume``); holding returns are
+    ``exec_price(exit) / exec_price(entry) - 1``.
 
     Base (I5a) feasibility rule: a symbol can be traded at the rebalance ONLY if
     it has a valid (non-NaN) execution bar at the entry anchor; a missing/NaN
@@ -120,12 +127,57 @@ class IntradayTailEventModel:
     is blocked by this rule.
 
     I5b adds OPT-IN execution-time price-limit feasibility (``price_limit_check``):
-    on top of the bar-exists rule, the selected execution-minute RAW close is
-    compared to that symbol/date's raw ``stk_limit`` band — a buy is blocked at the
-    upper limit, a sell is blocked at the lower limit, directionally. The
-    comparison is RAW-vs-RAW only: the raw 1min close (the intraday cache stores
-    unadjusted bars) against raw ``stk_limit``; it never reads a qfq / daily close
-    or a daily-close-derived limit flag. A missing/NaN limit row never silently
+    on top of the bar-exists rule, the RAW price the trade actually pays — the
+    ``execution_price_basis``, a bar VWAP by default — is compared to that
+    symbol/date's raw ``stk_limit`` band. A buy is blocked at the upper limit, a
+    sell at the lower limit, directionally.
+
+    Why the gate reads the VWAP and not the bar close. A limit-up execution minute
+    has exactly two shapes, and they are the feasibility question:
+
+      * LOCKED (封死涨停) — every trade in the minute prints at the limit, so the
+        VWAP equals the limit price up to rounding. There is no seller except at
+        the limit and the queue is hopeless: the buy must be blocked.
+      * OPENED (盘中打开) — some trades printed below the limit, so the VWAP sits
+        below it. Those prints are direct evidence that a fill WAS achievable:
+        the buy must go through.
+
+    The bar close cannot make that distinction and misclassifies both edges — a
+    minute that closed at the limit but opened during it gets over-blocked, and a
+    minute that closed below but was locked most of the way gets under-blocked.
+    The VWAP encodes exactly "was there volume available below the limit".
+
+    Calibration follows from that, and it is the part that is easy to get wrong:
+    ``limit_tolerance`` must stay at ROUNDING scale and must NOT be widened to
+    "catch near-limit bars". Widening it re-blocks fills that demonstrably were
+    achievable, which is the opposite of the point. Measured on real cached 14:51
+    bars joined to raw ``stk_limit`` (13,699 bars; 149 closing at the up limit):
+    the 146 LOCKED ones sit a median 0.000000% and at most 0.0021% below the
+    limit — pure ``amount`` rounding — while the 3 OPENED ones sit 0.013%-0.017%
+    below it. The populations separate by an order of magnitude. At the default
+    ``limit_tolerance=1e-6`` every OPENED minute is correctly allowed and 2.1% of
+    LOCKED minutes are misclassified as opened by sub-tick rounding; widening to
+    0.01 RMB would instead misclassify 100% of OPENED minutes as locked.
+
+    That residual errs OPTIMISTIC and is disclosed rather than tuned away: a
+    locked minute misread as opened lets through a buy that was NOT achievable,
+    so the backtest can book a fill the market would have refused. Its size is
+    bounded — limit-closing bars are 149/13,699 ≈ 1.1% of all execution bars, and
+    2.1% of those are misread, so ≈0.02% of bars overall. The threshold is
+    deliberately NOT recalibrated to remove it: re-fitting a cutoff on a
+    149-observation sample is the post-hoc tuning this project refuses elsewhere,
+    and it is not worth an exception for a 0.02% effect. If that bound is ever
+    revisited, it needs a fresh, larger sample — not this one.
+
+    An "opened but with tiny volume below the limit" bar is a CAPACITY question,
+    not a feasibility one: it belongs to the I5f capacity layer, which sizes the
+    trade against the execution minute's traded ``amount``. This gate answers only
+    whether a fill was possible at all.
+
+    The comparison is RAW-vs-RAW only: the raw 1min execution price (the intraday
+    cache stores unadjusted bars, and a bar VWAP = raw amount / raw volume is raw
+    too) against raw ``stk_limit``; it never reads a qfq / daily close or a
+    daily-close-derived limit flag. A missing/NaN limit row never silently
     counts as a passed check: in strict mode (``require_price_limit_coverage``) a
     missing REQUIRED row fails at construction (before any result); in lenient mode
     it is counted/disclosed and the name falls back to the bar-exists rule (the
@@ -174,6 +226,13 @@ class IntradayTailEventModel:
             fills = []
         self._exec_prices = prices
         self._fills = fills
+        # Cumulative adj_factor at each ANCHOR date, for the return computation
+        # only (see holding_returns). Sourced from the daily panel, which carries
+        # adj_factor as a required core column; restricted to anchors so the map
+        # stays small. NOT a price: reading it leaks no EOD price into the 14:50
+        # decision or the fill, both of which remain minute-only.
+        self._adj = self._index_adj_factors(calendar_panel, anchor_dates)
+        self._missing_adj: set[tuple[pd.Timestamp, str]] = set()
 
         # -- I5b price-limit feasibility state ----------------------------- #
         self._price_limit_check = bool(price_limit_check)
@@ -184,6 +243,13 @@ class IntradayTailEventModel:
         # only when the check is on (off -> the map is never consulted).
         self._limits: dict[tuple[pd.Timestamp, str], tuple[float, float]] = (
             self._index_limits(price_limits) if self._price_limit_check else {}
+        )
+        # The RAW CLOSE of each selected execution bar, keyed by (date, symbol).
+        # NOT the gate's input (the gate compares the executed price); used only to
+        # label OPENED limit minutes for diagnostics. Carried on the fills, so it
+        # is available on the ``precomputed_prices`` path too.
+        self._limit_refs: dict[tuple[pd.Timestamp, str], float] = (
+            self._index_limit_refs(self._fills) if self._price_limit_check else {}
         )
         # entry/rebalance anchor dates (the first element of each pair); the exit
         # date of the final pair is a pure pricing anchor and never a decision, so
@@ -198,6 +264,11 @@ class IntradayTailEventModel:
         self._up_blocked_buys: dict[tuple[pd.Timestamp, str], float] = {}
         self._down_blocked_sells: dict[tuple[pd.Timestamp, str], float] = {}
         self._unchecked_limits: set[tuple[pd.Timestamp, str]] = set()
+        # OPENED limit minutes: the bar closed at a limit but traded through it, so
+        # the VWAP gate lets the fill stand where a close-based gate would block.
+        # Purely diagnostic — recorded so that divergence is reportable, not silent.
+        self._opened_limit_ups: dict[tuple[pd.Timestamp, str], float] = {}
+        self._opened_limit_downs: dict[tuple[pd.Timestamp, str], float] = {}
         if self._price_limit_check and self._require_limit_coverage:
             self._assert_limit_coverage()
 
@@ -221,6 +292,63 @@ class IntradayTailEventModel:
             key = (pd.Timestamp(row["date"]).normalize(), str(row["symbol"]))
             out[key] = (float(up), float(down))
         return out
+
+    @staticmethod
+    def _index_adj_factors(
+        panel: pd.DataFrame, anchor_dates: list
+    ) -> dict[tuple[pd.Timestamp, str], float]:
+        """``{(anchor date, symbol): cumulative adj_factor}`` from the daily panel.
+
+        Only strictly positive, non-NaN factors are indexed; anything else leaves
+        the pair absent so the caller BLOCKS that return rather than assuming 1.0.
+        """
+        if "adj_factor" not in panel.columns or panel.empty or not anchor_dates:
+            return {}
+        wanted = {pd.Timestamp(d).normalize() for d in anchor_dates}
+        dates = panel.index.get_level_values("date")
+        sub = panel.loc[dates.normalize().isin(wanted), "adj_factor"]
+        out: dict[tuple[pd.Timestamp, str], float] = {}
+        for (d, s), v in sub.items():
+            if pd.isna(v):
+                continue
+            f = float(v)
+            if f > 0.0:
+                out[(pd.Timestamp(d).normalize(), str(s))] = f
+        return out
+
+    def _adj_at(self, date: pd.Timestamp, symbol: str) -> float:
+        """Cumulative adj_factor at an anchor, or NaN when unusable/absent."""
+        return self._adj.get(
+            (pd.Timestamp(date).normalize(), str(symbol)), float("nan")
+        )
+
+    @staticmethod
+    def _index_limit_refs(
+        fills: list[ExecutionFill],
+    ) -> dict[tuple[pd.Timestamp, str], float]:
+        """Index the selected execution bars' RAW closes by (date, symbol).
+
+        A fill with no usable raw close (no bar, or a NaN close) contributes no
+        entry, so the gate reports that pair as unchecked rather than passing it.
+        """
+        out: dict[tuple[pd.Timestamp, str], float] = {}
+        for f in fills:
+            ref = f.limit_reference_price
+            if ref is None or pd.isna(ref):
+                continue
+            out[(pd.Timestamp(f.date).normalize(), str(f.symbol))] = float(ref)
+        return out
+
+    def _closed_at(self, key: tuple[pd.Timestamp, str], limit: float) -> bool:
+        """Did the selected bar's RAW CLOSE sit at ``limit``? (diagnostic only.)
+
+        Used solely to label an OPENED limit minute — one that ended at the limit
+        but traded through it. It never affects ``can_buy``/``can_sell``.
+        """
+        ref = self._limit_refs.get(key)
+        if ref is None:
+            return False
+        return abs(ref - float(limit)) <= self._limit_tol
 
     def _required_limit_pairs(self) -> list[tuple[pd.Timestamp, str]]:
         """(entry anchor date, symbol) pairs that need a raw limit row.
@@ -295,20 +423,47 @@ class IntradayTailEventModel:
     def holding_returns(
         self, period: HoldingPeriod, symbols: list[str]
     ) -> pd.Series:
-        """exec-to-exec gross return per symbol over (entry, exit].
+        """exec-to-exec gross return per symbol over (entry, exit], ADJUSTED.
+
+        The execution prices are RAW minute prices (the intraday cache stores
+        unadjusted bars), so a ratio of two of them across an ex-dividend or split
+        date reads the mechanical price drop as a loss. The return is therefore
+        computed on adjusted prices::
+
+            (raw_exit * adj_factor(exit)) / (raw_entry * adj_factor(entry)) - 1
+
+        The per-symbol anchor that ``data/clean/adjust.py`` divides by cancels in
+        this ratio, so no qfq series needs re-deriving and the result is exact and
+        window-invariant — the same property that makes ``front_adjust`` safe for
+        batch == incremental.
 
         A symbol missing an execution price at EITHER anchor is omitted (so the
-        engine's ``settle`` treats it as flat — it earns nothing for the period).
-        Never substitutes a daily close.
+        engine's ``settle`` treats it as flat). A symbol whose ``adj_factor`` is
+        missing, NaN or non-positive at either anchor is ALSO omitted and counted
+        in :meth:`missing_adj_factor_pairs` — never silently treated as 1.0, which
+        would reintroduce the very bias this corrects. Never substitutes a daily
+        close.
+
+        Only the RETURN is adjusted. The I5b price-limit gate stays RAW-vs-RAW
+        (raw execution price against raw ``stk_limit``); adjustment must not leak
+        into it, since exchange limits are quoted on raw prices.
         """
         entry, exit_ = period.entry_date, period.exit_date
         out: dict[str, float] = {}
         for sym in symbols:
             a = self._exec_price(entry, sym)
             b = self._exec_price(exit_, sym)
-            if pd.notna(a) and pd.notna(b) and a != 0.0:
-                out[str(sym)] = b / a - 1.0
-            # else: blocked at an anchor -> omitted -> flat via settle.
+            if not (pd.notna(a) and pd.notna(b) and a != 0.0):
+                continue  # blocked at an anchor -> omitted -> flat via settle.
+            fa = self._adj_at(entry, sym)
+            fb = self._adj_at(exit_, sym)
+            if pd.isna(fa) or pd.isna(fb):
+                # No usable adjustment: the corporate-action-free return cannot be
+                # formed, so the name earns nothing this period and the gap is
+                # disclosed. Assuming 1.0 here is exactly the defect being fixed.
+                self._missing_adj.add((pd.Timestamp(entry).normalize(), str(sym)))
+                continue
+            out[str(sym)] = (b * fb) / (a * fa) - 1.0
         return pd.Series(out, dtype=float)
 
     def feasibility(
@@ -319,11 +474,16 @@ class IntradayTailEventModel:
         Base rule (I5a): tradable in a direction iff a valid execution bar exists
         at the entry anchor; a missing bar blocks both directions BEFORE any limit
         logic. I5b layer (when ``price_limit_check``): a buy is additionally blocked
-        if the selected execution-minute raw close sits at/above the raw upper
-        limit, and a sell if it sits at/below the raw lower limit (raw-vs-raw, with
-        ``limit_tolerance`` as the equality band). Limit-up blocks BUY only;
-        limit-down blocks SELL only — the other direction still executes if the bar
-        exists.
+        if the RAW execution price sits at/above the raw upper limit, and a sell if
+        it sits at/below the raw lower limit (raw-vs-raw, with ``limit_tolerance``
+        as the equality band). Limit-up blocks BUY only; limit-down blocks SELL
+        only — the other direction still executes if the bar exists.
+
+        The gate's input is the price the trade PAYS. A locked minute's VWAP is the
+        limit price (every print is there); an opened minute's VWAP is below it
+        precisely because volume traded below the limit, which is what makes the
+        fill achievable. See the class docstring for the measured separation and
+        for why ``limit_tolerance`` must stay at rounding scale.
         """
         entry = pd.Timestamp(period.entry_date).normalize()
         can_buy: dict[str, bool] = {}
@@ -339,12 +499,20 @@ class IntradayTailEventModel:
                 band = self._limits.get(key)
                 if band is not None:
                     up, down = band
-                    if float(price) >= up - self._limit_tol:
+                    ref = float(price)
+                    if ref >= up - self._limit_tol:
                         buy_ok = False
                         self._up_blocked_buys[key] = up
-                    if float(price) <= down + self._limit_tol:
+                    elif self._closed_at(key, up):
+                        # Opened limit-up: the minute ENDED at the limit but traded
+                        # below it, so the fill stands. Counted so the divergence
+                        # from a close-based gate is auditable, never silent.
+                        self._opened_limit_ups[key] = up
+                    if ref <= down + self._limit_tol:
                         sell_ok = False
                         self._down_blocked_sells[key] = down
+                    elif self._closed_at(key, down):
+                        self._opened_limit_downs[key] = down
                 else:
                     # No usable raw limit row: in lenient mode we must not pretend
                     # the limit was checked. Record it as unchecked and fall back
@@ -383,6 +551,28 @@ class IntradayTailEventModel:
     def missing_limit_rows(self) -> int:
         """Count of evaluated (date, symbol) pairs with no usable raw limit row."""
         return len(self._unchecked_limits)
+
+    def missing_adj_factor_pairs(self) -> int:
+        """(entry anchor, symbol) pairs whose return was dropped for lack of a factor.
+
+        Both execution prices existed, but ``adj_factor`` was missing / NaN /
+        non-positive at an anchor, so no corporate-action-free return could be
+        formed. Disclosed rather than defaulted to 1.0.
+        """
+        return len(self._missing_adj)
+
+    def opened_limit_up_minutes(self) -> int:
+        """Buys ALLOWED at a bar that closed at the up limit but traded below it.
+
+        The exact set where the VWAP gate diverges from a close-based gate: the
+        minute ended locked, yet volume printed under the limit, so the fill was
+        achievable. Reported so the divergence is auditable rather than silent.
+        """
+        return len(self._opened_limit_ups)
+
+    def opened_limit_down_minutes(self) -> int:
+        """Sells ALLOWED at a bar that closed at the down limit but traded above it."""
+        return len(self._opened_limit_downs)
 
     def up_limit_blocked_buy_keys(self) -> set[tuple[pd.Timestamp, str]]:
         """(rebalance date, symbol) keys whose BUY was blocked by a raw up-limit.

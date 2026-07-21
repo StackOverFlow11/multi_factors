@@ -91,6 +91,9 @@ def _intro_lines(result) -> list[str]:
         f"- decision_time `{cfg.intraday.decision_time}` / execution_window "
         f"`[{cfg.intraday.execution_window[0]}, {cfg.intraday.execution_window[1]}]`; "
         "returns are execution-to-execution, NEVER close-to-close",
+        f"- execution_price_basis: `{cfg.intraday.execution_price_basis}` "
+        "(`bar_vwap` = the selected 1min bar's amount/volume, RAW unadjusted; "
+        "`bar_close` = that bar's single closing tick)",
         f"- trading cost: `cost.fee_rate={cfg.cost.fee_rate}`, "
         f"`slippage_rate={cfg.cost.slippage_rate}` (cost line = turnover × fee_rate "
         "inside SimExecution; no extra ad-hoc cost layer)",
