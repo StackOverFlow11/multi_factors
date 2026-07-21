@@ -172,6 +172,22 @@ def test_decreasing_adj_factor_caught():
     assert any(x.check == "decreasing_adj_factor" for x in findings)
 
 
+def test_threshold_is_relative_not_absolute_at_small_factor_scale():
+    # A GENUINE -2.5% relative break on a small factor. An absolute-difference
+    # implementation sees only -0.005, well inside a 0.01 cut, and stays silent --
+    # a false negative. Every other fixture in this module sits at factor ~1-11,
+    # where a relative and an absolute cut happen to agree, so none of them can
+    # tell the two apart.
+    f = check_decreasing_adj_factor(_adj("000001.SZ", [0.200, 0.195]))
+    assert f is not None and f.count == 1
+
+
+def test_threshold_is_relative_not_absolute_at_large_factor_scale():
+    # -0.006% relative: pure rounding on a large factor, must NOT flag. An
+    # absolute-difference implementation sees -0.03 and fires -- a false positive.
+    assert check_decreasing_adj_factor(_adj("600519.SH", [500.0, 499.97])) is None
+
+
 def test_rounding_scale_negative_steps_are_not_flagged():
     # Measured on the real CSI500 cache: ~18% of factor changes are negative and
     # essentially all sit between -0.0008% and -0.08% -- tushare rounding on
