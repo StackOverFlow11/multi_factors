@@ -518,6 +518,11 @@ def test_no_file_anywhere_claims_the_gate_compares_a_close():
     targets += sorted((root / "qt").glob("intraday*.py"))
     targets += [root / "runtime" / "backtest" / "event_models.py",
                 root / "runtime" / "intraday_execution.py"]
+    # The exec-basis modules describe the same execution anchor from the factor
+    # side. They are accurate today; they are listed BEFORE they go stale, which
+    # is the whole lesson of how this guard had to be widened in the first place.
+    targets += sorted((root / "qt").glob("exec_basis*.py"))
+    targets += [root / "qt" / "exec_forward_returns.py"]
 
     hits = []
     for f in targets:
