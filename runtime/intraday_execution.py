@@ -109,7 +109,15 @@ class IntradayExecutionConfig:
 
 @dataclass(frozen=True)
 class ExecutionFill:
-    """One symbol's execution outcome on one rebalance date (immutable)."""
+    """One symbol's execution outcome on one rebalance date (immutable).
+
+    ``exec_price`` is what the trade PAYS (the configured price basis).
+    ``limit_reference_price`` is the selected bar's RAW close, carried separately
+    because "what did I pay" and "was this name limit-locked at that minute" are
+    different questions and must not share an input — see
+    :class:`runtime.backtest.event_models.IntradayTailEventModel` for why. It is
+    ``None`` only when no bar was selected or that bar's close is NaN.
+    """
 
     symbol: str
     date: pd.Timestamp
@@ -117,6 +125,7 @@ class ExecutionFill:
     exec_price: float | None
     blocked: bool
     reason: str | None = None
+    limit_reference_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -193,17 +202,20 @@ def resolve_fill(
         return ExecutionFill(symbol, day, None, None, True, REASON_NO_BAR)
 
     bar = cand.iloc[0]  # next_minute_close: earliest available bar in the window
+    bar_end = pd.Timestamp(bar["bar_end"])
+    # The raw close travels with the fill regardless of the price basis: the
+    # price-limit gate needs the price that is comparable to a limit price, which
+    # a VWAP is not (see IntradayTailEventModel).
+    raw_close = bar_execution_price(bar, PRICE_BASIS_CLOSE)
     price = bar_execution_price(bar, cfg.execution_price_basis)
     if price is None:
         # Same block path/reason as a NaN close has always taken: the bar existed
         # (exec_time is kept) but has no usable price, so the name is untradable
         # this rebalance. No other price is substituted.
         return ExecutionFill(
-            symbol, day, pd.Timestamp(bar["bar_end"]), None, True, REASON_MISSING_PRICE
+            symbol, day, bar_end, None, True, REASON_MISSING_PRICE, raw_close
         )
-    return ExecutionFill(
-        symbol, day, pd.Timestamp(bar["bar_end"]), float(price), False, None
-    )
+    return ExecutionFill(symbol, day, bar_end, float(price), False, None, raw_close)
 
 
 def build_execution_prices(
