@@ -206,6 +206,7 @@ def _cmd_run_phase_i5d_intraday_groups(args: argparse.Namespace) -> int:
 def _cmd_run_eval_jump_amount_corr(args: argparse.Namespace) -> int:
     """Run the two real jump-amount-corr factor evaluations (cache-only) + reports."""
     from qt.eval_jump_amount_corr import run_eval_jump_amount_corr
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_jump_amount_corr(args.config)
@@ -225,12 +226,14 @@ def _cmd_run_eval_jump_amount_corr(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
 def _cmd_run_eval_minute_ideal_amplitude(args: argparse.Namespace) -> int:
     """Run the two real minute-ideal-amplitude factor evaluations (cache-only) + reports."""
     from qt.eval_minute_ideal_amplitude import run_eval_minute_ideal_amplitude
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_minute_ideal_amplitude(args.config)
@@ -250,12 +253,14 @@ def _cmd_run_eval_minute_ideal_amplitude(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
 def _cmd_run_eval_amp_marginal_anomaly_vol(args: argparse.Namespace) -> int:
     """Run the two real amp-marginal-anomaly-vol factor evaluations (cache-only) + reports."""
     from qt.eval_amp_marginal_anomaly_vol import run_eval_amp_marginal_anomaly_vol
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_amp_marginal_anomaly_vol(args.config)
@@ -275,12 +280,14 @@ def _cmd_run_eval_amp_marginal_anomaly_vol(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
 def _cmd_run_eval_volume_peak_count(args: argparse.Namespace) -> int:
     """Run the two real volume-peak-count factor evaluations (cache-only) + reports."""
     from qt.eval_volume_peak_count import run_eval_volume_peak_count
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_volume_peak_count(args.config)
@@ -300,12 +307,14 @@ def _cmd_run_eval_volume_peak_count(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
 def _cmd_run_eval_intraday_amp_cut(args: argparse.Namespace) -> int:
     """Run the two real intraday-amp-cut factor evaluations (cache-only) + reports."""
     from qt.eval_intraday_amp_cut import run_eval_intraday_amp_cut
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_intraday_amp_cut(args.config)
@@ -325,12 +334,14 @@ def _cmd_run_eval_intraday_amp_cut(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
 def _cmd_run_eval_peak_interval_kurtosis(args: argparse.Namespace) -> int:
     """Run the two real peak-interval-kurtosis evaluations (cache-only) + reports."""
     from qt.eval_peak_interval_kurtosis import run_eval_peak_interval_kurtosis
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_peak_interval_kurtosis(args.config)
@@ -350,12 +361,14 @@ def _cmd_run_eval_peak_interval_kurtosis(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
 def _cmd_run_eval_valley_relative_vwap(args: argparse.Namespace) -> int:
     """Run the two real valley-relative-VWAP evaluations (cache-only) + reports."""
     from qt.eval_valley_relative_vwap import run_eval_valley_relative_vwap
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_valley_relative_vwap(args.config)
@@ -375,6 +388,7 @@ def _cmd_run_eval_valley_relative_vwap(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
@@ -398,6 +412,7 @@ def _fmt_metric(value: object, spec: str = ".4f") -> str:
 def _cmd_run_eval_ridge_minute_return(args: argparse.Namespace) -> int:
     """Run the two real ridge-minute-return evaluations (cache-only) + reports."""
     from qt.eval_ridge_minute_return import run_eval_ridge_minute_return
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_ridge_minute_return(args.config)
@@ -433,12 +448,14 @@ def _cmd_run_eval_ridge_minute_return(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
 def _cmd_run_eval_peak_ridge_amount_ratio(args: argparse.Namespace) -> int:
     """Run the two real peak/ridge amount-ratio evaluations (cache-only) + reports."""
     from qt.eval_peak_ridge_amount_ratio import run_eval_peak_ridge_amount_ratio
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_peak_ridge_amount_ratio(args.config)
@@ -477,12 +494,14 @@ def _cmd_run_eval_peak_ridge_amount_ratio(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
 def _cmd_run_eval_valley_price_quantile(args: argparse.Namespace) -> int:
     """Run the two real valley-price-quantile evaluations (cache-only) + reports."""
     from qt.eval_valley_price_quantile import run_eval_valley_price_quantile
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_valley_price_quantile(args.config)
@@ -527,12 +546,14 @@ def _cmd_run_eval_valley_price_quantile(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
 def _cmd_run_eval_valley_ridge_vwap_ratio(args: argparse.Namespace) -> int:
     """Run the two real valley/ridge VWAP-ratio evaluations (cache-only) + reports."""
     from qt.eval_valley_ridge_vwap_ratio import run_eval_valley_ridge_vwap_ratio
+    from qt.exec_basis_eval import format_exec_basis_line
 
     try:
         result = run_eval_valley_ridge_vwap_ratio(args.config)
@@ -555,6 +576,7 @@ def _cmd_run_eval_valley_ridge_vwap_ratio(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
     return 0
 
 
