@@ -61,10 +61,12 @@ from analytics.eval.stats import (
     half_life,
     hypothesis_win_rate,
     information_ratio_ci,
+    mean_by_date_spearman,
     mean_ci,
     newey_west_t,
     sortino,
     spearman,
+    spearman_series_by_date,
 )
 from analytics.factor import ic_summary
 from analytics.performance import performance_summary
@@ -314,6 +316,11 @@ class StandardFactorEvaluator(FactorEvaluator):
         top, bottom = ir.cfg.long_short
         buckets = list(quantiles.columns)
 
+        # The PER-DATE monotonicity series, built ONCE (design §6, v0.9): the
+        # payload's point figure and its CI are then two reductions of the SAME
+        # observations, and the panel is walked once instead of twice.
+        mono_by_date = spearman_series_by_date(quantiles)
+
         bucket_mean = {int(q): as_float(quantiles[q].mean()) for q in buckets}
         bucket_nav = {
             int(q): as_float((1.0 + quantiles[q].dropna()).prod()) for q in buckets
@@ -329,14 +336,17 @@ class StandardFactorEvaluator(FactorEvaluator):
         net_by_cost: dict[float, float] = {}
         cumulative_by_cost: dict[float, float] = {}
         base_net = None
+        base_cost = None
         for multiplier in ir.cfg.cost_scenarios:
-            net = gross - ir.ctx.fee_rate * multiplier * leg_turnover
+            cost = ir.ctx.fee_rate * multiplier * leg_turnover
+            net = gross - cost
             net_by_cost[float(multiplier)] = as_float(net.mean())
             cumulative_by_cost[float(multiplier)] = as_float(
                 (1.0 + net.dropna()).prod() - 1.0
             )
             if abs(multiplier - 1.0) < 1e-9:
                 base_net = net
+                base_cost = cost
 
         payload: dict[str, object] = {
             "long_short_legs": f"Q{top} - Q{bottom}",
@@ -345,21 +355,71 @@ class StandardFactorEvaluator(FactorEvaluator):
             "quantile_periods_with_return": bucket_periods,
             # RAW Spearman of bucket index vs bucket mean return; the verdict is
             # the ONE place that multiplies by expected_ic_sign.
+            #
+            # POOLED (v0.1..v0.7 semantics, DELIBERATELY UNCHANGED): correlates
+            # against cross-date arithmetic means, so it is unbounded and carries
+            # MAGNITUDE structure. Kept as a reported field — historical reports
+            # stay comparable — but as of v0.8 it is NOT what the Predictive axis
+            # gates on, because a rank-based axis must not be decided by a
+            # magnitude-sensitive statistic.
             "monotonicity_spearman": spearman(
                 [float(q) for q in buckets], [bucket_mean[int(q)] for q in buckets]
             ),
+            # PER-DATE version (v0.8, the GATED one): each date's Spearman over the
+            # buckets is capped in [-1, 1] BEFORE averaging across dates, exactly
+            # like the rank IC. Robust to a few extreme-return days concentrating
+            # in one bucket. RAW; the verdict applies expected_ic_sign.
+            #
+            # (v0.9) The POINT is kept — reported, cross-run comparable — but it is
+            # no longer what decides the direction on its own; the CI attached below
+            # is. Identical value to v0.8 by construction (same reduction, same
+            # series).
+            "monotonicity_spearman_by_date": mean_by_date_spearman(mono_by_date),
             "gross_long_short_mean": as_float(gross.mean()),
             "net_long_short_by_cost": net_by_cost,
             "net_long_short_cumulative_by_cost": cumulative_by_cost,
             "fee_rate_base": ir.ctx.fee_rate,
             "periods_per_year": ir.periods_per_year,
         }
+        # N_eff-based CI of the PER-DATE monotonicity (design §6, v0.9) — the same
+        # mean_ci the ICIR uses, on the per-date rank series instead of the IC
+        # series. THIS is what the Predictive axis' direction gate reads: the bare
+        # point carries no dispersion estimate at all, and this project's real runs
+        # put a perfect quantile ladder at only ~0.05-0.11 on it, so "point > 0.0"
+        # was a coin flip dressed as a criterion. The CI turns the gate three-valued
+        # (holds / contradicted / UNKNOWN) — see verdict._monotonicity_direction.
+        mono_ci = mean_ci(mono_by_date, confidence=DEFAULT_CONFIDENCE)
+        payload["monotonicity_spearman_by_date_se"] = mono_ci["se"]
+        payload["monotonicity_spearman_by_date_ci_low"] = mono_ci["ci_low"]
+        payload["monotonicity_spearman_by_date_ci_high"] = mono_ci["ci_high"]
+        payload["monotonicity_spearman_by_date_n_eff"] = mono_ci["n_eff"]
+        payload["monotonicity_spearman_by_date_n_dates"] = int(mono_by_date.size)
+        payload["monotonicity_spearman_by_date_ci_note"] = (
+            "N_eff-based 95% CI of the per-date monotonicity (design §6, v0.9). The "
+            "Predictive axis gates the monotonicity DIRECTION on this interval, not "
+            "on the point: aligned CI entirely above the bar = direction holds; "
+            "entirely below 0 = contradicted (FAIL); straddling 0 = UNKNOWN, which "
+            "neither convicts nor acquits. n_dates counts the dates that qualified "
+            "(< 3 finite buckets or all-tied dates are skipped, not zero-filled)."
+        )
+
         # N_eff-based CI of the base-cost QN-Q1 spread (design §6, v0.6). REPORTED
         # for the reader (b); the Tradable axis still gates on the POINT base spread
         # > 0 (the CI on this leg difference is point-only for now — c names only
         # ICIR / incremental ICIR as the lower-CI magnitude criteria).
-        if base_net is not None:
-            base_ci = mean_ci(sign * base_net, confidence=DEFAULT_CONFIDENCE)
+        # HYPOTHESIS-ALIGNED base-cost spread (v0.8 fix). The hypothesis decides
+        # WHICH LEG IS LONG; cost is a drag in BOTH directions. So flip the legs
+        # first, THEN subtract the cost:
+        #     aligned_net = sign * gross - cost
+        # The pre-v0.8 form `sign * net` expanded, at sign=-1, to `-gross + cost`
+        # — it ADDED the trading cost back as if shorting earned it. At sign=+1
+        # this is bit-identical to the old expression (1 * gross - cost == net).
+        aligned_base = None
+        if base_net is not None and base_cost is not None:
+            aligned_base = sign * gross - base_cost
+
+        if aligned_base is not None:
+            base_ci = mean_ci(aligned_base, confidence=DEFAULT_CONFIDENCE)
             payload["net_long_short_base_se"] = base_ci["se"]
             payload["net_long_short_base_ci_low"] = base_ci["ci_low"]
             payload["net_long_short_base_ci_high"] = base_ci["ci_high"]
@@ -374,8 +434,8 @@ class StandardFactorEvaluator(FactorEvaluator):
                 f"annualization below is a fallback, not a derived fact."
             )
 
-        if base_net is not None and base_net.notna().sum() >= 2:
-            aligned = (sign * base_net).dropna()
+        if aligned_base is not None and aligned_base.notna().sum() >= 2:
+            aligned = aligned_base.dropna()
             nav = (1.0 + aligned).cumprod()
             simple = performance_summary(nav, periods_per_year=ir.periods_per_year)
             payload["aligned_spread_annual_return"] = simple["annual_return"]
