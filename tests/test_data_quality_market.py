@@ -11,6 +11,7 @@ from data.quality.market import (
     check_extreme_returns,
     check_high_low_inversion,
     check_missing_dates,
+    check_decreasing_adj_factor,
     check_negative_volume_amount,
     check_non_positive_ohlc,
     run_adj_factor_checks,
@@ -143,3 +144,62 @@ def test_examples_bounded_to_five():
     f = check_non_positive_ohlc(pd.DataFrame(rows))
     assert f.count == 8
     assert len(f.examples) == 5  # bounded
+
+
+# --- decreasing adj_factor -------------------------------------------------- #
+#
+# A cumulative adjustment factor grows with each corporate action; it has no
+# mechanism to shrink. front_adjust multiplies raw prices by it, so a decrease
+# propagates into every downstream return. Fixtures below use the real defect.
+
+
+def _adj(sym: str, values: list[float]) -> pd.DataFrame:
+    days = pd.date_range("2024-01-03", periods=len(values), freq="D")
+    return pd.DataFrame(
+        {"date": days, "symbol": [sym] * len(values), "adj_factor": values}
+    )
+
+
+def test_decreasing_adj_factor_caught():
+    # The 920627.BJ signature: the factor oscillates between two values, giving
+    # alternating -57.27% / +134.04% steps. Two decreases in this window.
+    f = check_decreasing_adj_factor(_adj("920627.BJ", [2.3387, 1.0, 2.3387, 1.0]))
+    assert f is not None
+    assert f.severity == WARNING
+    assert f.count == 2
+    assert f.check == "decreasing_adj_factor"
+    findings = run_adj_factor_checks(_adj("920627.BJ", [2.3387, 1.0, 2.3387, 1.0]))
+    assert any(x.check == "decreasing_adj_factor" for x in findings)
+
+
+def test_rounding_scale_negative_steps_are_not_flagged():
+    # Measured on the real CSI500 cache: ~18% of factor changes are negative and
+    # essentially all sit between -0.0008% and -0.08% -- tushare rounding on
+    # ex-dates, not corruption. Flagging them would bury the real defect in noise.
+    assert check_decreasing_adj_factor(_adj("000001.SZ", [11.267, 11.2669, 11.2589])) is None
+
+
+def test_monotonic_increasing_adj_factor_is_clean():
+    assert check_decreasing_adj_factor(_adj("000001.SZ", [1.0, 1.05, 1.05, 1.30])) is None
+
+
+def test_decreasing_adj_factor_does_not_bleed_across_symbols():
+    # Two symbols each individually non-decreasing, but whose concatenation steps
+    # DOWN at the boundary. A per-symbol check must see nothing.
+    df = pd.concat([_adj("000001.SZ", [5.0, 6.0]), _adj("000002.SZ", [1.0, 1.2])])
+    assert check_decreasing_adj_factor(df) is None
+
+
+def test_decreasing_adj_factor_sorts_by_date_before_differencing():
+    # Rows arriving out of date order must not manufacture a phantom decrease:
+    # sorted, this series only ever rises.
+    df = _adj("000001.SZ", [1.0, 2.0, 3.0]).iloc[::-1].reset_index(drop=True)
+    assert check_decreasing_adj_factor(df) is None
+
+
+def test_decreasing_adj_factor_reports_but_never_filters():
+    # Report-only: the input frame is not mutated and no rows are dropped.
+    df = _adj("920627.BJ", [2.3387, 1.0])
+    before = df.copy(deep=True)
+    check_decreasing_adj_factor(df)
+    pd.testing.assert_frame_equal(df, before)

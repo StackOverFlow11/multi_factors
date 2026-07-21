@@ -139,6 +139,49 @@ def check_adj_factor(
     )
 
 
+def check_decreasing_adj_factor(
+    df: pd.DataFrame, *, dataset: str = "adj_factor", threshold: float = 0.02
+) -> QualityFinding | None:
+    """``adj_factor`` that FALLS materially from one date to the next, per symbol.
+
+    tushare's cumulative factor grows with each corporate action; it has no
+    mechanism to shrink. A material decrease therefore means the published series
+    is internally inconsistent, and because ``front_adjust`` multiplies raw prices
+    by it, the defect propagates straight into every return computed downstream.
+
+    This exists because a real one slipped through: ``920627.BJ`` oscillates
+    between two factor values, producing alternating -57.27% / +134.04% steps. It
+    was found by hand, after its +134% tail was briefly mistaken for a genuine
+    corporate-action distribution. A frame-level check would have named it
+    immediately. (It is a BSE name and sits in no index universe this project
+    evaluates, so nothing was restated — but that was luck, not detection.)
+
+    ``threshold`` is deliberately not zero: tushare rounds the published factor,
+    so ex-dates routinely carry basis-point negative steps (measured: 18% of
+    CSI500 factor changes are negative, essentially all between -0.0008% and
+    -0.08%). Those are rounding, not corruption, and flagging them would bury the
+    real defect in noise. WARNING, never a filter — this layer only reports.
+    """
+    d = reset_keys(df)
+    if not {"adj_factor", _SYMBOL, _DATE}.issubset(d.columns):
+        return None
+    d = d.sort_values([_SYMBOL, _DATE]).copy()
+    vals = pd.to_numeric(d["adj_factor"], errors="coerce")
+    d["adj_factor_change"] = vals.groupby(d[_SYMBOL]).pct_change().round(6)
+    mask = (d["adj_factor_change"] < -abs(threshold)).fillna(False)
+    if not mask.any():
+        return None
+    examples = row_examples(d, mask, [_SYMBOL, _DATE], extra="adj_factor_change")
+    return make_finding(
+        dataset, "decreasing_adj_factor", WARNING, count=int(mask.sum()),
+        examples=examples,
+        note=(
+            f"adj_factor fell by more than {abs(threshold):.2%} between consecutive "
+            f"dates; a cumulative adjustment factor should not decrease"
+        ),
+    )
+
+
 def check_extreme_returns(
     df: pd.DataFrame, *, dataset: str = "market_daily", threshold: float = 0.5
 ) -> QualityFinding | None:
@@ -230,7 +273,7 @@ def run_market_checks(
 def run_adj_factor_checks(
     df: pd.DataFrame, *, dataset: str = "adj_factor"
 ) -> list[QualityFinding]:
-    """Run the adj_factor frame checks (duplicate keys + positivity)."""
+    """Run the adj_factor frame checks (duplicate keys, positivity, monotonicity)."""
     findings = []
     dup = check_duplicate_keys(df, dataset=dataset)
     if dup is not None:
@@ -238,4 +281,7 @@ def run_adj_factor_checks(
     adj = check_adj_factor(df, dataset=dataset)
     if adj is not None:
         findings.append(adj)
+    dec = check_decreasing_adj_factor(df, dataset=dataset)
+    if dec is not None:
+        findings.append(dec)
     return findings
