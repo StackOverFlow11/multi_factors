@@ -259,8 +259,9 @@ def _load_price_limits(
     Returns ``(limits_df, stk_limit_gap_fetches)``. The limits flow through the
     SAME P4 read-through cache as the daily endpoints (no new endpoint); a
     fully-covered window costs zero gap fetches. The cache stores RAW
-    ``up_limit`` / ``down_limit`` only — the model compares them to the RAW
-    execution-minute close, never qfq / daily close.
+    ``up_limit`` / ``down_limit`` only — the model compares them to the RAW price
+    that EXECUTES at the selected minute (the bar VWAP under the default basis),
+    never qfq / daily close.
     """
     if cfg.intraday is None or not cfg.intraday.price_limit_check:
         return None, 0
@@ -959,12 +960,14 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
     lines.append("")
     if result.price_limit_check:
         lines.append(
-            "- **Execution-time feasibility (I5b)**: a missing/NaN execution bar "
-            "blocks BOTH directions; on top of that, raw `stk_limit` blocks buys at "
-            "the upper limit and sells at the lower limit, comparing the raw "
-            "execution-minute close to raw limits (see the section above). Remaining "
-            "gap: only the price-limit and bar-existence constraints are modeled; "
-            "partial-fill / liquidity / volume caps at the execution minute are not."
+            f"- **Execution-time feasibility (I5b)**: a missing/NaN execution bar "
+            f"blocks BOTH directions; on top of that, raw `stk_limit` blocks buys at "
+            f"the upper limit and sells at the lower limit, comparing the price that "
+            f"actually EXECUTES — the selected execution minute on the "
+            f"`{ec.execution_price_basis}` basis — to raw limits (see the section "
+            f"above). Remaining gap: only the price-limit and bar-existence "
+            f"constraints are modeled; partial-fill / liquidity / volume caps at the "
+            f"execution minute are not."
         )
     else:
         lines.append(

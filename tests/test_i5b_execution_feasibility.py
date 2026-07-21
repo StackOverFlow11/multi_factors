@@ -474,3 +474,46 @@ def test_group_report_feasibility_prose_names_the_active_execution_basis():
     assert "opened limit-up" in text
     assert "| 3 | 1 | 4 |" in text
     assert "adj_factor" in text
+
+
+def test_no_module_repeats_the_pre_pr75_close_based_limit_claim():
+    """Guard the DEFECT CLASS, not just the two places already fixed.
+
+    The gate input moved from the bar close to the executed price in PR #75. The
+    first correction pass fixed the prose in the two obvious spots and MISSED a
+    third copy in `_write_report`'s "Limitations" section, so a run would have
+    emitted two contradictory descriptions of the same check in one document.
+
+    Review found it, and found why the other tests could not: none of them render
+    `_write_report` at all, so that location was structurally unreachable. The
+    honest fix for a claim that gets restated in prose in N places is to assert no
+    (N+1)th copy exists, rather than to enumerate the ones we happen to know.
+    """
+    import re
+    from pathlib import Path
+
+    import qt.intraday_group_report as gr
+    import qt.intraday_tail_framework as tf
+
+    # Phrasings that assert the LIMIT COMPARISON reads a close. "bar_close" the
+    # basis name and "that bar's single closing tick" the basis description are
+    # both legitimate and deliberately not matched.
+    forbidden = re.compile(
+        r"execution-minute\s+(\*\*raw\*\*\s+)?(1min\s+)?close"
+        r"|1min\s+close\s+to\s+the\s+raw"
+        r"|raw\s+execution-minute\s+close",
+        re.IGNORECASE,
+    )
+    for mod in (tf, gr):
+        src = Path(mod.__file__).read_text()
+        hits = [
+            f"line {i}: {ln.strip()}"
+            for i, ln in enumerate(src.splitlines(), 1)
+            if forbidden.search(ln)
+        ]
+        assert not hits, (
+            f"{Path(mod.__file__).name} still claims the price-limit gate compares "
+            f"a CLOSE. The gate reads the price that executes (the bar VWAP under "
+            f"the default basis). Derive the wording from execution_price_basis "
+            f"instead of restating it:\n  " + "\n  ".join(hits)
+        )
