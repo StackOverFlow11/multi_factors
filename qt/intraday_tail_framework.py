@@ -140,6 +140,16 @@ class I5aResult:
     up_limit_blocked_buys: int
     down_limit_blocked_sells: int
     missing_limit_rows: int
+    # Where the VWAP gate diverges from a close-based one: the minute CLOSED at a
+    # limit but traded through it, so the fill stands. Reported because it is the
+    # only place the two gates disagree, and a silent divergence in what does or
+    # does not trade is exactly what this layer exists to prevent.
+    opened_limit_up_minutes: int
+    opened_limit_down_minutes: int
+    # Holding-period returns dropped for want of a usable adj_factor at an anchor.
+    # Never defaulted to 1.0 (that would reintroduce the ex-date bias), so a
+    # non-zero count is a coverage fact the reader must see.
+    missing_adj_factor_pairs: int
     # I5c MMP factor diagnostics (report-only). Empty/None unless score is mmp_ew.
     score_coverage: dict[str, int]              # {rows, valid, nan} over the daily score panel
     minute_count_summary: dict[str, float] | None  # valid-MMP-minutes-per-(date,symbol) distribution
@@ -249,8 +259,9 @@ def _load_price_limits(
     Returns ``(limits_df, stk_limit_gap_fetches)``. The limits flow through the
     SAME P4 read-through cache as the daily endpoints (no new endpoint); a
     fully-covered window costs zero gap fetches. The cache stores RAW
-    ``up_limit`` / ``down_limit`` only — the model compares them to the RAW
-    execution-minute close, never qfq / daily close.
+    ``up_limit`` / ``down_limit`` only — the model compares them to the RAW price
+    that EXECUTES at the selected minute (the bar VWAP under the default basis),
+    never qfq / daily close.
     """
     if cfg.intraday is None or not cfg.intraday.price_limit_check:
         return None, 0
@@ -523,6 +534,9 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
         up_limit_blocked_buys=model.up_limit_blocked_buys(),
         down_limit_blocked_sells=model.down_limit_blocked_sells(),
         missing_limit_rows=model.missing_limit_rows(),
+        opened_limit_up_minutes=model.opened_limit_up_minutes(),
+        opened_limit_down_minutes=model.opened_limit_down_minutes(),
+        missing_adj_factor_pairs=model.missing_adj_factor_pairs(),
         score_coverage=score_coverage,
         minute_count_summary=minute_count_summary,
         factor_diagnostics=tuple(factor_diag),
@@ -709,6 +723,31 @@ def _append_liquidity_section(lines: list[str], result: I5aResult) -> None:
     lines.append("")
 
 
+def limit_basis_lines(execution_price_basis: str) -> list[str]:
+    """Report prose stating what the I5b price-limit gate ACTUALLY compares.
+
+    Extracted so it is testable. The gate reads the price that EXECUTES — which
+    since PR #75 is the bar VWAP by default, not the bar close — and an earlier
+    revision of this text kept claiming "the raw 1min close" after the gate input
+    had changed. A report that misstates the check it performed is worse than no
+    report, so the wording is derived from the active basis and pinned by test.
+    """
+    return [
+        f"- **comparison basis**: the price that actually EXECUTES — the selected "
+        f"execution minute on the `{execution_price_basis}` basis — vs the "
+        f"symbol/date **raw** `stk_limit` band. NOT qfq, NOT the daily close, NOT "
+        f"a daily-close-derived limit flag. (The intraday cache stores unadjusted "
+        f"bars and `stk_limit` is raw, and a bar VWAP is raw amount over raw "
+        f"volume, so the comparison is RAW-vs-RAW either way.)",
+        "- **why the executed price and not the bar close**: a limit-up minute has "
+        "two shapes. LOCKED (封死涨停) — every print is at the limit, so the VWAP "
+        "equals it up to rounding and the buy must be blocked. OPENED (盘中打开) — "
+        "some prints landed below the limit, which is direct evidence a fill was "
+        "achievable, so the buy must go through. The executed price separates "
+        "them; the bar close misclassifies both edges.",
+    ]
+
+
 def _write_report(result: I5aResult, *, elapsed: float) -> None:
     """Write the I5a architecture-smoke markdown report (auditable event basis)."""
     cfg = result.config
@@ -750,6 +789,18 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
                  "return of a period = exec_price(next) / exec_price(this) - 1, priced "
                  "at the first valid 1min bar in the execution window on the "
                  f"`{ec.execution_price_basis}` basis.")
+    lines.append("")
+    lines.append(
+        "**Returns are corporate-action adjusted.** The cached minute bars are raw, "
+        "so a holding period spanning an ex-dividend or split date would otherwise "
+        "book the mechanical price drop as a loss. The return divides it out as "
+        "`(raw_exit * adj_factor(exit)) / (raw_entry * adj_factor(entry)) - 1`; the "
+        "per-symbol anchor cancels in the ratio, so nothing is re-derived. Fills "
+        "still PAY the raw execution price and the price-limit gate stays raw — only "
+        "the measured return is adjusted. Periods dropped for want of a usable "
+        f"adj_factor at an anchor: {result.missing_adj_factor_pairs} "
+        "(never defaulted to 1.0, which would reintroduce the bias)."
+    )
     lines.append("")
     _append_factor_section(lines, result)
     lines.append("## Minute-cache coverage & data provenance")
@@ -852,13 +903,7 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
             "- **enabled** (`intraday.price_limit_check=true`): a buy is blocked at "
             "the raw upper limit and a sell at the raw lower limit, directionally."
         )
-        lines.append(
-            "- **comparison basis**: the selected execution-minute **raw** 1min "
-            "close vs the symbol/date **raw** `stk_limit` band — NOT qfq, NOT daily "
-            "close, NOT a daily-close-derived limit flag. (The intraday cache stores "
-            "unadjusted bars and `stk_limit` is raw, so the comparison is "
-            "RAW-vs-RAW.)"
-        )
+        lines.extend(limit_basis_lines(ec.execution_price_basis))
         lines.append(
             f"- limit tolerance (raw-price equality band): "
             f"`{cfg.intraday.limit_tolerance}`; "
@@ -879,6 +924,13 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
         lines.append(
             f"- buys blocked by a raw up-limit: {result.up_limit_blocked_buys}; "
             f"sells blocked by a raw down-limit: {result.down_limit_blocked_sells}"
+        )
+        lines.append(
+            f"- minutes that CLOSED at a limit but traded through it, so the fill "
+            f"was allowed: {result.opened_limit_up_minutes} up / "
+            f"{result.opened_limit_down_minutes} down. This is the entire set on "
+            f"which this gate and a close-based gate disagree; a close-based gate "
+            f"would have blocked these."
         )
         lines.append(
             f"- evaluated pairs with no usable raw limit row (unchecked): "
@@ -908,12 +960,14 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
     lines.append("")
     if result.price_limit_check:
         lines.append(
-            "- **Execution-time feasibility (I5b)**: a missing/NaN execution bar "
-            "blocks BOTH directions; on top of that, raw `stk_limit` blocks buys at "
-            "the upper limit and sells at the lower limit, comparing the raw "
-            "execution-minute close to raw limits (see the section above). Remaining "
-            "gap: only the price-limit and bar-existence constraints are modeled; "
-            "partial-fill / liquidity / volume caps at the execution minute are not."
+            f"- **Execution-time feasibility (I5b)**: a missing/NaN execution bar "
+            f"blocks BOTH directions; on top of that, raw `stk_limit` blocks buys at "
+            f"the upper limit and sells at the lower limit, comparing the price that "
+            f"actually EXECUTES — the selected execution minute on the "
+            f"`{ec.execution_price_basis}` basis — to raw limits (see the section "
+            f"above). Remaining gap: only the price-limit and bar-existence "
+            f"constraints are modeled; partial-fill / liquidity / volume caps at the "
+            f"execution minute are not."
         )
     else:
         lines.append(

@@ -331,7 +331,10 @@ def _toy_group(group: int, finals: list[float]) -> GroupRunResult:
         holdings_log=pd.DataFrame(columns=["date", "symbol", "weight", "rank"]),
         metrics=_group_metrics(nav, pd.DataFrame()),
         up_limit_blocked_buys=0, down_limit_blocked_sells=0,
-        missing_limit_rows=0, blocked_fill_reasons={},
+        missing_limit_rows=0,
+        opened_limit_up_minutes=0, opened_limit_down_minutes=0,
+        missing_adj_factor_pairs=0,
+        blocked_fill_reasons={},
     )
 
 

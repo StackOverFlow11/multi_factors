@@ -15,9 +15,13 @@
 # read-through cache as the daily endpoints. SSE50 (000016.SH) over the same short,
 # recent window as I5b matches the available minute-cache coverage.
 #
-# portfolio_notional is an ILLUSTRATIVE diagnostic sizing (10,000,000 RMB), not a
-# performance or tradability claim. No new factors, no tuning. The report writes to
-# its own name so it never overwrites the accepted I5a/I5b artifacts.
+# portfolio_notional is 1,000,000 RMB: the operator's stated total capital ceiling.
+# It supersedes the original 10,000,000 sizing, which was illustrative and an order
+# of magnitude above any book this project will actually run -- so its "about half
+# of single-minute desired trades exceed capacity" finding described a portfolio
+# that does not exist. This is still a diagnostic sizing, not a performance or
+# tradability claim. No new factors, no tuning. The report writes to its own name so
+# it never overwrites the accepted I5a/I5b artifacts.
 
 project:
   name: quantitative_trading_phase_i5f_intraday_liquidity_diagnostics
@@ -103,7 +107,7 @@ intraday:
   # I5f: opt-in, report-only execution liquidity diagnostics.
   liquidity_diagnostics:
     enabled: true
-    portfolio_notional: 10000000
+    portfolio_notional: 1000000
     max_participation_rate: 0.05
     mode: report_only
 cost:

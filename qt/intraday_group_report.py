@@ -94,6 +94,12 @@ def _intro_lines(result) -> list[str]:
         f"- execution_price_basis: `{cfg.intraday.execution_price_basis}` "
         "(`bar_vwap` = the selected 1min bar's amount/volume, RAW unadjusted; "
         "`bar_close` = that bar's single closing tick)",
+        "- holding returns are **corporate-action adjusted**: the cached minute bars "
+        "are raw, so `(raw_exit * adj_factor(exit)) / (raw_entry * adj_factor(entry)) "
+        "- 1` divides out ex-dividend / split drops that would otherwise book as "
+        "losses. Fills still PAY the raw price and the limit gate stays raw — only "
+        "the measured return is adjusted (per-group drop counts in the feasibility "
+        "table below)",
         f"- trading cost: `cost.fee_rate={cfg.cost.fee_rate}`, "
         f"`slippage_rate={cfg.cost.slippage_rate}` (cost line = turnover × fee_rate "
         "inside SimExecution; no extra ad-hoc cost layer)",
@@ -178,9 +184,14 @@ def _feasibility_lines(result) -> list[str]:
     cov = result.limit_coverage
     lines.extend([
         "- **enabled** (`intraday.price_limit_check=true`): a buy is blocked at the "
-        "raw upper limit and a sell at the raw lower limit, comparing the selected "
-        "execution-minute **raw** 1min close to the raw `stk_limit` band "
-        "(RAW-vs-RAW; never qfq / daily close / a daily-close-derived flag).",
+        "raw upper limit and a sell at the raw lower limit, comparing the price "
+        f"that actually EXECUTES — the selected execution minute on the "
+        f"`{cfg.intraday.execution_price_basis}` basis — to the raw `stk_limit` "
+        "band (RAW-vs-RAW; never qfq / daily close / a daily-close-derived flag).",
+        "- a limit-up minute is LOCKED (every print at the limit, VWAP equals it up "
+        "to rounding, buy blocked) or OPENED (prints landed below it, which is "
+        "evidence a fill was achievable, buy allowed). The executed price separates "
+        "the two; the bar close misclassifies both edges.",
         f"- limit tolerance: `{cfg.intraday.limit_tolerance}`; "
         f"require_price_limit_coverage: `{cfg.intraday.require_price_limit_coverage}`",
         f"- limit coverage over rebalance anchors (shared across groups): required "
@@ -192,14 +203,26 @@ def _feasibility_lines(result) -> list[str]:
         "Per-group blocked buy/sell counts (a fresh model per group, so counts do "
         "NOT double-count across groups):",
         "",
-        "| group | up-limit blocked buys | down-limit blocked sells | unchecked limit rows |",
-        "|---|---|---|---|",
+        "| group | up-limit blocked buys | down-limit blocked sells | unchecked limit rows "
+        "| opened limit-up (allowed) | opened limit-down (allowed) | returns dropped: no adj_factor |",
+        "|---|---|---|---|---|---|---|",
     ])
     for g in result.groups:
         lines.append(
             f"| Q{g.group} | {g.up_limit_blocked_buys} | "
-            f"{g.down_limit_blocked_sells} | {g.missing_limit_rows} |"
+            f"{g.down_limit_blocked_sells} | {g.missing_limit_rows} | "
+            f"{g.opened_limit_up_minutes} | {g.opened_limit_down_minutes} | "
+            f"{g.missing_adj_factor_pairs} |"
         )
+    lines.append("")
+    lines.append(
+        "The two `opened limit-*` columns are the entire set on which this gate and "
+        "a close-based gate disagree: the minute CLOSED at a limit but traded "
+        "through it, so the fill stands and a close-based gate would have blocked "
+        "it. `returns dropped: no adj_factor` counts holding periods excluded "
+        "because a usable adj_factor was missing at an anchor — never defaulted to "
+        "1.0, which would reintroduce the ex-date bias the adjustment removes."
+    )
     lines.append("")
     return lines
 
