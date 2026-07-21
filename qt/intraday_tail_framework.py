@@ -978,7 +978,7 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
             f"- **Execution-time feasibility (I5b)**: a missing/NaN execution bar "
             f"blocks BOTH directions; on top of that, raw `stk_limit` blocks buys at "
             f"the upper limit and sells at the lower limit, comparing "
-            f"{limit_basis_phrase(ec.execution_price_basis)} to raw limits (see the "
+            f"{limit_basis_phrase(ec.execution_price_basis)} — to raw limits (see the "
             f"section above). Remaining gap: only the price-limit and bar-existence "
             f"constraints are modeled; partial-fill / liquidity / volume caps at the "
             f"execution minute are not."

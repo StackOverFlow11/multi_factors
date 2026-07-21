@@ -577,3 +577,46 @@ def test_every_gate_description_composes_the_single_phrase():
         "the Limitations bullet must COMPOSE limit_basis_phrase, not restate the "
         "comparison in its own words"
     )
+
+
+def test_composed_gate_sentences_are_grammatical_in_every_context():
+    """The phrase is an appositive: every host sentence must close its em-dash.
+
+    Composing one fragment into several sentences trades three ways to state a
+    fact wrong for one way to punctuate it wrong. The first version of this
+    refactor did exactly that -- it dropped the CLOSING em-dash in two of the
+    three hosts, leaving "...on the `bar_vwap` basis to the raw stk_limit band"
+    with an unclosed dash. Rendered output was NOT byte-identical to the previous
+    release, contrary to what the change claimed, and a rendering probe caught it.
+
+    So: wherever the phrase is embedded mid-sentence, the em-dash that opens the
+    appositive inside it must be matched by one after it.
+    """
+    from types import SimpleNamespace
+
+    from qt.intraday_group_report import _feasibility_lines
+    from qt.intraday_tail_framework import limit_basis_phrase
+
+    cfg = load_config(str(_I5B_CONFIG))
+    phrase = limit_basis_phrase(cfg.intraday.execution_price_basis)
+    assert "—" in phrase, "the phrase itself opens an appositive with an em-dash"
+
+    result = SimpleNamespace(
+        config=cfg, price_limit_check=True,
+        limit_coverage={"required": 1, "present": 1, "missing": 0},
+        stk_limit_gap_fetches=0,
+        groups=(SimpleNamespace(
+            group=1, up_limit_blocked_buys=0, down_limit_blocked_sells=0,
+            missing_limit_rows=0, opened_limit_up_minutes=0,
+            opened_limit_down_minutes=0, missing_adj_factor_pairs=0),),
+    )
+    for line in _feasibility_lines(result):
+        if phrase in line:
+            tail = line.split(phrase, 1)[1]
+            assert tail.lstrip().startswith("—"), (
+                f"the phrase is embedded mid-sentence but its appositive is never "
+                f"closed; the text reads '...{phrase[-30:]}{tail[:40]}'"
+            )
+            break
+    else:
+        raise AssertionError("the group report no longer composes the phrase at all")

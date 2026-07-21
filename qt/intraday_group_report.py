@@ -186,7 +186,7 @@ def _feasibility_lines(result) -> list[str]:
     lines.extend([
         "- **enabled** (`intraday.price_limit_check=true`): a buy is blocked at the "
         "raw upper limit and a sell at the raw lower limit, comparing "
-        f"{limit_basis_phrase(cfg.intraday.execution_price_basis)} to the raw "
+        f"{limit_basis_phrase(cfg.intraday.execution_price_basis)} — to the raw "
         "`stk_limit` band (RAW-vs-RAW; never qfq / daily close / a "
         "daily-close-derived flag).",
         "- a limit-up minute is LOCKED (every print at the limit, VWAP equals it up "
