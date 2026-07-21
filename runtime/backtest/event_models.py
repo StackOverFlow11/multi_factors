@@ -110,9 +110,11 @@ class IntradayTailEventModel:
 
     The rebalance schedule is the same monthly calendar as the daily model, but
     each period's decision is timestamped at ``decision_time`` and its execution
-    at the start of the execution window. Per-symbol entry/exit prices are the
-    earliest valid 1min close in the execution window (``next_minute_close``);
-    holding returns are ``exec_price(exit) / exec_price(entry) - 1``.
+    at the start of the execution window. Per-symbol entry/exit prices come from
+    the earliest valid 1min bar in the execution window (``next_minute_close``),
+    priced on the config's ``execution_price_basis`` (default that bar's VWAP =
+    ``amount / volume``); holding returns are
+    ``exec_price(exit) / exec_price(entry) - 1``.
 
     Base (I5a) feasibility rule: a symbol can be traded at the rebalance ONLY if
     it has a valid (non-NaN) execution bar at the entry anchor; a missing/NaN
@@ -120,12 +122,13 @@ class IntradayTailEventModel:
     is blocked by this rule.
 
     I5b adds OPT-IN execution-time price-limit feasibility (``price_limit_check``):
-    on top of the bar-exists rule, the selected execution-minute RAW close is
+    on top of the bar-exists rule, the selected execution-minute RAW fill price is
     compared to that symbol/date's raw ``stk_limit`` band — a buy is blocked at the
     upper limit, a sell is blocked at the lower limit, directionally. The
-    comparison is RAW-vs-RAW only: the raw 1min close (the intraday cache stores
-    unadjusted bars) against raw ``stk_limit``; it never reads a qfq / daily close
-    or a daily-close-derived limit flag. A missing/NaN limit row never silently
+    comparison is RAW-vs-RAW only: the raw 1min execution price (the intraday cache
+    stores unadjusted bars, and a bar VWAP = raw amount / raw volume is raw too)
+    against raw ``stk_limit``; it never reads a qfq / daily close or a
+    daily-close-derived limit flag. A missing/NaN limit row never silently
     counts as a passed check: in strict mode (``require_price_limit_coverage``) a
     missing REQUIRED row fails at construction (before any result); in lenient mode
     it is counted/disclosed and the name falls back to the bar-exists rule (the
@@ -319,7 +322,7 @@ class IntradayTailEventModel:
         Base rule (I5a): tradable in a direction iff a valid execution bar exists
         at the entry anchor; a missing bar blocks both directions BEFORE any limit
         logic. I5b layer (when ``price_limit_check``): a buy is additionally blocked
-        if the selected execution-minute raw close sits at/above the raw upper
+        if the selected execution-minute raw fill price sits at/above the raw upper
         limit, and a sell if it sits at/below the raw lower limit (raw-vs-raw, with
         ``limit_tolerance`` as the equality band). Limit-up blocks BUY only;
         limit-down blocks SELL only — the other direction still executes if the bar

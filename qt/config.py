@@ -318,6 +318,15 @@ class IntradayCfg(_Strict):
     session_open: str = "09:30:00"
     execution_model: str = "next_minute_close"
     execution_window: tuple[str, str] = ("14:51:00", "14:56:59")
+    # WHICH bar fills is ``execution_model``; WHAT price it fills at is this.
+    # Default ``bar_vwap`` = that bar's amount/volume, the volume-weighted mean of
+    # every trade in the execution minute — the honest proxy for an order worked
+    # across the minute, and not movable by a single small print. ``bar_close``
+    # (that minute's last tick) is kept only to reproduce the pre-VWAP ledger
+    # bit-for-bit. Both are RAW unadjusted prices. A bar whose basis price is
+    # undefined (NaN close; non-positive/non-finite volume or amount) is an
+    # explicit block, never a fallback to another price.
+    execution_price_basis: Literal["bar_vwap", "bar_close"] = "bar_vwap"
     require_cache_coverage: bool = True
     missing_execution: Literal["block"] = "block"
     # I5c: which PIT-safe daily intraday feature the tail-rebalance score uses.

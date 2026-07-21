@@ -1,4 +1,11 @@
-"""Intraday tail-rebalance execution tests (I4): cutoff vs exec, exec-to-exec."""
+"""Intraday tail-rebalance execution tests (I4): cutoff vs exec, exec-to-exec.
+
+These are the PRE-VWAP regression locks: every case here pins
+``execution_price_basis="bar_close"`` and must keep asserting exactly the values
+it asserted before the VWAP basis landed (the ``_norm`` fixture deliberately
+gives ``amount/volume != close``, so a basis mix-up cannot pass silently). The
+default ``bar_vwap`` basis is covered in ``test_exec_vwap_basis.py``.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +24,11 @@ from runtime.intraday_execution import (
     resolve_fill,
     simulate_tail_rebalance,
 )
+
+
+# The pre-VWAP price basis, pinned explicitly so these locks keep asserting the
+# original values no matter what the default becomes.
+_CLOSE_BASIS = IntradayExecutionConfig(execution_price_basis="bar_close")
 
 
 def _norm(rows, data_lag="1min"):
@@ -70,7 +82,7 @@ def test_signal_cutoff_and_execution_timestamp_are_separate():
     bars = _norm(rows)
     fill = resolve_fill(
         "000001.SZ", pd.Timestamp("2024-01-02"),
-        _day(bars, "000001.SZ"), IntradayExecutionConfig(),
+        _day(bars, "000001.SZ"), _CLOSE_BASIS,
     )
     # execution INTENTIONALLY uses the 14:51 bar, which is AFTER the 14:50 cutoff
     assert not fill.blocked
@@ -98,7 +110,7 @@ def test_next_minute_close_uses_1451_bar():
     ]
     fill = resolve_fill(
         "000001.SZ", pd.Timestamp("2024-01-02"),
-        _day(_norm(rows), "000001.SZ"), IntradayExecutionConfig(),
+        _day(_norm(rows), "000001.SZ"), _CLOSE_BASIS,
     )
     assert fill.exec_time == pd.Timestamp("2024-01-02 14:51:00")
     assert fill.exec_price == 10.0
@@ -111,7 +123,7 @@ def test_missing_1451_uses_first_bar_in_window():
     ]
     fill = resolve_fill(
         "000001.SZ", pd.Timestamp("2024-01-02"),
-        _day(_norm(rows), "000001.SZ"), IntradayExecutionConfig(),
+        _day(_norm(rows), "000001.SZ"), _CLOSE_BASIS,
     )
     assert fill.exec_time == pd.Timestamp("2024-01-02 14:53:00")  # first in window
     assert fill.exec_price == 11.0
@@ -121,7 +133,7 @@ def test_no_bar_in_window_is_blocked():
     rows = [("2024-01-02 14:00:00", "000001.SZ", 10.0)]  # nothing in 14:51-14:56:59
     fill = resolve_fill(
         "000001.SZ", pd.Timestamp("2024-01-02"),
-        _day(_norm(rows), "000001.SZ"), IntradayExecutionConfig(),
+        _day(_norm(rows), "000001.SZ"), _CLOSE_BASIS,
     )
     assert fill.blocked
     assert fill.reason == REASON_NO_BAR
@@ -132,7 +144,7 @@ def test_nan_price_is_blocked_missing_price():
     rows = [("2024-01-02 14:51:00", "000001.SZ", np.nan)]
     fill = resolve_fill(
         "000001.SZ", pd.Timestamp("2024-01-02"),
-        _day(_norm(rows), "000001.SZ"), IntradayExecutionConfig(),
+        _day(_norm(rows), "000001.SZ"), _CLOSE_BASIS,
     )
     assert fill.blocked
     assert fill.reason == REASON_MISSING_PRICE
@@ -156,7 +168,7 @@ def test_holding_return_is_execution_to_execution_not_close():
         pd.Timestamp("2024-01-02"): pd.Series({"000001.SZ": 1.0}),
         pd.Timestamp("2024-01-03"): pd.Series({"000001.SZ": 1.0}),
     }
-    res = simulate_tail_rebalance(weights, bars)
+    res = simulate_tail_rebalance(weights, bars, _CLOSE_BASIS)
     entry = pd.Timestamp("2024-01-02")
     exec_to_exec = 12.0 / 10.0 - 1.0          # 0.20
     close_to_close = 11.0 / 10.5 - 1.0         # ~0.0476
@@ -184,7 +196,7 @@ def test_blocked_symbol_excluded_and_logged():
         pd.Timestamp("2024-01-02"): pd.Series({"000001.SZ": 0.5, "000002.SZ": 0.5}),
         pd.Timestamp("2024-01-03"): pd.Series({"000001.SZ": 1.0}),
     }
-    res = simulate_tail_rebalance(weights, bars)
+    res = simulate_tail_rebalance(weights, bars, _CLOSE_BASIS)
     entry = pd.Timestamp("2024-01-02")
     # only A contributes: 0.5 * 0.10 ; B excluded (its weight earns nothing)
     assert res.period_returns[entry] == pytest.approx(0.5 * 0.10)
@@ -200,7 +212,7 @@ def test_build_execution_prices_matrix_and_log():
     bars = _norm(rows)
     prices, fills = build_execution_prices(
         bars, [pd.Timestamp("2024-01-02")], ["000001.SZ", "000002.SZ"],
-        IntradayExecutionConfig(),
+        _CLOSE_BASIS,
     )
     assert prices.loc[pd.Timestamp("2024-01-02"), "000001.SZ"] == 10.0
     assert pd.isna(prices.loc[pd.Timestamp("2024-01-02"), "000002.SZ"])

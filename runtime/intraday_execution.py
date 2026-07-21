@@ -7,8 +7,11 @@ close(T)->close(T+1) (``runtime/backtest`` + ``settle(holding_returns)``). A
     signal cutoff       T 14:50:00  — the decision may use only bars with
                                        available_time <= cutoff (I3's job).
     execution timestamp T 14:51:00  — the trade fills at the NEXT minute bar
-                                       (``next_minute_close``), i.e. on data that
-                                       is INTENTIONALLY after the signal cutoff.
+                                       (``next_minute_close`` selects WHICH bar),
+                                       i.e. on data that is INTENTIONALLY after
+                                       the signal cutoff. WHAT price that bar
+                                       fills at is the separate
+                                       ``execution_price_basis`` decision below.
     holding period      exec(T) -> exec(T_next)  — return is measured from this
                                        rebalance's execution price to the next
                                        rebalance's execution price, NEVER
@@ -18,8 +21,9 @@ This module is a runtime/execution skeleton: pure functions + small frozen
 dataclasses turning (target weights per rebalance date, 1min bars, exec config)
 into execution prices, execution-to-execution holding returns, and an explainable
 blocked log. It does NOT touch factors/alpha math, the daily backtest, or the
-config models; a missing minute bar / NaN price / no bar in the execution window
-produces a BLOCKED record — never a silent daily-close fallback. Daily EOD data
+config models; a missing minute bar / no bar in the execution window / a bar
+whose configured price basis is undefined produces a BLOCKED record — never a
+silent fallback to another price (bar close or daily close). Daily EOD data
 (``daily_basic`` etc.) is by construction not consulted here: only intraday bars
 are read, so T-day EOD values cannot leak into a 14:50 decision/execution.
 """
@@ -39,6 +43,21 @@ from data.clean.intraday_schema import validate_intraday_bars
 SUPPORTED_EXECUTION_MODELS: tuple[str, ...] = ("next_minute_close",)
 _FUTURE_EXECUTION_MODELS: tuple[str, ...] = ("tail_vwap", "closing_call_proxy")
 
+# WHICH bar is selected (``execution_model``) and WHAT price that bar fills at
+# (``execution_price_basis``) are separate decisions.
+#   bar_vwap  — the selected bar's ``amount / volume``: the volume-weighted mean
+#               of EVERY trade printed in that minute, i.e. the honest proxy for
+#               an order worked across the minute, and hard to move with a single
+#               small print. This is the DEFAULT.
+#   bar_close — the selected bar's close: a single tick (that minute's last
+#               print). Kept only to reproduce the pre-VWAP ledger bit-for-bit.
+# Both are RAW unadjusted prices: the intraday cache stores raw bars, and
+# ``amount``/``volume`` are raw traded value / shares, so their ratio is raw too.
+# No adjustment factor is applied here or downstream of here.
+PRICE_BASIS_VWAP = "bar_vwap"
+PRICE_BASIS_CLOSE = "bar_close"
+SUPPORTED_PRICE_BASES: tuple[str, ...] = (PRICE_BASIS_VWAP, PRICE_BASIS_CLOSE)
+
 # blocked reasons (explainable; never a silent daily-close substitution).
 REASON_NO_BAR = "no_execution_bar"
 REASON_MISSING_PRICE = "missing_price"
@@ -52,15 +71,22 @@ class IntradayExecutionConfig:
     feature-availability lag consumed by the I3 cutoff (``available_time =
     bar_end + data_lag``); it is NOT re-applied to execution pricing. Execution
     fills at the earliest 1min bar whose ``bar_end`` falls in
-    ``[execution_window_start, execution_window_end]`` (default 14:51–14:56:59).
+    ``[execution_window_start, execution_window_end]`` (default 14:51–14:56:59),
+    at that bar's ``execution_price_basis`` price (default its VWAP).
     """
 
     decision_time: str = "14:50:00"
     data_lag: str = "1min"
     execution_model: str = "next_minute_close"
     execution_window: tuple[str, str] = ("14:51:00", "14:56:59")
+    execution_price_basis: str = PRICE_BASIS_VWAP
 
     def __post_init__(self) -> None:
+        if self.execution_price_basis not in SUPPORTED_PRICE_BASES:
+            raise ValueError(
+                f"Unsupported execution_price_basis {self.execution_price_basis!r}; "
+                f"supported: {SUPPORTED_PRICE_BASES}."
+            )
         if self.execution_model not in SUPPORTED_EXECUTION_MODELS:
             future = (
                 " (planned, not yet implemented)"
@@ -108,6 +134,37 @@ class TailRebalanceResult:
         return [f for f in self.fills if f.blocked]
 
 
+def bar_execution_price(bar: pd.Series, basis: str) -> float | None:
+    """The RAW fill price of one selected 1min ``bar``, or ``None`` if undefined.
+
+    ``bar_vwap`` (default) returns ``amount / volume`` — the volume-weighted mean
+    of every trade printed in that minute. It is UNDEFINED when ``volume`` or
+    ``amount`` is missing/NaN/non-finite or non-positive (a minute with no traded
+    shares has no traded average price). ``None`` means exactly that: the caller
+    must BLOCK the fill. It must never be softened into the bar close, and never
+    into a daily close — a silent price substitution is the one degradation this
+    execution layer exists to prevent.
+
+    ``bar_close`` returns that bar's close (a single tick) and reproduces the
+    pre-VWAP behaviour bit-for-bit, including its exact NaN test.
+    """
+    if basis == PRICE_BASIS_CLOSE:
+        price = bar["close"]
+        return None if pd.isna(price) else float(price)
+    if basis != PRICE_BASIS_VWAP:
+        raise ValueError(
+            f"Unsupported execution_price_basis {basis!r}; "
+            f"supported: {SUPPORTED_PRICE_BASES}."
+        )
+    volume = float(bar["volume"]) if pd.notna(bar["volume"]) else float("nan")
+    amount = float(bar["amount"]) if pd.notna(bar["amount"]) else float("nan")
+    if not (np.isfinite(volume) and np.isfinite(amount)):
+        return None
+    if volume <= 0.0 or amount <= 0.0:
+        return None
+    return amount / volume
+
+
 def resolve_fill(
     symbol: str,
     date: pd.Timestamp,
@@ -117,9 +174,11 @@ def resolve_fill(
     """Resolve the execution fill for ``symbol`` on ``date`` from its 1min bars.
 
     ``day_bars`` are the 1min bars for THIS symbol on THIS date (must carry
-    ``bar_end`` + ``close``). ``next_minute_close`` takes the EARLIEST bar whose
-    ``bar_end`` is in the execution window; a missing bar or NaN close yields a
-    BLOCKED fill with an explainable reason (never a daily-close fallback).
+    ``bar_end`` plus the columns the price basis reads). ``next_minute_close``
+    takes the EARLIEST bar whose ``bar_end`` is in the execution window; a missing
+    bar, or a bar whose ``execution_price_basis`` price is undefined (NaN close /
+    non-positive or non-finite volume or amount for the VWAP), yields a BLOCKED
+    fill with an explainable reason — never a fallback to another price.
     """
     day = pd.Timestamp(date).normalize()
     win_start = day + pd.Timedelta(cfg.execution_window[0])
@@ -134,8 +193,11 @@ def resolve_fill(
         return ExecutionFill(symbol, day, None, None, True, REASON_NO_BAR)
 
     bar = cand.iloc[0]  # next_minute_close: earliest available bar in the window
-    price = bar["close"]
-    if pd.isna(price):
+    price = bar_execution_price(bar, cfg.execution_price_basis)
+    if price is None:
+        # Same block path/reason as a NaN close has always taken: the bar existed
+        # (exec_time is kept) but has no usable price, so the name is untradable
+        # this rebalance. No other price is substituted.
         return ExecutionFill(
             symbol, day, pd.Timestamp(bar["bar_end"]), None, True, REASON_MISSING_PRICE
         )

@@ -158,6 +158,7 @@ def _exec_cfg_from(cfg: RootConfig) -> IntradayExecutionConfig:
         data_lag=ic.data_lag,
         execution_model=ic.execution_model,
         execution_window=tuple(ic.execution_window),
+        execution_price_basis=ic.execution_price_basis,
     )
 
 
@@ -736,13 +737,19 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
         f"- execution_window: `[{ec.execution_window[0]}, {ec.execution_window[1]}]`"
     )
     lines.append(
+        f"- execution_price_basis: `{ec.execution_price_basis}` "
+        "(`bar_vwap` = the selected 1min bar's amount/volume, RAW unadjusted; "
+        "`bar_close` = that bar's single closing tick)"
+    )
+    lines.append(
         f"- score feature: `{result.score_feature}` "
         f"(key=`{result.score_feature_key}`)"
     )
     lines.append("")
     lines.append("**Returns are execution-to-execution, NOT close-to-close.** Holding "
                  "return of a period = exec_price(next) / exec_price(this) - 1, priced "
-                 "at the first valid 1min close in the execution window.")
+                 "at the first valid 1min bar in the execution window on the "
+                 f"`{ec.execution_price_basis}` basis.")
     lines.append("")
     _append_factor_section(lines, result)
     lines.append("## Minute-cache coverage & data provenance")
