@@ -476,55 +476,62 @@ def test_group_report_feasibility_prose_names_the_active_execution_basis():
     assert "adj_factor" in text
 
 
-def test_no_module_repeats_the_pre_pr75_close_based_limit_claim():
-    """Guard the DEFECT CLASS, not just the two places already fixed.
+def test_no_file_anywhere_claims_the_gate_compares_a_close():
+    """Repo-wide: NO file may state that the I5b gate compares a close.
 
-    The gate input moved from the bar close to the executed price in PR #75. The
-    first correction pass fixed the prose in the two obvious spots and MISSED a
-    third copy in `_write_report`'s "Limitations" section, so a run would have
-    emitted two contradictory descriptions of the same check in one document.
+    The first version of this scanned only the two report modules. Review then
+    found SIX more live instances it could not reach even in principle -- one in
+    `qt/config.py` and five in the I5b/c/d/e/f config YAMLs, which are exactly what
+    an operator reads before enabling the feature, a higher-stakes readership than
+    a docstring. Scoping a guard to the files you already fixed guarantees it only
+    ever confirms what you already know.
 
-    Review found it, and found why the other tests could not: none of them render
-    `_write_report` at all, so that location was structurally unreachable.
+    Two restatements survive by necessity and are covered by this scan rather than
+    by composition: `runtime/backtest/event_models.py` and `qt/config.py` both sit
+    UPSTREAM of `qt.intraday_tail_framework` in the import graph (it imports them),
+    so neither can call `limit_basis_phrase` without a cycle.
 
-    SCOPE, stated honestly because the first version of this docstring overstated
-    it. This catches a LITERAL revert -- a bad merge or rebase restoring the old
-    sentence, which is the failure that actually happened. It does NOT catch a
-    reworded restatement: review wrote seven plausible ones ("its last print",
-    "the final tick", "1-minute" for "1min") and all seven escape this regex. No
-    lexical guard can assert "no other sentence makes this claim"; English has too
-    many ways to make it. The durable fix is structural and is the reason
-    `limit_basis_phrase` exists -- with one authored sentence there is no second
-    one to reword. This test guards that one sentence against being un-written.
+    Deliberately NOT matched: `bar_close` the basis name, "that bar's single
+    closing tick" the basis description, and the DAILY universe tradability filter
+    (`universe/filters.py`, `data/clean/tradability.py`), which is a separate and
+    older mechanism that genuinely does compare a raw daily close -- see
+    RUNBOOK.md. Those are correct and must not be swept up.
+
+    Scope, stated honestly: this catches a claim written with the word "close"
+    near "execution minute". It does NOT catch a reworded synonym ("its last
+    print", "the final tick") -- review demonstrated seven such escapes. No lexical
+    guard can assert "no sentence anywhere makes this claim". Composition is the
+    real answer where the import graph allows it; this scan is the net under the
+    places where it does not.
     """
     import re
     from pathlib import Path
 
-    import qt.intraday_group_report as gr
-    import qt.intraday_tail_framework as tf
-
-    # Phrasings that assert the LIMIT COMPARISON reads a close. "bar_close" the
-    # basis name and "that bar's single closing tick" the basis description are
-    # both legitimate and deliberately not matched.
+    root = Path(__file__).resolve().parent.parent
     forbidden = re.compile(
-        r"execution-minute\s+(\*\*raw\*\*\s+)?(1min\s+)?close"
-        r"|1min\s+close\s+to\s+the\s+raw"
-        r"|raw\s+execution-minute\s+close",
+        r"execution[- ]minute[^.\n]{0,40}\bclose\b"
+        r"|\b1min close\b"
+        r"|raw\s+close\s+to\s+(the\s+)?raw\s+`?`?stk_limit",
         re.IGNORECASE,
     )
-    for mod in (tf, gr):
-        src = Path(mod.__file__).read_text()
-        hits = [
-            f"line {i}: {ln.strip()}"
-            for i, ln in enumerate(src.splitlines(), 1)
-            if forbidden.search(ln)
-        ]
-        assert not hits, (
-            f"{Path(mod.__file__).name} still claims the price-limit gate compares "
-            f"a CLOSE. The gate reads the price that executes (the bar VWAP under "
-            f"the default basis). Derive the wording from execution_price_basis "
-            f"instead of restating it:\n  " + "\n  ".join(hits)
-        )
+    targets = [root / "qt" / "config.py", *sorted((root / "config").glob("*.yaml"))]
+    targets += sorted((root / "qt").glob("intraday*.py"))
+    targets += [root / "runtime" / "backtest" / "event_models.py",
+                root / "runtime" / "intraday_execution.py"]
+
+    hits = []
+    for f in targets:
+        if not f.exists():
+            continue
+        for i, line in enumerate(f.read_text().splitlines(), 1):
+            if forbidden.search(line):
+                hits.append(f"{f.relative_to(root)}:{i}: {line.strip()}")
+    assert not hits, (
+        "these files claim the I5b price-limit gate compares a CLOSE. It compares "
+        "the price that EXECUTES (the bar VWAP under the default basis). Where the "
+        "import graph allows it, compose limit_basis_phrase; where it does not, "
+        "point at it:\n  " + "\n  ".join(hits)
+    )
 
 
 def test_every_gate_description_composes_the_single_phrase():

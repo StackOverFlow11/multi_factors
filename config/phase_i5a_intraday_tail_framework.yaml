@@ -2,7 +2,8 @@
 #
 # Proves the shared event-driven backtest engine drives an IntradayTailEventModel
 # end-to-end on REAL SH/SZ minute data: decision at 14:50, execution at the first
-# valid 1min close in [14:51, 14:56:59], exec-to-exec holding returns. The score is
+# valid 1min bar in [14:51, 14:56:59] priced on the active execution_price_basis
+# (the bar VWAP by default), exec-to-exec holding returns. The score is
 # a single PIT-safe I3 feature (intraday_ret_0930_1450), not a research alpha.
 #
 # Minute bars are read from the EXISTING intraday cache only (read-only; a cache

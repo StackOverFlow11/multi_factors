@@ -1,7 +1,7 @@
 # Phase I5f — intraday execution liquidity diagnostics (REPORT-ONLY, NOT research).
 #
 # Same intraday tail-rebalance smoke as I5a/I5b (decision 14:50, execute at the
-# first valid 1min close in [14:51, 14:56:59], exec-to-exec holding returns,
+# first valid 1min bar in [14:51, 14:56:59] priced on the active execution_price_basis, exec-to-exec holding returns,
 # PIT-safe I3 score, raw stk_limit execution-time feasibility ON) PLUS an opt-in,
 # REPORT-ONLY execution liquidity diagnostic. For each desired rebalance trade
 # (|target_weight - current_weight|) it sizes the trade against the SELECTED
@@ -48,7 +48,8 @@ universe:
   filters:
     # Selection-level daily tradability flags stay DISABLED (as in I5b): the daily
     # close limit flag is an EOD value not known at 14:50. The honest direction-aware
-    # blocking is execution-time raw stk_limit vs the raw execution-minute close.
+    # blocking is execution-time raw stk_limit vs the RAW price that EXECUTES at that minute
+    # (the bar VWAP under the default execution_price_basis).
     missing_close: true
     suspended: false
     st: false
