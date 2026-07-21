@@ -1,11 +1,12 @@
 # Phase I5b — intraday execution-time price-limit feasibility (hardening, NOT research).
 #
 # Same intraday tail-rebalance smoke as I5a (decision 14:50, execute at the first
-# valid 1min close in [14:51, 14:56:59], exec-to-exec holding returns, PIT-safe I3
+# valid 1min bar in [14:51, 14:56:59] priced on the active execution_price_basis, exec-to-exec holding returns, PIT-safe I3
 # score) PLUS execution-time price-limit feasibility: a buy is blocked at the raw
-# upper limit and a sell at the raw lower limit, comparing the selected
-# execution-minute RAW 1min close to the raw stk_limit band (NEVER qfq / daily
-# close / daily-close-derived flags).
+# upper limit and a sell at the raw lower limit, comparing the RAW price that
+# EXECUTES at the selected minute -- the bar VWAP under the default
+# execution_price_basis -- to the raw stk_limit band (NEVER qfq / daily close /
+# daily-close-derived flags).
 #
 # Minute bars are read from the EXISTING intraday cache only (read-only; a miss is
 # a hard blocker -> zero stk_mins live calls). Raw stk_limit flows through the same
@@ -42,8 +43,9 @@ universe:
   filters:
     # Selection-level daily tradability flags stay DISABLED: at the 14:50 decision
     # the daily-close-derived limit flag is an EOD value not known yet. The honest
-    # direction-aware blocking happens at EXECUTION via raw stk_limit vs the raw
-    # execution-minute close (intraday.price_limit_check below). Disclosed in the report.
+    # direction-aware blocking happens at EXECUTION via raw stk_limit vs the RAW
+    # price that EXECUTES at that minute (intraday.price_limit_check below).
+    # Disclosed in the report.
     missing_close: true
     suspended: false
     st: false
@@ -95,7 +97,8 @@ intraday:
   - '14:56:59'
   require_cache_coverage: true
   missing_execution: block
-  # I5b: execution-time raw price-limit feasibility (raw 1min close vs raw stk_limit).
+  # I5b: execution-time raw price-limit feasibility (the RAW price that EXECUTES
+  # at that minute vs raw stk_limit).
   price_limit_check: true
   require_price_limit_coverage: true
   limit_tolerance: 1.0e-06

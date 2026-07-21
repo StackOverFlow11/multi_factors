@@ -13,7 +13,8 @@ Pipeline:
     -> deterministic PIT-safe score = the I3 ``intraday_ret_0930_1450`` feature
        (only bars with available_time <= 14:50 enter it)
     -> engine + IntradayTailEventModel: decision 14:50, execute at the first valid
-       1min close in [14:51, 14:56:59], exec-to-exec holding returns
+       1min bar in [14:51, 14:56:59] priced on the active execution_price_basis
+       (the bar VWAP by default), exec-to-exec holding returns
     -> NAV / feasibility / holdings / event logs -> markdown report.
 
 It is intentionally small: the score is a single already-PIT-safe feature solely

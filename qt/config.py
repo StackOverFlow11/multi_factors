@@ -340,8 +340,11 @@ class IntradayCfg(_Strict):
     # I5b execution-time price-limit feasibility. OFF by default, so every I5a /
     # daily config validates and behaves unchanged. When enabled, the intraday
     # tail model gates buys at the raw upper limit and sells at the raw lower
-    # limit, comparing the selected execution-minute RAW close to raw ``stk_limit``
-    # (never qfq / daily close). ``require_price_limit_coverage`` makes a missing
+    # limit, comparing the RAW price that EXECUTES at the selected minute -- the
+    # bar VWAP under the default ``execution_price_basis`` -- to raw ``stk_limit``
+    # (never qfq / daily close; see qt.intraday_tail_framework.limit_basis_phrase,
+    # the single authored statement of this, which this module cannot import
+    # without a cycle). ``require_price_limit_coverage`` makes a missing
     # required (anchor date, symbol) limit row a hard, pre-result failure instead
     # of a silent "checked" pass; ``limit_tolerance`` is the raw-price equality
     # band for the at-limit test.

@@ -132,6 +132,15 @@ class IntradayTailEventModel:
     symbol/date's raw ``stk_limit`` band. A buy is blocked at the upper limit, a
     sell at the lower limit, directionally.
 
+    That sentence is authored once, in
+    ``qt.intraday_tail_framework.limit_basis_phrase``, and every report composes
+    it. This docstring cannot import it — ``qt.intraday_tail_framework`` already
+    imports this class, so the reverse would cycle — so it is one of the two
+    restatements that survive by necessity. It is covered instead by the repo-wide
+    scan in ``tests/test_i5b_execution_feasibility.py``, which fails if any file
+    claims this gate compares a CLOSE. Change the behaviour and that scan will
+    point here.
+
     Why the gate reads the VWAP and not the bar close. A limit-up execution minute
     has exactly two shapes, and they are the feasibility question:
 

@@ -44,8 +44,9 @@ universe:
   filters:
     # Selection-level daily tradability flags stay DISABLED (as in I5b/I5c/I5d): the
     # daily close limit flag is an EOD value not known at 14:50. The honest
-    # direction-aware blocking is execution-time raw stk_limit vs the raw
-    # execution-minute close.
+    # direction-aware blocking is execution-time raw stk_limit vs the RAW price
+    # that EXECUTES at that minute (the bar VWAP under the default
+    # execution_price_basis).
     missing_close: true
     suspended: false
     st: false
