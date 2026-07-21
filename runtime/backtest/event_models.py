@@ -159,6 +159,16 @@ class IntradayTailEventModel:
     LOCKED minutes are misclassified as opened by sub-tick rounding; widening to
     0.01 RMB would instead misclassify 100% of OPENED minutes as locked.
 
+    That residual errs OPTIMISTIC and is disclosed rather than tuned away: a
+    locked minute misread as opened lets through a buy that was NOT achievable,
+    so the backtest can book a fill the market would have refused. Its size is
+    bounded — limit-closing bars are 149/13,699 ≈ 1.1% of all execution bars, and
+    2.1% of those are misread, so ≈0.02% of bars overall. The threshold is
+    deliberately NOT recalibrated to remove it: re-fitting a cutoff on a
+    149-observation sample is the post-hoc tuning this project refuses elsewhere,
+    and it is not worth an exception for a 0.02% effect. If that bound is ever
+    revisited, it needs a fresh, larger sample — not this one.
+
     An "opened but with tiny volume below the limit" bar is a CAPACITY question,
     not a feasibility one: it belongs to the I5f capacity layer, which sizes the
     trade against the execution minute's traded ``amount``. This gate answers only
