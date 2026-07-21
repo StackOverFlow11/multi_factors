@@ -485,9 +485,17 @@ def test_no_module_repeats_the_pre_pr75_close_based_limit_claim():
     emitted two contradictory descriptions of the same check in one document.
 
     Review found it, and found why the other tests could not: none of them render
-    `_write_report` at all, so that location was structurally unreachable. The
-    honest fix for a claim that gets restated in prose in N places is to assert no
-    (N+1)th copy exists, rather than to enumerate the ones we happen to know.
+    `_write_report` at all, so that location was structurally unreachable.
+
+    SCOPE, stated honestly because the first version of this docstring overstated
+    it. This catches a LITERAL revert -- a bad merge or rebase restoring the old
+    sentence, which is the failure that actually happened. It does NOT catch a
+    reworded restatement: review wrote seven plausible ones ("its last print",
+    "the final tick", "1-minute" for "1min") and all seven escape this regex. No
+    lexical guard can assert "no other sentence makes this claim"; English has too
+    many ways to make it. The durable fix is structural and is the reason
+    `limit_basis_phrase` exists -- with one authored sentence there is no second
+    one to reword. This test guards that one sentence against being un-written.
     """
     import re
     from pathlib import Path
@@ -517,3 +525,55 @@ def test_no_module_repeats_the_pre_pr75_close_based_limit_claim():
             f"the default basis). Derive the wording from execution_price_basis "
             f"instead of restating it:\n  " + "\n  ".join(hits)
         )
+
+
+def test_every_gate_description_composes_the_single_phrase():
+    """All three descriptions of the gate compose one phrase; none re-authors it.
+
+    This is the guard the regex above cannot be: a lexical scan enumerates
+    wordings, whereas having exactly one authored sentence leaves nothing to
+    reword. If a future edit writes its own sentence instead of composing
+    `limit_basis_phrase`, that sentence stops containing the phrase and this
+    fails.
+    """
+    from types import SimpleNamespace
+
+    from qt.intraday_group_report import _feasibility_lines
+    from qt.intraday_tail_framework import limit_basis_lines, limit_basis_phrase
+
+    cfg = load_config(str(_I5B_CONFIG))
+    basis = cfg.intraday.execution_price_basis
+    phrase = limit_basis_phrase(basis)
+    assert f"`{basis}`" in phrase  # the phrase is basis-derived, not a constant
+
+    # 1. the tail report's feasibility section
+    assert phrase in " ".join(limit_basis_lines(basis))
+
+    # 2. the group report's feasibility section
+    result = SimpleNamespace(
+        config=cfg,
+        price_limit_check=True,
+        limit_coverage={"required": 1, "present": 1, "missing": 0},
+        stk_limit_gap_fetches=0,
+        groups=(
+            SimpleNamespace(
+                group=1, up_limit_blocked_buys=0, down_limit_blocked_sells=0,
+                missing_limit_rows=0, opened_limit_up_minutes=0,
+                opened_limit_down_minutes=0, missing_adj_factor_pairs=0,
+            ),
+        ),
+    )
+    assert phrase in " ".join(_feasibility_lines(result))
+
+    # 3. the tail report's Limitations bullet -- the one the first pass missed.
+    # Read from source rather than rendering, since building a full I5aResult
+    # here would test the dataclass, not the sentence.
+    import inspect
+
+    import qt.intraday_tail_framework as tf
+
+    src = inspect.getsource(tf._write_report)
+    assert "limit_basis_phrase(ec.execution_price_basis)" in src, (
+        "the Limitations bullet must COMPOSE limit_basis_phrase, not restate the "
+        "comparison in its own words"
+    )

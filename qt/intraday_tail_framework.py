@@ -259,9 +259,9 @@ def _load_price_limits(
     Returns ``(limits_df, stk_limit_gap_fetches)``. The limits flow through the
     SAME P4 read-through cache as the daily endpoints (no new endpoint); a
     fully-covered window costs zero gap fetches. The cache stores RAW
-    ``up_limit`` / ``down_limit`` only — the model compares them to the RAW price
-    that EXECUTES at the selected minute (the bar VWAP under the default basis),
-    never qfq / daily close.
+    ``up_limit`` / ``down_limit`` only; for what they are compared against, see
+    :func:`limit_basis_phrase` — deliberately not restated here, because a second
+    statement of the same fact is a second thing to get wrong.
     """
     if cfg.intraday is None or not cfg.intraday.price_limit_check:
         return None, 0
@@ -723,22 +723,37 @@ def _append_liquidity_section(lines: list[str], result: I5aResult) -> None:
     lines.append("")
 
 
-def limit_basis_lines(execution_price_basis: str) -> list[str]:
-    """Report prose stating what the I5b price-limit gate ACTUALLY compares.
+def limit_basis_phrase(execution_price_basis: str) -> str:
+    """THE ONE sentence fragment naming what the price-limit gate compares.
 
-    Extracted so it is testable. The gate reads the price that EXECUTES — which
-    since PR #75 is the bar VWAP by default, not the bar close — and an earlier
-    revision of this text kept claiming "the raw 1min close" after the gate input
-    had changed. A report that misstates the check it performed is worse than no
-    report, so the wording is derived from the active basis and pinned by test.
+    Every place that describes the gate — the feasibility section, the report's
+    Limitations bullet, the group report, and any future one — composes this
+    rather than authoring its own sentence.
+
+    That indirection is the actual fix, and it replaced a weaker one. When PR #75
+    moved the gate from the bar close to the executed price, three independently
+    written sentences described it; the first correction pass fixed two, and a
+    regex guard was added to catch the rest. Review then demonstrated that seven
+    plausible rewordings ("its last print", "the final tick", "1-minute" instead
+    of "1min") all escape that regex — which is the general fate of a lexical
+    guard aimed at a semantic claim. A regex cannot assert "no other sentence
+    says this"; having no other sentence can. The guard is kept, scoped to what
+    it genuinely does: catching a literal revert.
     """
+    return (
+        f"the price that actually EXECUTES — the selected execution minute on the "
+        f"`{execution_price_basis}` basis"
+    )
+
+
+def limit_basis_lines(execution_price_basis: str) -> list[str]:
+    """Report prose stating what the I5b price-limit gate ACTUALLY compares."""
     return [
-        f"- **comparison basis**: the price that actually EXECUTES — the selected "
-        f"execution minute on the `{execution_price_basis}` basis — vs the "
-        f"symbol/date **raw** `stk_limit` band. NOT qfq, NOT the daily close, NOT "
-        f"a daily-close-derived limit flag. (The intraday cache stores unadjusted "
-        f"bars and `stk_limit` is raw, and a bar VWAP is raw amount over raw "
-        f"volume, so the comparison is RAW-vs-RAW either way.)",
+        f"- **comparison basis**: {limit_basis_phrase(execution_price_basis)} — vs "
+        f"the symbol/date **raw** `stk_limit` band. NOT qfq, NOT the daily close, "
+        f"NOT a daily-close-derived limit flag. (The intraday cache stores "
+        f"unadjusted bars and `stk_limit` is raw, and a bar VWAP is raw amount "
+        f"over raw volume, so the comparison is RAW-vs-RAW either way.)",
         "- **why the executed price and not the bar close**: a limit-up minute has "
         "two shapes. LOCKED (封死涨停) — every print is at the limit, so the VWAP "
         "equals it up to rounding and the buy must be blocked. OPENED (盘中打开) — "
@@ -962,10 +977,9 @@ def _write_report(result: I5aResult, *, elapsed: float) -> None:
         lines.append(
             f"- **Execution-time feasibility (I5b)**: a missing/NaN execution bar "
             f"blocks BOTH directions; on top of that, raw `stk_limit` blocks buys at "
-            f"the upper limit and sells at the lower limit, comparing the price that "
-            f"actually EXECUTES — the selected execution minute on the "
-            f"`{ec.execution_price_basis}` basis — to raw limits (see the section "
-            f"above). Remaining gap: only the price-limit and bar-existence "
+            f"the upper limit and sells at the lower limit, comparing "
+            f"{limit_basis_phrase(ec.execution_price_basis)} to raw limits (see the "
+            f"section above). Remaining gap: only the price-limit and bar-existence "
             f"constraints are modeled; partial-fill / liquidity / volume caps at the "
             f"execution minute are not."
         )

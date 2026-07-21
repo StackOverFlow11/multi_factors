@@ -19,6 +19,7 @@ from qt.intraday_group_figures import (
     plot_quintile_nav,
     plot_spread_curve,
 )
+from qt.intraday_tail_framework import limit_basis_phrase
 
 
 def _write_figures(
@@ -184,10 +185,10 @@ def _feasibility_lines(result) -> list[str]:
     cov = result.limit_coverage
     lines.extend([
         "- **enabled** (`intraday.price_limit_check=true`): a buy is blocked at the "
-        "raw upper limit and a sell at the raw lower limit, comparing the price "
-        f"that actually EXECUTES — the selected execution minute on the "
-        f"`{cfg.intraday.execution_price_basis}` basis — to the raw `stk_limit` "
-        "band (RAW-vs-RAW; never qfq / daily close / a daily-close-derived flag).",
+        "raw upper limit and a sell at the raw lower limit, comparing "
+        f"{limit_basis_phrase(cfg.intraday.execution_price_basis)} to the raw "
+        "`stk_limit` band (RAW-vs-RAW; never qfq / daily close / a "
+        "daily-close-derived flag).",
         "- a limit-up minute is LOCKED (every print at the limit, VWAP equals it up "
         "to rounding, buy blocked) or OPENED (prints landed below it, which is "
         "evidence a fill was achievable, buy allowed). The executed price separates "
