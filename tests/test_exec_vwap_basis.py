@@ -441,6 +441,46 @@ def test_undefined_vwap_blocks_before_the_limit_gate_and_needs_no_limit_row():
     assert model.missing_limit_rows() == 0  # never even consulted
 
 
+def test_switching_to_vwap_never_makes_anything_more_tradable():
+    """The safety direction: VWAP may block MORE, never less.
+
+    Over locked / sealing / normal / unpriceable minutes, every (symbol,
+    direction) that the VWAP basis allows must also have been allowed on the
+    bar_close basis. Anything else would be a feasibility leak dressed up as a
+    price-basis change.
+    """
+    syms = ["LOCKED", "SEALING", "NORMAL", "NOVOL", "DOWN"]
+    panel = _daily_panel(syms, close=50.0)
+    specs = [
+        # (symbol, close, volume, amount)
+        ("LOCKED", 11.0, 1_000.0, 10_999.0),      # locked at the up limit
+        ("SEALING", 11.0, 1_000.0, 10_800.0),     # traded up into the lock
+        ("NORMAL", 9.0, 1_000.0, 9_400.0),        # nowhere near a limit
+        ("NOVOL", 9.0, 0.0, 0.0),                 # unpriceable on the VWAP basis
+        ("DOWN", 5.0, 1_000.0, 5_120.0),          # locked at the down limit
+    ]
+    bars = _bars([(s, f"{_JAN.date()} 14:51:00", c, v, a) for (s, c, v, a) in specs])
+    lim = _limits([(_JAN, s, 11.0, 5.0) for s in syms])
+
+    def _gate_of(cfg):
+        model = IntradayTailEventModel(
+            calendar_panel=panel, bars=bars, cfg=cfg, price_limits=lim,
+            price_limit_check=True, require_price_limit_coverage=False,
+        )
+        return model.feasibility(_period(model, _JAN), syms)
+
+    buy_v, sell_v = _gate_of(_VWAP)
+    buy_c, sell_c = _gate_of(_CLOSE)
+    for s in syms:
+        assert not (buy_v[s] and not buy_c[s]), f"{s}: VWAP allowed a buy close blocked"
+        assert not (sell_v[s] and not sell_c[s]), f"{s}: VWAP allowed a sell close blocked"
+    # both limit-locked names are blocked in the right direction on BOTH bases ...
+    assert buy_v["LOCKED"] is False and buy_v["SEALING"] is False
+    assert sell_v["DOWN"] is False
+    # ... and the unpriceable name is the only one strictly stricter under VWAP.
+    assert (buy_c["NOVOL"], buy_v["NOVOL"]) == (True, False)
+
+
 def test_limit_gate_ignores_the_daily_close_under_vwap():
     """Perturbing the daily close cannot move an intraday RAW-vs-RAW decision."""
     bars = _bars([("A", f"{_JAN.date()} 14:51:00", 9.0, 100.0, 1_000.0)])  # vwap 10.0
