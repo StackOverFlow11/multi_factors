@@ -13,7 +13,12 @@ Each model bundles a *schedule* with a *pricing* and *feasibility* time-basis:
 
 Both schedules come from :func:`runtime.backtest.events.monthly_anchor_pairs`, so
 daily and intraday rebalance on the same calendar; only the time basis differs.
-The intraday model never prices off the daily panel.
+
+The intraday model never takes a PRICE from the daily panel: decisions and fills
+read minute bars only, so no EOD price can leak into a 14:50 decision. It does
+read one non-price field from that panel — ``adj_factor`` — to divide out
+corporate actions when measuring a holding return, since the cached minute bars
+are raw. See :meth:`IntradayTailEventModel.holding_returns`.
 """
 
 from __future__ import annotations
@@ -211,6 +216,13 @@ class IntradayTailEventModel:
             fills = []
         self._exec_prices = prices
         self._fills = fills
+        # Cumulative adj_factor at each ANCHOR date, for the return computation
+        # only (see holding_returns). Sourced from the daily panel, which carries
+        # adj_factor as a required core column; restricted to anchors so the map
+        # stays small. NOT a price: reading it leaks no EOD price into the 14:50
+        # decision or the fill, both of which remain minute-only.
+        self._adj = self._index_adj_factors(calendar_panel, anchor_dates)
+        self._missing_adj: set[tuple[pd.Timestamp, str]] = set()
 
         # -- I5b price-limit feasibility state ----------------------------- #
         self._price_limit_check = bool(price_limit_check)
@@ -270,6 +282,35 @@ class IntradayTailEventModel:
             key = (pd.Timestamp(row["date"]).normalize(), str(row["symbol"]))
             out[key] = (float(up), float(down))
         return out
+
+    @staticmethod
+    def _index_adj_factors(
+        panel: pd.DataFrame, anchor_dates: list
+    ) -> dict[tuple[pd.Timestamp, str], float]:
+        """``{(anchor date, symbol): cumulative adj_factor}`` from the daily panel.
+
+        Only strictly positive, non-NaN factors are indexed; anything else leaves
+        the pair absent so the caller BLOCKS that return rather than assuming 1.0.
+        """
+        if "adj_factor" not in panel.columns or panel.empty or not anchor_dates:
+            return {}
+        wanted = {pd.Timestamp(d).normalize() for d in anchor_dates}
+        dates = panel.index.get_level_values("date")
+        sub = panel.loc[dates.normalize().isin(wanted), "adj_factor"]
+        out: dict[tuple[pd.Timestamp, str], float] = {}
+        for (d, s), v in sub.items():
+            if pd.isna(v):
+                continue
+            f = float(v)
+            if f > 0.0:
+                out[(pd.Timestamp(d).normalize(), str(s))] = f
+        return out
+
+    def _adj_at(self, date: pd.Timestamp, symbol: str) -> float:
+        """Cumulative adj_factor at an anchor, or NaN when unusable/absent."""
+        return self._adj.get(
+            (pd.Timestamp(date).normalize(), str(symbol)), float("nan")
+        )
 
     @staticmethod
     def _index_limit_refs(
@@ -372,20 +413,47 @@ class IntradayTailEventModel:
     def holding_returns(
         self, period: HoldingPeriod, symbols: list[str]
     ) -> pd.Series:
-        """exec-to-exec gross return per symbol over (entry, exit].
+        """exec-to-exec gross return per symbol over (entry, exit], ADJUSTED.
+
+        The execution prices are RAW minute prices (the intraday cache stores
+        unadjusted bars), so a ratio of two of them across an ex-dividend or split
+        date reads the mechanical price drop as a loss. The return is therefore
+        computed on adjusted prices::
+
+            (raw_exit * adj_factor(exit)) / (raw_entry * adj_factor(entry)) - 1
+
+        The per-symbol anchor that ``data/clean/adjust.py`` divides by cancels in
+        this ratio, so no qfq series needs re-deriving and the result is exact and
+        window-invariant — the same property that makes ``front_adjust`` safe for
+        batch == incremental.
 
         A symbol missing an execution price at EITHER anchor is omitted (so the
-        engine's ``settle`` treats it as flat — it earns nothing for the period).
-        Never substitutes a daily close.
+        engine's ``settle`` treats it as flat). A symbol whose ``adj_factor`` is
+        missing, NaN or non-positive at either anchor is ALSO omitted and counted
+        in :meth:`missing_adj_factor_pairs` — never silently treated as 1.0, which
+        would reintroduce the very bias this corrects. Never substitutes a daily
+        close.
+
+        Only the RETURN is adjusted. The I5b price-limit gate stays RAW-vs-RAW
+        (raw execution price against raw ``stk_limit``); adjustment must not leak
+        into it, since exchange limits are quoted on raw prices.
         """
         entry, exit_ = period.entry_date, period.exit_date
         out: dict[str, float] = {}
         for sym in symbols:
             a = self._exec_price(entry, sym)
             b = self._exec_price(exit_, sym)
-            if pd.notna(a) and pd.notna(b) and a != 0.0:
-                out[str(sym)] = b / a - 1.0
-            # else: blocked at an anchor -> omitted -> flat via settle.
+            if not (pd.notna(a) and pd.notna(b) and a != 0.0):
+                continue  # blocked at an anchor -> omitted -> flat via settle.
+            fa = self._adj_at(entry, sym)
+            fb = self._adj_at(exit_, sym)
+            if pd.isna(fa) or pd.isna(fb):
+                # No usable adjustment: the corporate-action-free return cannot be
+                # formed, so the name earns nothing this period and the gap is
+                # disclosed. Assuming 1.0 here is exactly the defect being fixed.
+                self._missing_adj.add((pd.Timestamp(entry).normalize(), str(sym)))
+                continue
+            out[str(sym)] = (b * fb) / (a * fa) - 1.0
         return pd.Series(out, dtype=float)
 
     def feasibility(
@@ -473,6 +541,15 @@ class IntradayTailEventModel:
     def missing_limit_rows(self) -> int:
         """Count of evaluated (date, symbol) pairs with no usable raw limit row."""
         return len(self._unchecked_limits)
+
+    def missing_adj_factor_pairs(self) -> int:
+        """(entry anchor, symbol) pairs whose return was dropped for lack of a factor.
+
+        Both execution prices existed, but ``adj_factor`` was missing / NaN /
+        non-positive at an anchor, so no corporate-action-free return could be
+        formed. Disclosed rather than defaulted to 1.0.
+        """
+        return len(self._missing_adj)
 
     def opened_limit_up_minutes(self) -> int:
         """Buys ALLOWED at a bar that closed at the up limit but traded below it.

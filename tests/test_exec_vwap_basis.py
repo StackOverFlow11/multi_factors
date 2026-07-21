@@ -583,3 +583,120 @@ def test_undefined_vwap_does_not_silently_trade_at_the_close_in_the_engine():
     # not bought: the block is real, not a re-priced trade.
     assert _jan_weight_of_a(_CLOSE) == pytest.approx(1.0)
     assert _jan_weight_of_a(_VWAP) == pytest.approx(0.0)
+
+# --------------------------------------------------------------------------- #
+# 6. holding returns are ADJUSTED (raw minute prices span corporate actions)
+# --------------------------------------------------------------------------- #
+def _ex_date_panel(factors: dict) -> pd.DataFrame:
+    """Daily panel whose adj_factor per (date, symbol) comes from ``factors``."""
+    rows = [
+        {
+            "date": pd.Timestamp(d), "symbol": s,
+            "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0,
+            "volume": 1.0, "amount": 1.0,
+            "adj_factor": factors.get((pd.Timestamp(d), s), 1.0),
+        }
+        for d in _DATES for s in ("A", "B")
+    ]
+    return normalize_panel(pd.DataFrame(rows))
+
+
+def test_holding_return_divides_out_an_ex_date_price_drop():
+    """A 2-for-1 split between anchors must read ~0, not -50%.
+
+    Raw minute price halves overnight while the cumulative adj_factor doubles.
+    The unadjusted ratio would book a mechanical -50% "loss"; the adjusted one is
+    flat, which is the true holding return.
+    """
+    factors = {(_JAN, "A"): 1.0, (_FEB, "A"): 2.0, (_MAR, "A"): 2.0}
+    panel = _ex_date_panel(factors)
+    bars = _bars([
+        # A: raw 40.00 -> 20.00 across the ex-date (a pure 2:1 split)
+        ("A", f"{_JAN.date()} 14:51:00", 40.0, 1_000.0, 40_000.0),
+        ("A", f"{_FEB.date()} 14:51:00", 20.0, 1_000.0, 20_000.0),
+        ("A", f"{_MAR.date()} 14:51:00", 20.0, 1_000.0, 20_000.0),
+        # B: no corporate action, flat price -> flat return (control)
+        ("B", f"{_JAN.date()} 14:51:00", 30.0, 1_000.0, 30_000.0),
+        ("B", f"{_FEB.date()} 14:51:00", 30.0, 1_000.0, 30_000.0),
+        ("B", f"{_MAR.date()} 14:51:00", 30.0, 1_000.0, 30_000.0),
+    ])
+    model = IntradayTailEventModel(calendar_panel=panel, bars=bars, cfg=_VWAP)
+    jan = _period(model, _JAN)
+    returns = model.holding_returns(jan, ["A", "B"])
+
+    # (20 * 2) / (40 * 1) - 1 == 0 : the split is divided out.
+    assert returns["A"] == pytest.approx(0.0)
+    # the unadjusted computation this replaces would have booked -50%
+    raw_ratio = 20.0 / 40.0 - 1.0
+    assert raw_ratio == pytest.approx(-0.5)
+    assert returns["A"] != pytest.approx(raw_ratio)
+    assert returns["B"] == pytest.approx(0.0)   # control unaffected
+    assert model.missing_adj_factor_pairs() == 0
+    # the RAW execution prices themselves are untouched (fills still pay raw)
+    assert model.execution_prices().loc[_JAN, "A"] == pytest.approx(40.0)
+    assert model.execution_prices().loc[_FEB, "A"] == pytest.approx(20.0)
+
+
+def test_holding_return_adjusts_a_partial_dividend_not_just_a_split():
+    """A ~2% cash dividend: raw reads -2%, adjusted reads ~0."""
+    factors = {(_JAN, "A"): 1.0, (_FEB, "A"): 1.02, (_MAR, "A"): 1.02}
+    panel = _ex_date_panel(factors)
+    bars = _bars([
+        ("A", f"{_JAN.date()} 14:51:00", 51.0, 1_000.0, 51_000.0),
+        ("A", f"{_FEB.date()} 14:51:00", 50.0, 1_000.0, 50_000.0),
+        ("A", f"{_MAR.date()} 14:51:00", 50.0, 1_000.0, 50_000.0),
+        ("B", f"{_JAN.date()} 14:51:00", 30.0, 1_000.0, 30_000.0),
+        ("B", f"{_FEB.date()} 14:51:00", 30.0, 1_000.0, 30_000.0),
+        ("B", f"{_MAR.date()} 14:51:00", 30.0, 1_000.0, 30_000.0),
+    ])
+    model = IntradayTailEventModel(calendar_panel=panel, bars=bars, cfg=_VWAP)
+    got = model.holding_returns(_period(model, _JAN), ["A"])["A"]
+    assert got == pytest.approx((50.0 * 1.02) / (51.0 * 1.0) - 1.0)
+    assert got == pytest.approx(0.0, abs=1e-9)
+    assert got != pytest.approx(50.0 / 51.0 - 1.0)   # the raw (biased) value
+
+
+@pytest.mark.parametrize("bad", [None, float("nan"), 0.0, -1.0])
+def test_missing_adj_factor_is_dropped_and_disclosed_never_treated_as_one(bad):
+    """No usable factor -> the return is dropped and counted, never assumed 1.0."""
+    factors = {(_JAN, "A"): 1.0, (_FEB, "A"): 2.0, (_MAR, "A"): 2.0}
+    if bad is None:
+        factors.pop((_FEB, "A"))          # row present but factor absent -> 1.0 default
+        panel = _ex_date_panel(factors)   # ... so drop the row entirely instead
+        panel = panel.drop(index=(_FEB, "A"))
+    else:
+        factors[(_FEB, "A")] = bad
+        panel = _ex_date_panel(factors)
+    bars = _bars([
+        ("A", f"{_JAN.date()} 14:51:00", 40.0, 1_000.0, 40_000.0),
+        ("A", f"{_FEB.date()} 14:51:00", 20.0, 1_000.0, 20_000.0),
+        ("B", f"{_JAN.date()} 14:51:00", 30.0, 1_000.0, 30_000.0),
+        ("B", f"{_FEB.date()} 14:51:00", 30.0, 1_000.0, 30_000.0),
+    ])
+    model = IntradayTailEventModel(calendar_panel=panel, bars=bars, cfg=_VWAP)
+    returns = model.holding_returns(_period(model, _JAN), ["A", "B"])
+
+    assert "A" not in returns.index              # dropped, not booked at -50%
+    assert model.missing_adj_factor_pairs() == 1  # ... and disclosed
+    assert returns["B"] == pytest.approx(0.0)     # unaffected names still price
+
+
+def test_adjustment_does_not_leak_into_the_raw_price_limit_gate():
+    """Exchange limits are quoted on RAW prices — the gate must stay raw-vs-raw.
+
+    The symbol carries adj_factor 2.0, so an adjusted price would be 22.0 and
+    would clear an 11.0 limit. The gate must still compare the raw 11.0 VWAP and
+    block the buy.
+    """
+    factors = {(_JAN, "A"): 2.0, (_FEB, "A"): 2.0, (_MAR, "A"): 2.0}
+    panel = _ex_date_panel(factors)
+    bars = _bars([("A", f"{_JAN.date()} 14:51:00", 11.0, 1_000.0, 11_000.0)])
+    lim = _limits([(_JAN, "A", 11.0, 5.0)])
+    model = IntradayTailEventModel(
+        calendar_panel=panel, bars=bars, cfg=_VWAP, price_limits=lim,
+        price_limit_check=True, require_price_limit_coverage=True,
+    )
+    can_buy, _ = model.feasibility(_period(model, _JAN), ["A"])
+    assert model.execution_prices().loc[_JAN, "A"] == pytest.approx(11.0)  # raw
+    assert can_buy["A"] is False              # blocked on the RAW comparison
+    assert model.up_limit_blocked_buys() == 1
