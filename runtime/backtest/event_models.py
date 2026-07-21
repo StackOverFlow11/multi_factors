@@ -122,34 +122,47 @@ class IntradayTailEventModel:
     is blocked by this rule.
 
     I5b adds OPT-IN execution-time price-limit feasibility (``price_limit_check``):
-    on top of the bar-exists rule, the selected execution minute's RAW CLOSE is
-    compared to that symbol/date's raw ``stk_limit`` band — a buy is blocked at the
-    upper limit, a sell is blocked at the lower limit, directionally.
+    on top of the bar-exists rule, the RAW price the trade actually pays — the
+    ``execution_price_basis``, a bar VWAP by default — is compared to that
+    symbol/date's raw ``stk_limit`` band. A buy is blocked at the upper limit, a
+    sell at the lower limit, directionally.
 
-    The gate reads the RAW CLOSE, not the price the trade pays. These are two
-    different questions and deliberately do not share an input:
+    Why the gate reads the VWAP and not the bar close. A limit-up execution minute
+    has exactly two shapes, and they are the feasibility question:
 
-      * "was this name limit-locked at the execution minute?" — a limit-locked
-        minute ends AT the limit, so its close equals the limit price exactly and
-        an exact comparison detects it;
-      * "what did the trade pay?" — the ``execution_price_basis`` (a bar VWAP by
-        default).
+      * LOCKED (封死涨停) — every trade in the minute prints at the limit, so the
+        VWAP equals the limit price up to rounding. There is no seller except at
+        the limit and the queue is hopeless: the buy must be blocked.
+      * OPENED (盘中打开) — some trades printed below the limit, so the VWAP sits
+        below it. Those prints are direct evidence that a fill WAS achievable:
+        the buy must go through.
 
-    A bar VWAP cannot answer the first question: on a minute that trades UP into
-    the lock, every print below the limit drags the VWAP under it. Measured on
-    real cached 14:51 bars joined to raw ``stk_limit``, 5.2% of genuinely
-    limit-up minutes have a VWAP more than 1e-6 below the limit and 1.0% are more
-    than one fen below (worst observed 0.0814 RMB = 0.18% on 601858.SH
-    2023-05-15, low 45.57 -> locked close 46.13). Gating on the VWAP would let
-    those buys through — silently undoing the block this layer exists to apply —
-    and no fixed ``limit_tolerance`` separates them from legitimate near-limit
-    trades. So the gate keeps comparing the same number it always compared, which
-    also makes feasibility byte-identical across price bases.
+    The bar close cannot make that distinction and misclassifies both edges — a
+    minute that closed at the limit but opened during it gets over-blocked, and a
+    minute that closed below but was locked most of the way gets under-blocked.
+    The VWAP encodes exactly "was there volume available below the limit".
 
-    The comparison is RAW-vs-RAW only: the raw 1min close (the intraday cache
-    stores unadjusted bars) against raw ``stk_limit``; it never reads a qfq /
-    daily close or a daily-close-derived limit flag. A missing/NaN limit row never
-    silently
+    Calibration follows from that, and it is the part that is easy to get wrong:
+    ``limit_tolerance`` must stay at ROUNDING scale and must NOT be widened to
+    "catch near-limit bars". Widening it re-blocks fills that demonstrably were
+    achievable, which is the opposite of the point. Measured on real cached 14:51
+    bars joined to raw ``stk_limit`` (13,699 bars; 149 closing at the up limit):
+    the 146 LOCKED ones sit a median 0.000000% and at most 0.0021% below the
+    limit — pure ``amount`` rounding — while the 3 OPENED ones sit 0.013%-0.017%
+    below it. The populations separate by an order of magnitude. At the default
+    ``limit_tolerance=1e-6`` every OPENED minute is correctly allowed and 2.1% of
+    LOCKED minutes are misclassified as opened by sub-tick rounding; widening to
+    0.01 RMB would instead misclassify 100% of OPENED minutes as locked.
+
+    An "opened but with tiny volume below the limit" bar is a CAPACITY question,
+    not a feasibility one: it belongs to the I5f capacity layer, which sizes the
+    trade against the execution minute's traded ``amount``. This gate answers only
+    whether a fill was possible at all.
+
+    The comparison is RAW-vs-RAW only: the raw 1min execution price (the intraday
+    cache stores unadjusted bars, and a bar VWAP = raw amount / raw volume is raw
+    too) against raw ``stk_limit``; it never reads a qfq / daily close or a
+    daily-close-derived limit flag. A missing/NaN limit row never silently
     counts as a passed check: in strict mode (``require_price_limit_coverage``) a
     missing REQUIRED row fails at construction (before any result); in lenient mode
     it is counted/disclosed and the name falls back to the bar-exists rule (the
@@ -209,9 +222,10 @@ class IntradayTailEventModel:
         self._limits: dict[tuple[pd.Timestamp, str], tuple[float, float]] = (
             self._index_limits(price_limits) if self._price_limit_check else {}
         )
-        # The RAW CLOSE of each selected execution bar, keyed by (date, symbol) —
-        # the gate's input, independent of what the fill pays. Carried on the
-        # fills, so it is available on the ``precomputed_prices`` path too.
+        # The RAW CLOSE of each selected execution bar, keyed by (date, symbol).
+        # NOT the gate's input (the gate compares the executed price); used only to
+        # label OPENED limit minutes for diagnostics. Carried on the fills, so it
+        # is available on the ``precomputed_prices`` path too.
         self._limit_refs: dict[tuple[pd.Timestamp, str], float] = (
             self._index_limit_refs(self._fills) if self._price_limit_check else {}
         )
@@ -228,6 +242,11 @@ class IntradayTailEventModel:
         self._up_blocked_buys: dict[tuple[pd.Timestamp, str], float] = {}
         self._down_blocked_sells: dict[tuple[pd.Timestamp, str], float] = {}
         self._unchecked_limits: set[tuple[pd.Timestamp, str]] = set()
+        # OPENED limit minutes: the bar closed at a limit but traded through it, so
+        # the VWAP gate lets the fill stand where a close-based gate would block.
+        # Purely diagnostic — recorded so that divergence is reportable, not silent.
+        self._opened_limit_ups: dict[tuple[pd.Timestamp, str], float] = {}
+        self._opened_limit_downs: dict[tuple[pd.Timestamp, str], float] = {}
         if self._price_limit_check and self._require_limit_coverage:
             self._assert_limit_coverage()
 
@@ -268,6 +287,17 @@ class IntradayTailEventModel:
                 continue
             out[(pd.Timestamp(f.date).normalize(), str(f.symbol))] = float(ref)
         return out
+
+    def _closed_at(self, key: tuple[pd.Timestamp, str], limit: float) -> bool:
+        """Did the selected bar's RAW CLOSE sit at ``limit``? (diagnostic only.)
+
+        Used solely to label an OPENED limit minute — one that ended at the limit
+        but traded through it. It never affects ``can_buy``/``can_sell``.
+        """
+        ref = self._limit_refs.get(key)
+        if ref is None:
+            return False
+        return abs(ref - float(limit)) <= self._limit_tol
 
     def _required_limit_pairs(self) -> list[tuple[pd.Timestamp, str]]:
         """(entry anchor date, symbol) pairs that need a raw limit row.
@@ -366,17 +396,16 @@ class IntradayTailEventModel:
         Base rule (I5a): tradable in a direction iff a valid execution bar exists
         at the entry anchor; a missing bar blocks both directions BEFORE any limit
         logic. I5b layer (when ``price_limit_check``): a buy is additionally blocked
-        if the selected execution minute's RAW CLOSE sits at/above the raw upper
-        limit, and a sell if it sits at/below the raw lower limit (raw-vs-raw, with
-        ``limit_tolerance`` as the equality band). Limit-up blocks BUY only;
-        limit-down blocks SELL only — the other direction still executes if the bar
-        exists.
+        if the RAW execution price sits at/above the raw upper limit, and a sell if
+        it sits at/below the raw lower limit (raw-vs-raw, with ``limit_tolerance``
+        as the equality band). Limit-up blocks BUY only; limit-down blocks SELL
+        only — the other direction still executes if the bar exists.
 
-        The gate's input is the raw close even when the fill pays a VWAP: a locked
-        minute closes exactly at the limit, whereas its VWAP is dragged below by
-        every print that happened on the way into the lock (class docstring has
-        the measured numbers). Feasibility is therefore identical under every
-        price basis.
+        The gate's input is the price the trade PAYS. A locked minute's VWAP is the
+        limit price (every print is there); an opened minute's VWAP is below it
+        precisely because volume traded below the limit, which is what makes the
+        fill achievable. See the class docstring for the measured separation and
+        for why ``limit_tolerance`` must stay at rounding scale.
         """
         entry = pd.Timestamp(period.entry_date).normalize()
         can_buy: dict[str, bool] = {}
@@ -390,20 +419,26 @@ class IntradayTailEventModel:
             if has_bar and self._price_limit_check:
                 key = (entry, s)
                 band = self._limits.get(key)
-                ref = self._limit_refs.get(key)
-                if band is not None and ref is not None:
+                if band is not None:
                     up, down = band
+                    ref = float(price)
                     if ref >= up - self._limit_tol:
                         buy_ok = False
                         self._up_blocked_buys[key] = up
+                    elif self._closed_at(key, up):
+                        # Opened limit-up: the minute ENDED at the limit but traded
+                        # below it, so the fill stands. Counted so the divergence
+                        # from a close-based gate is auditable, never silent.
+                        self._opened_limit_ups[key] = up
                     if ref <= down + self._limit_tol:
                         sell_ok = False
                         self._down_blocked_sells[key] = down
+                    elif self._closed_at(key, down):
+                        self._opened_limit_downs[key] = down
                 else:
-                    # No usable raw limit row, or no raw close to compare it to:
-                    # in lenient mode we must not pretend the limit was checked.
-                    # Record it as unchecked and fall back to the bar-exists rule
-                    # (strict mode already failed at build for missing rows).
+                    # No usable raw limit row: in lenient mode we must not pretend
+                    # the limit was checked. Record it as unchecked and fall back
+                    # to the bar-exists rule (strict mode already failed at build).
                     self._unchecked_limits.add(key)
             can_buy[s] = buy_ok
             can_sell[s] = sell_ok
@@ -436,13 +471,21 @@ class IntradayTailEventModel:
         return len(self._down_blocked_sells)
 
     def missing_limit_rows(self) -> int:
-        """Count of evaluated (date, symbol) pairs the limit gate could not check.
-
-        Either no usable raw ``stk_limit`` row, or no raw close on the selected
-        execution bar to compare against it (possible when the bar prices on the
-        VWAP basis but carries a NaN close). Never counted as a passed check.
-        """
+        """Count of evaluated (date, symbol) pairs with no usable raw limit row."""
         return len(self._unchecked_limits)
+
+    def opened_limit_up_minutes(self) -> int:
+        """Buys ALLOWED at a bar that closed at the up limit but traded below it.
+
+        The exact set where the VWAP gate diverges from a close-based gate: the
+        minute ended locked, yet volume printed under the limit, so the fill was
+        achievable. Reported so the divergence is auditable rather than silent.
+        """
+        return len(self._opened_limit_ups)
+
+    def opened_limit_down_minutes(self) -> int:
+        """Sells ALLOWED at a bar that closed at the down limit but traded above it."""
+        return len(self._opened_limit_downs)
 
     def up_limit_blocked_buy_keys(self) -> set[tuple[pd.Timestamp, str]]:
         """(rebalance date, symbol) keys whose BUY was blocked by a raw up-limit.

@@ -111,12 +111,11 @@ class IntradayExecutionConfig:
 class ExecutionFill:
     """One symbol's execution outcome on one rebalance date (immutable).
 
-    ``exec_price`` is what the trade PAYS (the configured price basis).
-    ``limit_reference_price`` is the selected bar's RAW close, carried separately
-    because "what did I pay" and "was this name limit-locked at that minute" are
-    different questions and must not share an input — see
-    :class:`runtime.backtest.event_models.IntradayTailEventModel` for why. It is
-    ``None`` only when no bar was selected or that bar's close is NaN.
+    ``exec_price`` is what the trade PAYS (the configured price basis) and is what
+    the I5b price-limit gate compares. ``limit_reference_price`` is the selected
+    bar's RAW close, carried only so the gate can LABEL an opened limit minute
+    (closed at the limit, traded through it) for diagnostics — it never decides
+    feasibility. It is ``None`` when no bar was selected or its close is NaN.
     """
 
     symbol: str

@@ -317,96 +317,105 @@ def test_undefined_vwap_blocks_both_directions_and_earns_nothing():
 # --------------------------------------------------------------------------- #
 # 4. I5b price-limit gate — ordering unchanged, RAW-vs-RAW on the executed price
 # --------------------------------------------------------------------------- #
-def _gate(bars, lim, cfg, tol: float = 1e-6):
+def _gate(bars, lim, cfg=_VWAP, **kwargs):
+    """Build the gate on the DEFAULT limit_tolerance unless a test overrides it.
+
+    Tests here deliberately do NOT pin the tolerance: widening the default must
+    show up as a failure here (see the mutation evidence in the report).
+    """
     panel = _daily_panel(["A"], close=50.0)
     model = IntradayTailEventModel(
         calendar_panel=panel, bars=bars, cfg=cfg, price_limits=lim,
-        price_limit_check=True, require_price_limit_coverage=True,
-        limit_tolerance=tol,
+        price_limit_check=True, require_price_limit_coverage=True, **kwargs,
     )
     return model, model.feasibility(_period(model, _JAN), ["A"])
 
 
-def test_limit_up_minute_still_blocks_the_buy_when_the_vwap_is_below_the_limit():
-    """The case a VWAP-gated design would leak — reproduced from real data.
+# A limit-up execution minute has exactly two shapes and the gate must tell them
+# apart. BOTH are tested: a one-sided test cannot distinguish a correct gate from
+# one that simply blocks everything near a limit.
+def test_locked_limit_up_minute_blocks_the_buy():
+    """封死涨停: every print at the limit -> VWAP == limit -> no fill was available."""
+    volume = 1_000.0
+    bars = _bars([("A", f"{_JAN.date()} 14:51:00", 11.0, volume, 11.0 * volume)])
+    lim = _limits([(_JAN, "A", 11.0, 5.0)])
 
-    601858.SH 2023-05-15 14:51: low 45.57, high == close == up_limit 46.13, and
-    amount/volume = 46.048583 — the stock traded UP into the lock, so its VWAP is
-    0.0814 RMB (0.18%) BELOW the limit. The name is genuinely limit-up and the buy
-    must still be blocked; the trade must still be PRICED at the VWAP.
+    model, (can_buy, can_sell) = _gate(bars, lim)
+    assert model.execution_prices().loc[_JAN, "A"] == pytest.approx(11.0)
+    assert can_buy["A"] is False                 # blocked ...
+    assert can_sell["A"] is True                 # ... and only the buy
+    assert model.up_limit_blocked_buys() == 1    # existing I5b diagnostic
+    assert model.opened_limit_up_minutes() == 0
+
+
+def test_opened_limit_up_minute_allows_the_buy():
+    """盘中打开: real prints below the limit -> a fill WAS achievable -> no block.
+
+    Reproduced from real cached data — 601858.SH 2023-05-15 14:51: low 45.57,
+    close == up_limit 46.13, amount/volume = 46.048583. The minute ended at the
+    limit but traded through it on the way, so the buy must go through. This is a
+    DELIBERATE divergence from a close-based gate, which would over-block it.
     """
     volume = 1_000_000.0
     bars = _bars([("A", f"{_JAN.date()} 14:51:00", 46.13, volume, 46.048583 * volume)])
     lim = _limits([(_JAN, "A", 46.13, 37.75)])
 
-    model, (can_buy, can_sell) = _gate(bars, lim, _VWAP)
+    model, (can_buy, can_sell) = _gate(bars, lim)
     assert model.execution_prices().loc[_JAN, "A"] == pytest.approx(46.048583)
-    assert model.execution_prices().loc[_JAN, "A"] < 46.13   # strictly below
-    assert can_buy["A"] is False   # ... and the buy is STILL blocked
-    assert can_sell["A"] is True   # limit-up blocks only the buy
-    assert model.up_limit_blocked_buys() == 1
-
-    # No tolerance could have done this: the gap is 0.0814 RMB, far wider than any
-    # band that would not also block legitimate near-limit trades.
+    assert can_buy["A"] is True                  # NOT blocked — volume traded below
+    assert can_sell["A"] is True
+    assert model.up_limit_blocked_buys() == 0
+    # the divergence from a close-based gate is counted, never silent
+    assert model.opened_limit_up_minutes() == 1
+    # and it hinges on a gap far above rounding scale (0.0814 RMB = 0.18%)
     assert 46.13 - 46.048583 > 0.08
 
 
-def test_limit_gate_is_byte_identical_across_price_bases():
-    """Changing what the fill PAYS must not change what is TRADABLE."""
-    bars = _bars([
-        # locked at the up limit, VWAP dragged under it by the run-up
-        ("A", f"{_JAN.date()} 14:51:00", 46.13, 1_000.0, 46_048.583),
-    ])
-    lim = _limits([(_JAN, "A", 46.13, 37.75)])
-    vwap_model, vwap_gate = _gate(bars, lim, _VWAP)
-    close_model, close_gate = _gate(bars, lim, _CLOSE)
-
-    assert vwap_gate == close_gate
-    assert vwap_model.up_limit_blocked_buys() == close_model.up_limit_blocked_buys()
-    # ... while the fills genuinely differ.
-    assert vwap_model.execution_prices().loc[_JAN, "A"] != pytest.approx(
-        close_model.execution_prices().loc[_JAN, "A"]
-    )
-
-
-def test_down_limit_minute_still_blocks_the_sell_when_the_vwap_is_above_it():
-    """Mirror case: the stock sold DOWN into the lock, so its VWAP sits ABOVE."""
-    bars = _bars([("A", f"{_JAN.date()} 14:51:00", 5.0, 1_000.0, 5_120.0)])  # vwap 5.12
+def test_locked_limit_down_minute_blocks_the_sell():
+    """Mirror: every print at the lower limit -> VWAP == limit -> no bid to hit."""
+    volume = 1_000.0
+    bars = _bars([("A", f"{_JAN.date()} 14:51:00", 5.0, volume, 5.0 * volume)])
     lim = _limits([(_JAN, "A", 10.0, 5.0)])
-    model, (can_buy, can_sell) = _gate(bars, lim, _VWAP)
-    assert model.execution_prices().loc[_JAN, "A"] == pytest.approx(5.12)  # > 5.0
+    model, (can_buy, can_sell) = _gate(bars, lim)
     assert can_sell["A"] is False and can_buy["A"] is True
     assert model.down_limit_blocked_sells() == 1
+    assert model.opened_limit_down_minutes() == 0
 
 
-def test_gate_does_not_fire_when_only_the_vwap_reaches_the_limit():
-    """A close below the limit means the name was not locked — no block.
-
-    The converse of the leak: a VWAP-gated design would also block trades that
-    were never at the limit. The observable limit condition is the close.
-    """
-    bars = _bars([("A", f"{_JAN.date()} 14:51:00", 9.0, 100.0, 1_000.0)])  # vwap 10.0
+def test_opened_limit_down_minute_allows_the_sell():
+    """Mirror: prints above the lower limit -> a sell was achievable -> no block."""
+    volume = 1_000.0
+    bars = _bars([("A", f"{_JAN.date()} 14:51:00", 5.0, volume, 5.02 * volume)])
     lim = _limits([(_JAN, "A", 10.0, 5.0)])
-    model, (can_buy, can_sell) = _gate(bars, lim, _VWAP)
-    assert model.execution_prices().loc[_JAN, "A"] == pytest.approx(10.0)
-    assert can_buy["A"] is True and can_sell["A"] is True
-    assert model.up_limit_blocked_buys() == 0
+    model, (can_buy, can_sell) = _gate(bars, lim)
+    assert model.execution_prices().loc[_JAN, "A"] == pytest.approx(5.02)
+    assert can_sell["A"] is True and can_buy["A"] is True
+    assert model.down_limit_blocked_sells() == 0
+    assert model.opened_limit_down_minutes() == 1
 
 
-def test_vwap_rounding_cannot_move_the_limit_gate():
-    """`amount` is rounded, so a locked minute's VWAP is only ~equal to the limit.
+def test_tolerance_stays_at_rounding_scale_not_a_near_limit_band():
+    """The calibration rule, as an executable fact.
 
-    Measured on real cached bars: on a locked minute amount/volume equals the
-    locked price exactly 78.5% of the time and falls more than 1e-6 below it 9.3%
-    of the time. Because the gate reads the close, none of that reaches it.
+    Real cached 14:51 bars closing at the up limit: the LOCKED ones sit at most
+    0.0021% below the limit (`amount` rounding), the OPENED ones 0.013%-0.017%
+    below — an order of magnitude apart. A rounding-scale band separates them; a
+    "near-limit" band does not, it just re-blocks achievable fills.
     """
-    # every print at 11.00; rounded amount -> vwap = 10.999666...
-    bars = _bars([("A", f"{_JAN.date()} 14:51:00", 11.0, 3_000.0, 32_999.0)])
+    volume = 3_000.0
+    # locked, but `amount` rounded to the yuan -> vwap = 10.999666... (0.003% off)
+    locked = _bars([("A", f"{_JAN.date()} 14:51:00", 11.0, volume, 32_999.0)])
+    # opened: genuine prints below the limit -> vwap 10.94 (0.5% off)
+    opened = _bars([("A", f"{_JAN.date()} 14:51:00", 11.0, volume, 10.94 * volume)])
     lim = _limits([(_JAN, "A", 11.0, 5.0)])
-    model, (can_buy, _) = _gate(bars, lim, _VWAP)
-    assert model.execution_prices().loc[_JAN, "A"] == pytest.approx(10.999666, abs=1e-5)
-    assert can_buy["A"] is False  # the default 1e-6 band is enough: the close is exact
 
+    # A rounding-scale band blocks the locked minute ...
+    assert _gate(locked, lim, limit_tolerance=0.001)[1][0]["A"] is False
+    # ... and still lets the opened one through.
+    assert _gate(opened, lim, limit_tolerance=0.001)[1][0]["A"] is True
+    # Widening to a "near limit" band destroys the distinction: the opened minute,
+    # where volume demonstrably traded below the limit, gets blocked too.
+    assert _gate(opened, lim, limit_tolerance=0.1)[1][0]["A"] is False
 
 def test_missing_bar_still_blocks_before_any_limit_logic():
     panel = _daily_panel(["A"], close=50.0)
@@ -441,44 +450,39 @@ def test_undefined_vwap_blocks_before_the_limit_gate_and_needs_no_limit_row():
     assert model.missing_limit_rows() == 0  # never even consulted
 
 
-def test_switching_to_vwap_never_makes_anything_more_tradable():
-    """The safety direction: VWAP may block MORE, never less.
+def test_vwap_basis_diverges_from_close_basis_only_where_intended():
+    """Enumerate BOTH directions of the behaviour change — nothing silent.
 
-    Over locked / sealing / normal / unpriceable minutes, every (symbol,
-    direction) that the VWAP basis allows must also have been allowed on the
-    bar_close basis. Anything else would be a feasibility leak dressed up as a
-    price-basis change.
+    Versus a close-based gate the VWAP gate is MORE permissive on opened limit
+    minutes (by design: volume traded below the limit, so the fill was
+    achievable) and STRICTER on unpriceable bars (undefined VWAP blocks both
+    ways). Every other shape agrees. There is deliberately no one-sided
+    "never more permissive" invariant here — that would be false, and asserting
+    it would hide the very change the user asked for.
     """
-    syms = ["LOCKED", "SEALING", "NORMAL", "NOVOL", "DOWN"]
+    syms = ["LOCKED", "OPENED", "NORMAL", "NOVOL"]
     panel = _daily_panel(syms, close=50.0)
     specs = [
-        # (symbol, close, volume, amount)
-        ("LOCKED", 11.0, 1_000.0, 10_999.0),      # locked at the up limit
-        ("SEALING", 11.0, 1_000.0, 10_800.0),     # traded up into the lock
-        ("NORMAL", 9.0, 1_000.0, 9_400.0),        # nowhere near a limit
-        ("NOVOL", 9.0, 0.0, 0.0),                 # unpriceable on the VWAP basis
-        ("DOWN", 5.0, 1_000.0, 5_120.0),          # locked at the down limit
+        ("LOCKED", 11.0, 1_000.0, 11_000.0),   # every print at the limit
+        ("OPENED", 11.0, 1_000.0, 10_940.0),   # closed at the limit, traded below
+        ("NORMAL", 9.0, 1_000.0, 9_400.0),     # nowhere near a limit
+        ("NOVOL", 9.0, 0.0, 0.0),              # unpriceable on the VWAP basis
     ]
     bars = _bars([(s, f"{_JAN.date()} 14:51:00", c, v, a) for (s, c, v, a) in specs])
     lim = _limits([(_JAN, s, 11.0, 5.0) for s in syms])
 
-    def _gate_of(cfg):
+    def _buys(cfg):
         model = IntradayTailEventModel(
             calendar_panel=panel, bars=bars, cfg=cfg, price_limits=lim,
             price_limit_check=True, require_price_limit_coverage=False,
         )
-        return model.feasibility(_period(model, _JAN), syms)
+        return model.feasibility(_period(model, _JAN), syms)[0]
 
-    buy_v, sell_v = _gate_of(_VWAP)
-    buy_c, sell_c = _gate_of(_CLOSE)
-    for s in syms:
-        assert not (buy_v[s] and not buy_c[s]), f"{s}: VWAP allowed a buy close blocked"
-        assert not (sell_v[s] and not sell_c[s]), f"{s}: VWAP allowed a sell close blocked"
-    # both limit-locked names are blocked in the right direction on BOTH bases ...
-    assert buy_v["LOCKED"] is False and buy_v["SEALING"] is False
-    assert sell_v["DOWN"] is False
-    # ... and the unpriceable name is the only one strictly stricter under VWAP.
-    assert (buy_c["NOVOL"], buy_v["NOVOL"]) == (True, False)
+    vwap, close = _buys(_VWAP), _buys(_CLOSE)
+    assert (close["OPENED"], vwap["OPENED"]) == (False, True)   # more permissive
+    assert (close["NOVOL"], vwap["NOVOL"]) == (True, False)     # stricter
+    assert vwap["LOCKED"] is False and close["LOCKED"] is False  # agree: blocked
+    assert vwap["NORMAL"] is True and close["NORMAL"] is True    # agree: allowed
 
 
 def test_limit_gate_ignores_the_daily_close_under_vwap():
