@@ -118,6 +118,23 @@ duplicate the sample gate — the gate asks "can we estimate a CI at all?"
 (INSUFFICIENT below it); the lower-CI test asks "is it convincingly above the bar?"
 (PASS above it). FAIL stays POINT-based and known-fact-only; a NaN CI bound never
 convicts.
+
+THE MONOTONICITY DIRECTION IS THREE-VALUED (v0.9). v0.8 moved the monotonicity gate
+onto a per-date rank statistic, which was the right KIND of statistic — and then the
+eleven-factor re-run showed that statistic is heavily attenuated by daily noise: an
+empirically perfect quantile ladder scores 0.045-0.106 on it, while the direction
+gate still sat at a bare 0.0 with no dispersion estimate anywhere. Two factors
+landed 0.021 apart across that boundary. So the direction is now decided by the
+N_eff-based CI of the per-date series (:func:`_monotonicity_direction`), and the
+answer can be UNKNOWN — CI straddles 0 — as well as holds/contradicted.
+
+    UNKNOWN NEVER RESCUES. An unknown direction is checked AFTER every other
+    predictive criterion: if ICIR / NW-t / win rate / OOS consistency fail, the axis
+    still FAILs and the unknown is merely disclosed. Only when everything else has
+    cleared and the direction ALONE cannot be asserted does the axis become
+    INSUFFICIENT_DATA. "We could not tell" withholds a PASS; it never withholds a
+    FAIL that was independently earned. This is the same asymmetry as UNKNOWN NEVER
+    CONVICTS above, read from the other side.
 """
 
 from __future__ import annotations
@@ -240,6 +257,11 @@ class VerdictThresholds:
     # monotone". A 0.8 strength bar rejected tail-concentrated real factors whose
     # power sits in one extreme (e.g. jump-amount-corr: ICIR -0.40, NW-t -14.8, yet
     # Q3-humped). Raise it to demand strength. UNVALIDATED (§11).
+    # (v0.9) The bar is now compared against the per-date monotonicity's aligned CI
+    # LOWER bound, not its point — so it is the bar a direction claim must be
+    # CONVINCINGLY above. The FAIL side stays pinned at 0 (reversal is a fact about
+    # the sign, not about how strong this threshold was set); see
+    # _monotonicity_direction.
     min_monotonicity_spearman: float = 0.0
 
     def __post_init__(self) -> None:
@@ -326,7 +348,19 @@ class VerdictInputs:
     #: averaging (structurally parallel to the rank IC). RAW. NaN = UNKNOWN, which
     #: falls back to ``monotonicity_spearman`` with the substitution DISCLOSED in
     #: the axis reasons, so an IR built before v0.8 stays judgeable.
+    #: (v0.9) This POINT is now only the FALLBACK for the direction gate; the CI
+    #: below is what decides when it is available.
     monotonicity_spearman_by_date: float = float("nan")
+    #: return_risk: 95% CI bounds of ``monotonicity_spearman_by_date``, computed
+    #: with the per-date series' OWN N_eff (design §6, v0.9 — the same ``mean_ci``
+    #: the ICIR uses). RAW (the verdict applies ``expected_ic_sign``). This is what
+    #: the monotonicity DIRECTION gate reads: the bare point carries no dispersion
+    #: estimate, and a cross-date mean of per-date rank correlations is so
+    #: attenuated by daily noise that "point > 0.0" was a coin flip dressed as a
+    #: criterion. NaN = UNKNOWN -> the gate falls back to the point (v0.8 behaviour)
+    #: with the fallback DISCLOSED.
+    monotonicity_spearman_by_date_ci_low: float = float("nan")
+    monotonicity_spearman_by_date_ci_high: float = float("nan")
     oos_available: bool = False        # oos_generalization
     oos_sign_consistent: bool = False  # expected sign holds in BOTH subperiods
     oos_sign_flipped: bool = False     # explicit flip -> Predictive FAIL
@@ -458,17 +492,31 @@ def _clears_level(point_estimate: float, threshold: float) -> bool:
     return math.isfinite(point_estimate) and point_estimate > threshold
 
 
+def _aligned_bounds(sign: int, ci_low: float, ci_high: float) -> tuple[float, float]:
+    """The CI of ``sign * estimate``: ``(lower, upper)`` in the EXPECTED direction.
+
+    ``ci_low``/``ci_high`` bracket the RAW estimate. Multiplying an INTERVAL by a
+    negative number REVERSES it, so the endpoints are re-sorted rather than kept in
+    place — the min/max swap at ``sign = -1`` is the whole content of this helper,
+    and doing it in one place is why the ICIR gate and the (v0.9) monotonicity gate
+    cannot drift apart on the convention.
+
+    ``(NaN, NaN)`` when either bound is unknown — the caller then treats the
+    estimate as not-convincingly-clearing, and never as a FAIL.
+    """
+    if not (math.isfinite(ci_low) and math.isfinite(ci_high)):
+        nan = float("nan")
+        return nan, nan
+    return min(sign * ci_low, sign * ci_high), max(sign * ci_low, sign * ci_high)
+
+
 def _aligned_lower_bound(sign: int, ci_low: float, ci_high: float) -> float:
     """The lower CI bound of ``sign * estimate`` (the bound in the EXPECTED direction).
 
-    ``ci_low``/``ci_high`` bracket the RAW estimate; multiplying the interval by the
-    hypothesis sign and taking the smaller endpoint yields the worst-case value in
-    the direction the factor claims. NaN when either bound is unknown — the caller
-    then treats the estimate as not-convincingly-clearing (never a FAIL).
+    The worst-case value in the direction the factor claims — what a POSITIVE claim
+    (an axis PASS) must clear. NaN when either bound is unknown.
     """
-    if not (math.isfinite(ci_low) and math.isfinite(ci_high)):
-        return float("nan")
-    return min(sign * ci_low, sign * ci_high)
+    return _aligned_bounds(sign, ci_low, ci_high)[0]
 
 
 # -- shared fact readers -------------------------------------------------
@@ -578,42 +626,147 @@ def _all_spreads_negative(inputs: VerdictInputs) -> bool:
     return bool(known) and all(a <= 0 for a in known)
 
 
-def _gated_monotonicity(inputs: VerdictInputs) -> tuple[float, bool]:
-    """The RAW monotonicity the Predictive axis gates on + whether it FELL BACK.
+# -- the (v0.9) three-valued monotonicity DIRECTION gate ------------------
+#
+# Monotonicity is a DIRECTION gate, not a strength gate (v0.7) — but v0.8 revealed
+# that its statistic cannot support even that claim as a bare point. Averaging
+# per-date rank correlations across dates is heavily ATTENUATED by daily noise: in
+# this project's real eleven-factor runs an empirically perfect quantile ladder
+# scores only 0.045-0.106, and two factors sat 0.021 apart across a threshold of
+# exactly 0.0 with NO dispersion estimate anywhere in the decision. "Point > 0.0"
+# on a noisy mean is a coin flip wearing a criterion's clothes — the same defect
+# v0.6 fixed for the ICIR by gating on its N_eff lower bound.
+#
+# So the direction is decided by the CI, and it is THREE-VALUED:
+#
+#     aligned CI low  > bar   -> HOLDS         (may PASS)
+#     aligned CI high < 0     -> CONTRADICTED  (FAIL — a measured reversal)
+#     otherwise               -> UNKNOWN       (neither convicts nor acquits)
+#
+# WHY THE CONTRADICTED TEST IS PINNED AT 0 AND NOT AT THE BAR: they are different
+# claims. "Above the bar" is the positive claim, so it moves with a configurable
+# (possibly strength-demanding) bar. "Below zero" is REVERSAL — the buckets are
+# ordered the wrong way round — which is a fact about the sign, not about how
+# strong the project decided to be. Pinning FAIL to a raised bar would convict a
+# correctly-ordered-but-weak factor of being reversed, which it is not.
 
-    v0.8 gates on ``monotonicity_spearman_by_date`` (per-date Spearman, each capped
-    in [-1, 1] before averaging) rather than the pooled ``monotonicity_spearman``:
-    the Predictive axis is a RANK claim, and the pooled statistic is an unbounded
-    MAGNITUDE statistic — a few extreme return days landing in one bucket can flip
-    it while the daily-capped rank IC barely moves. Gating a rank axis on a
-    magnitude statistic is the category error being corrected.
+MONO_HOLDS = "HOLDS"
+MONO_CONTRADICTED = "CONTRADICTED"
+MONO_UNKNOWN = "UNKNOWN"
 
-    Returns ``(value, used_fallback)``. When the per-date figure is UNKNOWN (an IR
-    produced before v0.8, or too few finite buckets on every date) the pooled field
-    is used instead and ``used_fallback`` is True, so the caller can DISCLOSE the
-    substitution rather than silently judge on the weaker statistic.
+#: Level-2 fallback disclosure: judged on the POOLED magnitude statistic (v0.7
+#: behaviour). Wording kept verbatim from v0.8 — reports and tests read it.
+_MONO_POOLED_FALLBACK_NOTE = (
+    "monotonicity gate FELL BACK to the pooled 'monotonicity_spearman': "
+    "the per-date figure ('monotonicity_spearman_by_date', design §6 v0.8) "
+    "was not supplied or not measurable. The pooled statistic is unbounded "
+    "and magnitude-sensitive, so this monotonicity judgement is weaker "
+    "than a v0.8 run's."
+)
+
+#: Level-1 fallback disclosure: the per-date statistic IS available but its CI is
+#: not, so the gate reverts to the bare sign of the point (v0.8 behaviour).
+#: DELIBERATELY NOT the pooled note's wording — the two are different degradations
+#: (which STATISTIC vs which ESTIMATOR OF ITS UNCERTAINTY) and a reader must be
+#: able to tell which one happened.
+_MONO_POINT_FALLBACK_NOTE = (
+    "monotonicity gate REVERTED to the BARE per-date POINT (v0.8 behaviour): no "
+    "'monotonicity_spearman_by_date_ci_low/high' was supplied, so the direction was "
+    "decided WITHOUT any dispersion estimate. A cross-date mean of per-date rank "
+    "correlations is strongly attenuated by daily noise, so a point that merely "
+    "lands on the right side of the bar is NOT the same evidence a v0.9 CI would be."
+)
+
+
+def _monotonicity_direction(
+    inputs: VerdictInputs, thr: VerdictThresholds
+) -> tuple[str, tuple[str, ...]]:
+    """Three-valued monotonicity DIRECTION + its disclosure notes (design §6, v0.9).
+
+    Returns ``(MONO_HOLDS | MONO_CONTRADICTED | MONO_UNKNOWN, notes)``.
+
+    THE FALLBACK CHAIN, each level DISCLOSED in ``notes`` (never silent):
+      1. the per-date CI (v0.9)      — three-valued, the intended path.
+      2. the per-date POINT (v0.8)   — CI absent. TWO-valued, bit-for-bit the v0.8
+         rule: aligned point above the bar HOLDS, anything else (including an
+         unknown) CONTRADICTS. It cannot yield UNKNOWN: without a dispersion
+         estimate there is nothing to be uncertain WITH, and inventing an UNKNOWN
+         here would silently convert every pre-v0.9 FAIL into INSUFFICIENT_DATA.
+      3. the POOLED point (v0.7)     — per-date figure absent too. Same two-valued
+         rule on the weaker, magnitude-sensitive statistic. A NaN here lands on
+         CONTRADICTED, exactly as v0.7/v0.8 treated an unmeasurable monotonicity.
+
+    RAW inputs in, hypothesis applied here: this is one of the two places (with
+    :func:`_aligned_net`) that knows what ``expected_ic_sign`` means.
     """
-    if math.isfinite(inputs.monotonicity_spearman_by_date):
-        return inputs.monotonicity_spearman_by_date, False
-    return inputs.monotonicity_spearman, True
+    sign = inputs.expected_ic_sign
+    bar = thr.min_monotonicity_spearman
+
+    low, high = _aligned_bounds(
+        sign,
+        inputs.monotonicity_spearman_by_date_ci_low,
+        inputs.monotonicity_spearman_by_date_ci_high,
+    )
+    if math.isfinite(low) and math.isfinite(high):
+        interval = f"[{low:+.4f}, {high:+.4f}]"
+        if low > bar:
+            return MONO_HOLDS, (
+                f"monotonicity direction HOLDS: the hypothesis-aligned per-date "
+                f"monotonicity 95% CI {interval} (N_eff-based) lies entirely above "
+                f"the bar {bar}.",
+            )
+        if high < 0.0:
+            return MONO_CONTRADICTED, (
+                f"monotonicity direction CONTRADICTED: the hypothesis-aligned "
+                f"per-date monotonicity 95% CI {interval} (N_eff-based) lies "
+                f"entirely BELOW 0 — the quantile buckets are ordered AGAINST the "
+                f"stated hypothesis, which is a measured negative finding.",
+            )
+        return MONO_UNKNOWN, (
+            f"monotonicity direction is INDISTINGUISHABLE FROM 0: the "
+            f"hypothesis-aligned per-date monotonicity 95% CI {interval} "
+            f"(N_eff-based, point {sign * inputs.monotonicity_spearman_by_date:+.4f}) "
+            f"straddles the bar {bar} / zero, so the evidence is not sufficient to "
+            f"ASSERT that the direction holds. Not a refutation either — this "
+            f"neither convicts nor acquits.",
+        )
+
+    point = inputs.monotonicity_spearman_by_date
+    if math.isfinite(point):
+        state = (
+            MONO_HOLDS if _clears_level(sign * point, bar) else MONO_CONTRADICTED
+        )
+        return state, (_MONO_POINT_FALLBACK_NOTE,)
+
+    state = (
+        MONO_HOLDS
+        if _clears_level(sign * inputs.monotonicity_spearman, bar)
+        else MONO_CONTRADICTED
+    )
+    return state, (_MONO_POOLED_FALLBACK_NOTE, _MONO_POINT_FALLBACK_NOTE)
 
 
-def _has_in_sample_point_signal(inputs: VerdictInputs, thr: VerdictThresholds) -> bool:
-    """POINT-estimate in-sample signal: |ICIR|, aligned monotonicity, NW-t, win rate.
+def _has_core_point_signal(inputs: VerdictInputs, thr: VerdictThresholds) -> bool:
+    """POINT-estimate in-sample signal on the MAGNITUDE metrics: |ICIR|, NW-t, win rate.
 
     Every component must be a finite, known number: an unknown is not a signal.
     This is the v0.5 point check, kept for the FAIL determination — a factor whose
     POINT metrics do not clear has no signal at all (a negative finding). The CI
     lower-bound test (design §6, v0.6) is applied SEPARATELY, only to decide PASS vs
     "promising but unconfirmed" for a factor that DID clear on the point.
+
+    MONOTONICITY IS DELIBERATELY NOT IN HERE (v0.9). It used to be, as a fourth
+    ``and`` term, which made it silently indistinguishable from the others — and
+    that is exactly what must not happen now that it can come back UNKNOWN. Folding
+    a three-valued fact into a boolean would collapse UNKNOWN onto one of the two
+    other answers; keeping it separate is what lets the axis route an unknown
+    direction to INSUFFICIENT_DATA while an unknown-direction factor that ALSO
+    fails here still FAILs.
     """
-    monotonicity, _ = _gated_monotonicity(inputs)
-    aligned_monotonicity = inputs.expected_ic_sign * monotonicity
     return (
         _clears_magnitude(inputs.ic_ir, thr.min_abs_icir)
         and _clears_magnitude(inputs.ic_nw_t, thr.min_abs_nw_t)
         and _clears_level(inputs.ic_win_rate, thr.min_ic_win_rate)
-        and _clears_level(aligned_monotonicity, thr.min_monotonicity_spearman)
     )
 
 
@@ -634,14 +787,29 @@ def _predictive_axis(inputs: VerdictInputs, thr: VerdictThresholds) -> AxisVerdi
                 reasons (gate vs no-OOS) are named distinctly.
       3. FAIL   sufficient data + OOS, but a NEGATIVE finding: the OOS sign is not
                 consistent OR the in-sample POINT metrics do not clear (no signal at
-                all). POINT-based, so a merely wide CI never manufactures a FAIL.
-      4. PASS   OOS sign consistent AND point metrics clear AND the ICIR LOWER CI
-                bound (N_eff-based, expected direction) exceeds the bar — design §6,
-                v0.6: convincingly above, not the naked point.
+                all) OR the monotonicity direction is CONTRADICTED (v0.9: its
+                aligned CI lies entirely below 0). POINT-based on the magnitude
+                metrics, so a merely wide ICIR CI never manufactures a FAIL.
+      3b. INSUFFICIENT_DATA  (v0.9) everything else cleared, but the monotonicity
+                direction is UNKNOWN — its aligned CI straddles 0, so the direction
+                can be neither asserted nor refuted.
+      4. PASS   OOS sign consistent AND point metrics clear AND monotonicity
+                direction HOLDS AND the ICIR LOWER CI bound (N_eff-based, expected
+                direction) exceeds the bar — design §6, v0.6: convincingly above,
+                not the naked point.
       5. INSUFFICIENT_DATA  point metrics clear + OOS consistent, but the ICIR lower
                 CI does NOT clear (or is unknown): promising, yet not confirmed at
                 the pre-registered bar. This is the "gate passed, CI still straddles
                 the bar" case — distinct from the sample gate (step 2).
+
+    WHERE UNKNOWN SITS IN THE ORDER IS THE WHOLE POINT (v0.9). Step 3 runs FIRST and
+    is checked against the OTHER criteria in full, so an UNKNOWN monotonicity can
+    never RESCUE a factor that fails on ICIR / NW-t / win rate / OOS consistency:
+    that factor still FAILs, and the unknown direction is merely disclosed
+    alongside. Step 3b is reached only when every other criterion has cleared and
+    the direction ALONE cannot be asserted. "We could not tell" is a reason to
+    withhold a PASS, never a reason to withhold a FAIL that was independently
+    earned.
     """
     sign = inputs.expected_ic_sign
     # 1. FAIL on a KNOWN out-of-sample reversal — before the gate.
@@ -670,25 +838,24 @@ def _predictive_axis(inputs: VerdictInputs, thr: VerdictThresholds) -> AxisVerdi
     if reasons:
         return AxisVerdict(AXIS_INSUFFICIENT_DATA, tuple(reasons))
 
-    # The monotonicity actually gated on (design §6, v0.8). When the per-date
-    # figure is absent we judge on the pooled one, but we SAY SO — a silent
-    # substitution would hide that the decision rests on the magnitude-sensitive
-    # statistic the v0.8 fix exists to stop gating on.
-    _, mono_fallback = _gated_monotonicity(inputs)
-    mono_notes: tuple[str, ...] = ()
-    if mono_fallback:
-        mono_notes = (
-            "monotonicity gate FELL BACK to the pooled 'monotonicity_spearman': "
-            "the per-date figure ('monotonicity_spearman_by_date', design §6 v0.8) "
-            "was not supplied or not measurable. The pooled statistic is unbounded "
-            "and magnitude-sensitive, so this monotonicity judgement is weaker "
-            "than a v0.8 run's.",
-        )
+    # The monotonicity direction actually gated on (design §6, v0.9): three-valued,
+    # decided on the per-date CI, with every fallback level DISCLOSED. A silent
+    # substitution would hide that the decision rests on a weaker statistic (the
+    # pooled magnitude one the v0.8 fix exists to stop gating on) or on a point with
+    # no dispersion estimate at all (the v0.9 fix).
+    mono_state, mono_notes = _monotonicity_direction(inputs, thr)
 
-    # 3. FAIL: a measured negative finding (OOS sign not consistent, or no point
-    #    signal at all). POINT-based — a wide CI is handled below, not here.
-    point_signal = _has_in_sample_point_signal(inputs, thr)
-    if (not inputs.oos_sign_consistent) or (not point_signal):
+    # 3. FAIL: a measured negative finding (OOS sign not consistent, no point signal
+    #    at all, or a CONTRADICTED monotonicity direction). Checked BEFORE the
+    #    UNKNOWN branch, so an unknown direction never rescues a factor that failed
+    #    on its own other evidence. POINT-based on the magnitude metrics — a wide
+    #    ICIR CI is handled below, not here.
+    point_signal = _has_core_point_signal(inputs, thr)
+    if (
+        (not inputs.oos_sign_consistent)
+        or (not point_signal)
+        or mono_state == MONO_CONTRADICTED
+    ):
         reasons = []
         if not inputs.oos_sign_consistent:
             reasons.append(
@@ -699,9 +866,30 @@ def _predictive_axis(inputs: VerdictInputs, thr: VerdictThresholds) -> AxisVerdi
         if not point_signal:
             reasons.append(
                 "in-sample POINT metrics do NOT clear the predictive thresholds "
-                "(ICIR / NW-t / win rate / monotonicity)."
+                "(ICIR / NW-t / win rate)."
+            )
+        if mono_state == MONO_CONTRADICTED:
+            reasons.append(
+                "quantile monotonicity does not hold in the hypothesized direction."
             )
         return AxisVerdict(AXIS_FAIL, tuple(reasons) + mono_notes)
+
+    # 3b. UNKNOWN monotonicity with EVERYTHING ELSE cleared -> INSUFFICIENT_DATA
+    #     (v0.9). Reached only after step 3 declined to fail: this branch withholds
+    #     a PASS, it never withholds a FAIL.
+    if mono_state == MONO_UNKNOWN:
+        return AxisVerdict(
+            AXIS_INSUFFICIENT_DATA,
+            (
+                "every other predictive criterion cleared (ICIR / NW-t / win rate "
+                "point metrics, and the out-of-sample sign is consistent), but the "
+                "monotonicity DIRECTION cannot be distinguished from 0: its "
+                "confidence interval straddles zero, so the evidence is NOT "
+                "sufficient to assert that the direction holds. Withheld, not "
+                "refuted — an unknown direction is not a PASS and not a FAIL.",
+            )
+            + mono_notes,
+        )
 
     # 4/5. Point signal present + OOS consistent. The #3 lower-CI test decides
     #      PASS vs "promising but unconfirmed" (INSUFFICIENT_DATA). This is ABOVE
@@ -1027,6 +1215,9 @@ __all__ = [
     "AXIS_NOT_ASSESSED",
     "AXIS_VERDICTS",
     "AXIS_NAMES",
+    "MONO_HOLDS",
+    "MONO_CONTRADICTED",
+    "MONO_UNKNOWN",
     "VerdictThresholds",
     "VerdictInputs",
     "AxisVerdict",

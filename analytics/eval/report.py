@@ -128,6 +128,15 @@ def extract_verdict_inputs(
         monotonicity_spearman_by_date=_payload_number(
             returns, "monotonicity_spearman_by_date", float("nan")
         ),
+        # design §6 v0.9: the per-date monotonicity's N_eff-based CI, which is what
+        # the DIRECTION gate reads. Absent (a pre-v0.9 IR) -> NaN -> the verdict
+        # reverts to the bare point (v0.8 behaviour) and DISCLOSES that too.
+        monotonicity_spearman_by_date_ci_low=_payload_number(
+            returns, "monotonicity_spearman_by_date_ci_low", float("nan")
+        ),
+        monotonicity_spearman_by_date_ci_high=_payload_number(
+            returns, "monotonicity_spearman_by_date_ci_high", float("nan")
+        ),
         # Incremental axis facts (design §6, v0.5). A Skipped purity section (no
         # book) leaves the payload empty -> known_factors_supplied defaults False
         # -> the axis is NOT_ASSESSED. A supplied-but-unmeasurable orthogonalized

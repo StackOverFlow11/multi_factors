@@ -61,11 +61,12 @@ from analytics.eval.stats import (
     half_life,
     hypothesis_win_rate,
     information_ratio_ci,
+    mean_by_date_spearman,
     mean_ci,
     newey_west_t,
     sortino,
     spearman,
-    spearman_by_date,
+    spearman_series_by_date,
 )
 from analytics.factor import ic_summary
 from analytics.performance import performance_summary
@@ -315,6 +316,11 @@ class StandardFactorEvaluator(FactorEvaluator):
         top, bottom = ir.cfg.long_short
         buckets = list(quantiles.columns)
 
+        # The PER-DATE monotonicity series, built ONCE (design §6, v0.9): the
+        # payload's point figure and its CI are then two reductions of the SAME
+        # observations, and the panel is walked once instead of twice.
+        mono_by_date = spearman_series_by_date(quantiles)
+
         bucket_mean = {int(q): as_float(quantiles[q].mean()) for q in buckets}
         bucket_nav = {
             int(q): as_float((1.0 + quantiles[q].dropna()).prod()) for q in buckets
@@ -363,13 +369,40 @@ class StandardFactorEvaluator(FactorEvaluator):
             # buckets is capped in [-1, 1] BEFORE averaging across dates, exactly
             # like the rank IC. Robust to a few extreme-return days concentrating
             # in one bucket. RAW; the verdict applies expected_ic_sign.
-            "monotonicity_spearman_by_date": spearman_by_date(quantiles),
+            #
+            # (v0.9) The POINT is kept — reported, cross-run comparable — but it is
+            # no longer what decides the direction on its own; the CI attached below
+            # is. Identical value to v0.8 by construction (same reduction, same
+            # series).
+            "monotonicity_spearman_by_date": mean_by_date_spearman(mono_by_date),
             "gross_long_short_mean": as_float(gross.mean()),
             "net_long_short_by_cost": net_by_cost,
             "net_long_short_cumulative_by_cost": cumulative_by_cost,
             "fee_rate_base": ir.ctx.fee_rate,
             "periods_per_year": ir.periods_per_year,
         }
+        # N_eff-based CI of the PER-DATE monotonicity (design §6, v0.9) — the same
+        # mean_ci the ICIR uses, on the per-date rank series instead of the IC
+        # series. THIS is what the Predictive axis' direction gate reads: the bare
+        # point carries no dispersion estimate at all, and this project's real runs
+        # put a perfect quantile ladder at only ~0.05-0.11 on it, so "point > 0.0"
+        # was a coin flip dressed as a criterion. The CI turns the gate three-valued
+        # (holds / contradicted / UNKNOWN) — see verdict._monotonicity_direction.
+        mono_ci = mean_ci(mono_by_date, confidence=DEFAULT_CONFIDENCE)
+        payload["monotonicity_spearman_by_date_se"] = mono_ci["se"]
+        payload["monotonicity_spearman_by_date_ci_low"] = mono_ci["ci_low"]
+        payload["monotonicity_spearman_by_date_ci_high"] = mono_ci["ci_high"]
+        payload["monotonicity_spearman_by_date_n_eff"] = mono_ci["n_eff"]
+        payload["monotonicity_spearman_by_date_n_dates"] = int(mono_by_date.size)
+        payload["monotonicity_spearman_by_date_ci_note"] = (
+            "N_eff-based 95% CI of the per-date monotonicity (design §6, v0.9). The "
+            "Predictive axis gates the monotonicity DIRECTION on this interval, not "
+            "on the point: aligned CI entirely above the bar = direction holds; "
+            "entirely below 0 = contradicted (FAIL); straddling 0 = UNKNOWN, which "
+            "neither convicts nor acquits. n_dates counts the dates that qualified "
+            "(< 3 finite buckets or all-tied dates are skipped, not zero-filled)."
+        )
+
         # N_eff-based CI of the base-cost QN-Q1 spread (design §6, v0.6). REPORTED
         # for the reader (b); the Tradable axis still gates on the POINT base spread
         # > 0 (the CI on this leg difference is point-only for now — c names only

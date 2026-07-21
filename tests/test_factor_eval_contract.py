@@ -10,6 +10,7 @@ computes a metric.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 import math
@@ -25,6 +26,7 @@ from analytics.eval import (
     INSUFFICIENT_DATA,
     MANDATORY_SECTIONS,
     REJECT,
+    VERDICT_KEYS,
     WATCH,
     AxisVerdict,
     EvalConfig,
@@ -41,7 +43,15 @@ from analytics.eval.render import MAX_VALUE_CHARS
 
 # The v0.8 spread fix lived in an exact arithmetic expression, so the lock has to
 # be on that expression itself, not on a PASS/FAIL that happens to agree with it.
-from analytics.eval.verdict import _aligned_net, _all_spreads_negative, _base_spread
+from analytics.eval.verdict import (
+    MONO_CONTRADICTED,
+    MONO_HOLDS,
+    MONO_UNKNOWN,
+    _aligned_net,
+    _all_spreads_negative,
+    _base_spread,
+    _monotonicity_direction,
+)
 from factors.base import Factor
 from factors.compute.candidates import (
     VALUE_FIELDS,
@@ -2390,3 +2400,241 @@ def test_the_negative_sign_monotonicity_gate_is_still_direction_aligned():
         VerdictInputs(**common, monotonicity_spearman_by_date=0.7)
     )
     assert reversed_.predictive.verdict == AXIS_FAIL
+
+
+# --------------------------------------------------------------------------
+# v0.9: the monotonicity DIRECTION gate is decided by the per-date CI and is
+# THREE-VALUED (holds / contradicted / UNKNOWN).
+#
+# Why: the v0.8 per-date statistic turned out to be heavily attenuated by daily
+# noise — an empirically perfect ladder scores ~0.05-0.11 — while the gate sat at
+# a bare 0.0 with no dispersion estimate at all. Two real factors landed 0.021
+# apart across that boundary.
+# --------------------------------------------------------------------------
+
+
+#: CI bounds only; the point is supplied too, since a real payload always carries
+#: both and the reasons quote it.
+def _mono(point: float, low: float, high: float) -> dict:
+    return {
+        "monotonicity_spearman_by_date": point,
+        "monotonicity_spearman_by_date_ci_low": low,
+        "monotonicity_spearman_by_date_ci_high": high,
+    }
+
+
+def test_the_monotonicity_direction_gate_is_three_valued_on_the_ci():
+    """The three states, each reached by moving ONLY the interval."""
+    # (a) entirely above the bar -> the direction may be asserted -> PASS
+    holds = decide_verdict(
+        _inputs(**{**_STRONG, **_mono(0.08, 0.03, 0.13)}, **_OOS_OK)
+    )
+    assert holds.predictive.verdict == AXIS_PASS
+
+    # (b) entirely below 0 -> a MEASURED reversal -> FAIL
+    contradicted = decide_verdict(
+        _inputs(**{**_STRONG, **_mono(-0.08, -0.13, -0.03)}, **_OOS_OK)
+    )
+    assert contradicted.predictive.verdict == AXIS_FAIL
+    assert any("CONTRADICTED" in x for x in contradicted.predictive.reasons)
+
+    # (c) straddling 0 -> UNKNOWN -> neither convicts nor acquits.
+    #     THE POINT IS POSITIVE (0.08, which v0.8 would have waved through as a
+    #     direction that "holds"): it is the INTERVAL that withholds the PASS.
+    unknown = decide_verdict(
+        _inputs(**{**_STRONG, **_mono(0.08, -0.02, 0.18)}, **_OOS_OK)
+    )
+    assert unknown.predictive.verdict == AXIS_INSUFFICIENT_DATA
+    assert any("straddles" in x for x in unknown.predictive.reasons)
+    assert any(
+        "not a PASS and not a FAIL" in x for x in unknown.predictive.reasons
+    )
+
+
+def test_an_unknown_monotonicity_does_not_rescue_a_factor_that_fails_elsewhere():
+    """THE routing rule. An unknown direction withholds a PASS; it must never
+    withhold a FAIL that the other evidence already earned — otherwise 'we could not
+    measure the ladder' would upgrade every genuinely bad factor from Reject to
+    INSUFFICIENT-DATA, which is the exact opposite of quick-to-reject."""
+    straddling = _mono(0.08, -0.02, 0.18)
+
+    # each of the other predictive criteria, broken ONE AT A TIME
+    weak_icir = {**_STRONG, "ic_ir": 0.05, "ic_ir_ci_low": -0.2, "ic_ir_ci_high": 0.3}
+    weak_nw_t = {**_STRONG, "ic_nw_t": 0.4}
+    weak_win = {**_STRONG, "ic_win_rate": 0.41}
+    for broken in (weak_icir, weak_nw_t, weak_win):
+        r = decide_verdict(_inputs(**{**broken, **straddling}, **_OOS_OK))
+        assert r.predictive.verdict == AXIS_FAIL
+        assert r.verdict == REJECT
+        # and the unknown direction is DISCLOSED alongside, not swallowed
+        assert any("INDISTINGUISHABLE FROM 0" in x for x in r.predictive.reasons)
+
+    # out-of-sample inconsistency is "elsewhere" too
+    oos_bad = decide_verdict(
+        _inputs(
+            **{**_STRONG, **straddling},
+            oos_available=True,
+            oos_sign_consistent=False,
+        )
+    )
+    assert oos_bad.predictive.verdict == AXIS_FAIL
+
+    # ... and with everything else intact the SAME unknown yields INSUFFICIENT_DATA
+    alone = decide_verdict(_inputs(**{**_STRONG, **straddling}, **_OOS_OK))
+    assert alone.predictive.verdict == AXIS_INSUFFICIENT_DATA
+
+
+def test_an_unknown_monotonicity_axis_does_not_become_a_reject_label():
+    """Predictive INSUFFICIENT_DATA + nothing failing = INSUFFICIENT-DATA, never
+    Reject: the deployment derivation must not read a withheld PASS as a failure."""
+    r = decide_verdict(
+        _inputs(**{**_STRONG, **_mono(0.08, -0.02, 0.18)}, **_OOS_OK)
+    )
+    assert r.predictive.verdict == AXIS_INSUFFICIENT_DATA
+    assert r.verdict == INSUFFICIENT_DATA
+
+
+def test_the_aligned_monotonicity_ci_swaps_min_and_max_at_sign_minus_one():
+    """Multiplying an interval by -1 REVERSES it. A low-vol factor (sign=-1) whose
+    RAW per-date CI is entirely NEGATIVE is a factor whose ALIGNED CI is entirely
+    positive — i.e. its hypothesis holds. Getting the swap wrong reads it backwards."""
+    thr = VerdictThresholds()
+    # raw [-0.13, -0.03] at sign=-1 -> aligned [+0.03, +0.13] -> HOLDS
+    state, reasons = _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=-1, **_mono(-0.08, -0.13, -0.03)), thr
+    )
+    assert state == MONO_HOLDS
+    assert "[+0.0300, +0.1300]" in reasons[0]   # re-sorted, not left reversed
+
+    # raw [+0.03, +0.13] at sign=-1 -> aligned [-0.13, -0.03] -> CONTRADICTED
+    state, _ = _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=-1, **_mono(0.08, 0.03, 0.13)), thr
+    )
+    assert state == MONO_CONTRADICTED
+
+    # the same raw intervals at sign=+1 read the other way round
+    assert _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, **_mono(0.08, 0.03, 0.13)), thr
+    )[0] == MONO_HOLDS
+    assert _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, **_mono(-0.08, -0.13, -0.03)), thr
+    )[0] == MONO_CONTRADICTED
+
+    # end to end: the sign=-1 PASS survives the new gate
+    common = dict(
+        expected_ic_sign=-1, **_SAMPLE_OK, **_OOS_OK,
+        ic_ir=-0.8, ic_ir_ci_low=-1.05, ic_ir_ci_high=-0.55,
+        ic_win_rate=0.7, ic_nw_t=-3.5,
+    )
+    assert decide_verdict(
+        VerdictInputs(**common, **_mono(-0.08, -0.13, -0.03))
+    ).predictive.verdict == AXIS_PASS
+    assert decide_verdict(
+        VerdictInputs(**common, **_mono(0.08, 0.03, 0.13))
+    ).predictive.verdict == AXIS_FAIL
+
+
+def test_the_direction_gate_is_strict_and_a_ci_touching_the_bar_is_unknown():
+    """`> bar`, like every other level comparison in this module: an aligned lower
+    bound sitting exactly ON 0.0 has not shown the direction holds."""
+    thr = VerdictThresholds()
+    assert _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, **_mono(0.09, 0.0, 0.18)), thr
+    )[0] == MONO_UNKNOWN
+    # and an upper bound exactly at 0 is not a demonstrated reversal either
+    assert _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, **_mono(-0.09, -0.18, 0.0)), thr
+    )[0] == MONO_UNKNOWN
+
+
+def test_a_raised_bar_withholds_a_pass_without_calling_the_factor_reversed():
+    """The PASS side moves with the (configurable) bar; the FAIL side stays pinned
+    at 0. A correctly-ordered-but-weak ladder is UNKNOWN under a strength bar — it
+    is NOT 'reversed', which is a claim about the sign."""
+    strict = VerdictThresholds(min_monotonicity_spearman=0.5)
+    state, reasons = _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, **_mono(0.08, 0.03, 0.13)), strict
+    )
+    assert state == MONO_UNKNOWN
+    assert any("straddles the bar 0.5" in x for x in reasons)
+    # genuinely reversed is still CONTRADICTED under the same raised bar
+    assert _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, **_mono(-0.08, -0.13, -0.03)), strict
+    )[0] == MONO_CONTRADICTED
+
+
+def test_the_monotonicity_fallback_chain_has_two_disclosed_levels():
+    """CI absent -> the bare per-date point (v0.8); per-date point absent too ->
+    the pooled magnitude statistic (v0.7). Each level is ANNOUNCED in the reasons,
+    because judging on a weaker statistic while presenting a v0.9 verdict would be
+    the silent degradation this whole layer exists to prevent."""
+    thr = VerdictThresholds()
+
+    # level 1: point present, CI absent -> two-valued, v0.8 behaviour
+    holds, notes = _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, monotonicity_spearman_by_date=0.7), thr
+    )
+    assert holds == MONO_HOLDS
+    assert any("REVERTED to the BARE per-date POINT" in n for n in notes)
+    assert not any("FELL BACK to the pooled" in n for n in notes)
+    contradicted, _ = _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, monotonicity_spearman_by_date=-0.3), thr
+    )
+    # NOT unknown: without a dispersion estimate there is nothing to be uncertain
+    # with, and inventing an UNKNOWN would turn every pre-v0.9 FAIL into
+    # INSUFFICIENT_DATA behind the reader's back.
+    assert contradicted == MONO_CONTRADICTED
+
+    # level 2: per-date figure absent too -> the pooled one, both notes present
+    pooled, notes2 = _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, monotonicity_spearman=0.9), thr
+    )
+    assert pooled == MONO_HOLDS
+    assert any("FELL BACK to the pooled" in n for n in notes2)
+    assert any("REVERTED to the BARE per-date POINT" in n for n in notes2)
+
+    # nothing at all: unmeasurable monotonicity still lands where v0.7/v0.8 put it
+    assert _monotonicity_direction(VerdictInputs(expected_ic_sign=+1), thr)[0] \
+        == MONO_CONTRADICTED
+
+    # and the levels surface through the real axis, not just the helper
+    axis = decide_verdict(
+        _inputs(**{**_STRONG, "monotonicity_spearman_by_date": 0.7}, **_OOS_OK)
+    ).predictive
+    assert axis.verdict == AXIS_PASS
+    assert any("REVERTED to the BARE per-date POINT" in x for x in axis.reasons)
+
+
+def test_a_supplied_ci_is_used_even_when_it_disagrees_with_the_point():
+    """The CI is the gate, not a decoration on the point. A point above the bar with
+    an interval that straddles 0 must NOT pass — that is the v0.9 fix — and a point
+    below 0 with an interval that clears must not be convicted on the point."""
+    thr = VerdictThresholds()
+    assert _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, **_mono(0.9, -0.05, 1.85)), thr
+    )[0] == MONO_UNKNOWN
+    assert _monotonicity_direction(
+        VerdictInputs(expected_ic_sign=+1, **_mono(-0.4, 0.05, 0.20)), thr
+    )[0] == MONO_HOLDS
+    # a HALF-supplied CI is not a CI: fall back rather than guess the other end
+    half, notes = _monotonicity_direction(
+        VerdictInputs(
+            expected_ic_sign=+1,
+            monotonicity_spearman_by_date=0.7,
+            monotonicity_spearman_by_date_ci_low=0.03,
+        ),
+        thr,
+    )
+    assert half == MONO_HOLDS
+    assert any("REVERTED to the BARE per-date POINT" in n for n in notes)
+
+
+def test_the_return_risk_verdict_keys_document_the_monotonicity_ci():
+    """VERDICT_KEYS is the documented contract of what the verdict reads; a gate
+    input missing from it is an undocumented dependency."""
+    assert "monotonicity_spearman_by_date_ci_low" in VERDICT_KEYS["return_risk"]
+    assert "monotonicity_spearman_by_date_ci_high" in VERDICT_KEYS["return_risk"]
+    # every documented return_risk key is a real VerdictInputs field
+    fields = {f.name for f in dataclasses.fields(VerdictInputs)}
+    for key in VERDICT_KEYS["return_risk"]:
+        assert key in fields

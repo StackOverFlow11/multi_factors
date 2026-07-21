@@ -393,6 +393,70 @@ def spearman(x: pd.Series | list, y: pd.Series | list) -> float:
     return float(pair["x"].corr(pair["y"], method="spearman"))
 
 
+def spearman_series_by_date(
+    quantile_returns: pd.DataFrame, min_buckets: int = 3
+) -> pd.Series:
+    """PER-DATE Spearman(bucket index, bucket return), one value per QUALIFYING date.
+
+    The series :func:`spearman_by_date` averages, exposed in its own right (design
+    §6, v0.9) so the verdict can put a DISPERSION estimate on that average. A bare
+    cross-date mean of per-date rank correlations is heavily attenuated by daily
+    noise — an empirically perfect quantile ladder scores ~0.05-0.11 in this
+    project's real runs — so gating a direction claim on whether that point happens
+    to land above 0.0 reads noise as evidence. With the series in hand the caller
+    can hand it to :func:`mean_ci` and gate on the N_eff-based interval instead.
+
+    A date is SKIPPED — ABSENT FROM THE SERIES, never a zero and never a NaN row —
+    when it carries fewer than ``min_buckets`` finite bucket returns (too few points
+    for a meaningful rank correlation), or when its surviving buckets are all tied
+    (Spearman undefined there). NO date qualifying yields an EMPTY series, not a
+    series of NaN: "no observation" and "an unknown observation" are different
+    facts, and only the first is true here.
+
+    Because skipped dates are absent rather than held as holes, the index is the
+    SURVIVING date grid. Downstream N_eff (via :func:`mean_ci`) is therefore read
+    off that compacted grid — the same convention :func:`mean_ci` already applies to
+    the IC series, whose degenerate cross-sections it drops before measuring
+    autocorrelation. Noted rather than hidden (design §11).
+
+    RAW, like :func:`spearman`: the hypothesis sign is applied by the verdict.
+    """
+    dates: list[object] = []
+    daily: list[float] = []
+    if not (quantile_returns.empty or quantile_returns.shape[1] < min_buckets):
+        index = [float(q) for q in quantile_returns.columns]
+        for date, row in quantile_returns.iterrows():
+            values = [float(v) for v in row.to_numpy(dtype=float)]
+            if sum(1 for v in values if math.isfinite(v)) < min_buckets:
+                continue
+            # spearman() drops the non-finite pairs itself, keeping each surviving
+            # bucket paired with its OWN index (not a renumbered 1..k).
+            rho = spearman(index, values)
+            if math.isfinite(rho):
+                dates.append(date)
+                daily.append(rho)
+    name = quantile_returns.index.name if isinstance(quantile_returns, pd.DataFrame) else None
+    return pd.Series(daily, index=pd.Index(dates, name=name), dtype=float)
+
+
+def mean_by_date_spearman(daily: pd.Series) -> float:
+    """The cross-date average :func:`spearman_by_date` reduces its series with.
+
+    Exposed so a caller that already built the per-date series (the standard layer
+    does, to attach a CI to it) gets the POINT from the very same expression rather
+    than paying for a second pass over the panel — the point and the interval can
+    then never disagree about which observations they describe.
+
+    Deliberately the sequential Python ``sum(...) / len(...)`` of the pre-v0.9
+    implementation, not ``Series.mean()``: the two can differ in the last bit, and
+    this figure is a published, cross-run-comparable report field.
+    """
+    values = daily.tolist()
+    if not values:
+        return float("nan")
+    return float(sum(values) / len(values))
+
+
 def spearman_by_date(
     quantile_returns: pd.DataFrame, min_buckets: int = 3
 ) -> float:
@@ -405,29 +469,17 @@ def spearman_by_date(
     sensitive — one outlier bucket-day can flip it while the daily-capped rank IC
     barely moves.
 
-    A date is SKIPPED — contributing nothing, never a zero — when it carries fewer
-    than ``min_buckets`` finite bucket returns (too few points for a meaningful
-    rank correlation), or when its surviving buckets are all tied (Spearman
-    undefined there). NaN when NO date qualifies: unknown, not 0.0.
+    As of v0.9 this is the mean of :func:`spearman_series_by_date` (see there for
+    the skip rules) — a pure refactor: the returned float is BIT-IDENTICAL to the
+    v0.8 implementation, which is asserted against the v0.8 fixtures.
+
+    NaN when NO date qualifies: unknown, not 0.0.
 
     RAW, like :func:`spearman`: the hypothesis sign is applied by the verdict.
     """
-    if quantile_returns.empty or quantile_returns.shape[1] < min_buckets:
-        return float("nan")
-    index = [float(q) for q in quantile_returns.columns]
-    daily: list[float] = []
-    for _, row in quantile_returns.iterrows():
-        values = [float(v) for v in row.to_numpy(dtype=float)]
-        if sum(1 for v in values if math.isfinite(v)) < min_buckets:
-            continue
-        # spearman() drops the non-finite pairs itself, keeping each surviving
-        # bucket paired with its OWN index (not a renumbered 1..k).
-        rho = spearman(index, values)
-        if math.isfinite(rho):
-            daily.append(rho)
-    if not daily:
-        return float("nan")
-    return float(sum(daily) / len(daily))
+    return mean_by_date_spearman(
+        spearman_series_by_date(quantile_returns, min_buckets=min_buckets)
+    )
 
 
 def as_float(value: object) -> float:
@@ -446,10 +498,12 @@ __all__ = [
     "half_life",
     "hypothesis_win_rate",
     "information_ratio_ci",
+    "mean_by_date_spearman",
     "mean_ci",
     "newey_west_lag",
     "newey_west_t",
     "sortino",
     "spearman",
     "spearman_by_date",
+    "spearman_series_by_date",
 ]

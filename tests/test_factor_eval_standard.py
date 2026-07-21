@@ -48,12 +48,14 @@ from analytics.eval.stats import (
     half_life,
     hypothesis_win_rate,
     information_ratio_ci,
+    mean_by_date_spearman,
     mean_ci,
     newey_west_lag,
     newey_west_t,
     sortino,
     spearman,
     spearman_by_date,
+    spearman_series_by_date,
 )
 from analytics.factor import compute_ic
 from factors.spec import FactorSpec
@@ -1985,6 +1987,156 @@ def test_return_risk_reports_both_monotonicity_statistics(rng):
     assert payload["monotonicity_spearman"] == pytest.approx(1.0)
     by_date = payload["monotonicity_spearman_by_date"]
     assert math.isfinite(by_date) and -1.0 <= by_date <= 1.0
+
+
+# --------------------------------------------------------------------------
+# v0.9 fix: the per-date monotonicity SERIES + its N_eff CI. The point figure
+# stays BIT-IDENTICAL to v0.8 — this is a refactor plus an addition, not a
+# re-measurement.
+# --------------------------------------------------------------------------
+
+
+def _v08_spearman_by_date(quantile_returns: pd.DataFrame, min_buckets: int = 3) -> float:
+    """The v0.8 ``spearman_by_date`` body, VERBATIM — the bit-identity oracle.
+
+    Frozen here on purpose: v0.9 re-expresses the same reduction as the mean of a
+    new per-date series, and "the returned float did not move" is a claim that needs
+    the OLD code to compare against, not a re-reading of the new code.
+    """
+    if quantile_returns.empty or quantile_returns.shape[1] < min_buckets:
+        return float("nan")
+    index = [float(q) for q in quantile_returns.columns]
+    daily: list[float] = []
+    for _, row in quantile_returns.iterrows():
+        values = [float(v) for v in row.to_numpy(dtype=float)]
+        if sum(1 for v in values if math.isfinite(v)) < min_buckets:
+            continue
+        rho = spearman(index, values)
+        if math.isfinite(rho):
+            daily.append(rho)
+    if not daily:
+        return float("nan")
+    return float(sum(daily) / len(daily))
+
+
+def _same_float(a: float, b: float) -> bool:
+    """Exact equality, with NaN == NaN. No tolerance: this is a bit-identity check."""
+    return (math.isnan(a) and math.isnan(b)) or a == b
+
+
+def test_spearman_by_date_is_bit_identical_to_the_v08_implementation():
+    """Every v0.8 fixture in this file, plus a messy random panel, must return the
+    EXACT same float — not approx. A v0.9 report field that drifted in the last bit
+    would silently break cross-run comparability with the ten factors already
+    evaluated under v0.8."""
+    nan = float("nan")
+    normal = [0.001, 0.002, 0.003, 0.004, 0.005]
+    fixtures = [
+        # the four v0.8 test fixtures, verbatim
+        _quantile_frame([normal] * 20 + [[1.0, 1.1, 1.2, nan, nan]] * 2),
+        _quantile_frame([normal] * 12),
+        _quantile_frame([[0.005, 0.004, 0.003, 0.002, 0.001]] * 12),
+        _quantile_frame([normal] * 6 + [[0.005, 0.004, nan, nan, nan]] * 3),
+        _quantile_frame([normal] * 3 + [[0.005, 0.004, 0.003, nan, nan]] * 3),
+        _quantile_frame([[0.1, 0.2, nan, nan, nan]] * 5),
+        _quantile_frame([[0.2] * 5] * 5),
+        pd.DataFrame(),
+    ]
+    # ... and a panel whose per-date values are irrational-ish, so a changed
+    # summation order (Series.mean vs the sequential sum) WOULD show up.
+    rng = np.random.default_rng(20260721)
+    messy = rng.normal(size=(97, 5)) / 3.0
+    messy[messy > 1.6] = np.nan
+    fixtures.append(_quantile_frame(messy.tolist()))
+
+    for frame in fixtures:
+        assert _same_float(spearman_by_date(frame), _v08_spearman_by_date(frame))
+    # and the messy one really does exercise a non-trivial average
+    tail = spearman_by_date(fixtures[-1])
+    assert math.isfinite(tail) and tail not in (-1.0, 0.0, 1.0)
+
+
+def test_the_per_date_series_omits_skipped_dates_rather_than_holding_them():
+    """A skipped date must be ABSENT from the index, not a NaN row: mean_ci reads
+    N_eff off this series, and a NaN row would be dropped anyway while an invented
+    0.0 would be a fabricated observation."""
+    nan = float("nan")
+    good = [0.001, 0.002, 0.003, 0.004, 0.005]
+    thin = [0.005, 0.004, nan, nan, nan]      # 2 finite buckets -> skipped
+    tied = [0.2] * 5                          # all tied -> Spearman undefined -> skipped
+    frame = _quantile_frame([good, thin, good, tied, good])
+
+    series = spearman_series_by_date(frame)
+    assert list(series.index) == [frame.index[0], frame.index[2], frame.index[4]]
+    assert series.notna().all()
+    assert list(series) == [pytest.approx(1.0)] * 3
+    assert series.index.name == frame.index.name
+    # and the point figure is exactly this series' mean
+    assert _same_float(spearman_by_date(frame), mean_by_date_spearman(series))
+
+
+def test_the_per_date_series_is_empty_not_all_nan_when_no_date_qualifies():
+    """'No observation' and 'an unknown observation' are different facts, and only
+    the first is true here — an all-NaN series would let a downstream reader believe
+    dates were measured and came back unknown."""
+    nan = float("nan")
+    for frame in (
+        _quantile_frame([[0.1, 0.2, nan, nan, nan]] * 5),   # never 3 finite buckets
+        _quantile_frame([[0.2] * 5] * 5),                   # always tied
+        pd.DataFrame(),                                     # nothing at all
+        _quantile_frame([[0.1, 0.2]] * 5),                  # fewer buckets than min
+    ):
+        series = spearman_series_by_date(frame)
+        assert isinstance(series, pd.Series)
+        assert series.empty and len(series) == 0
+        assert series.isna().sum() == 0        # empty, NOT a column of NaN
+        assert math.isnan(mean_by_date_spearman(series))
+
+
+def test_return_risk_attaches_an_n_eff_ci_to_the_per_date_monotonicity(rng):
+    """v0.9: the direction gate reads an INTERVAL, so the section must emit one —
+    and it must describe the very same observations as the point."""
+    panel, factor = planted_signal_setup(rng)
+    report = StandardFactorEvaluator().evaluate(
+        factor, make_spec(), make_cfg(), EvalContext(price_panel=panel)
+    )
+    payload = report.by_name()["return_risk"].payload
+    for key in (
+        "monotonicity_spearman_by_date_se",
+        "monotonicity_spearman_by_date_ci_low",
+        "monotonicity_spearman_by_date_ci_high",
+        "monotonicity_spearman_by_date_n_eff",
+    ):
+        assert key in payload
+
+    low = payload["monotonicity_spearman_by_date_ci_low"]
+    high = payload["monotonicity_spearman_by_date_ci_high"]
+    point = payload["monotonicity_spearman_by_date"]
+    assert math.isfinite(low) and math.isfinite(high)
+    assert low < point < high
+    # symmetric around the point, i.e. the CI is OF this point and not of some
+    # other reduction of the panel
+    assert (low + high) / 2.0 == pytest.approx(point)
+    n_eff = payload["monotonicity_spearman_by_date_n_eff"]
+    n_dates = payload["monotonicity_spearman_by_date_n_dates"]
+    assert 1.0 <= n_eff <= n_dates          # N_eff can never exceed the observations
+    assert n_dates > 0
+
+
+def test_the_monotonicity_ci_is_the_shared_mean_ci_on_the_shared_series(rng):
+    """Not a second CI implementation: the payload must equal mean_ci() applied to
+    spearman_series_by_date() on the same quantile matrix."""
+    panel, factor = planted_signal_setup(rng)
+    ir = build_eval_ir(factor, make_spec(), make_cfg(), EvalContext(price_panel=panel))
+    expected = mean_ci(spearman_series_by_date(ir.quantile_returns))
+
+    payload = StandardFactorEvaluator().evaluate(
+        factor, make_spec(), make_cfg(), EvalContext(price_panel=panel)
+    ).by_name()["return_risk"].payload
+    assert payload["monotonicity_spearman_by_date_ci_low"] == expected["ci_low"]
+    assert payload["monotonicity_spearman_by_date_ci_high"] == expected["ci_high"]
+    assert payload["monotonicity_spearman_by_date_se"] == expected["se"]
+    assert payload["monotonicity_spearman_by_date_n_eff"] == expected["n_eff"]
 
 
 # --------------------------------------------------------------------------

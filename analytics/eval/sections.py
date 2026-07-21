@@ -61,6 +61,11 @@ VERDICT_KEYS: dict[str, tuple[str, ...]] = {
     # (bounded [-1, 1] before averaging, structurally parallel to the rank IC),
     # then averaged. The verdict falls back to the pooled field when it is
     # absent and SAYS SO in its reasons.
+    # monotonicity_spearman_by_date_ci_low/high: (v0.9) the N_eff-based 95% CI of
+    # that per-date series — what the DIRECTION gate now reads. Three-valued:
+    # aligned CI above the bar = direction holds; entirely below 0 = contradicted
+    # (FAIL); straddling 0 = UNKNOWN, which neither convicts nor acquits. The bare
+    # point is only the fallback, disclosed as such.
     # net_long_short_by_cost: {cost multiplier: net (top - bottom) return}, RAW.
     # gross_long_short_mean: (v0.8) the GROSS (pre-cost) leg difference — the
     # verdict needs it to align a net spread, since aligning is
@@ -69,6 +74,8 @@ VERDICT_KEYS: dict[str, tuple[str, ...]] = {
     "return_risk": (
         "monotonicity_spearman",
         "monotonicity_spearman_by_date",
+        "monotonicity_spearman_by_date_ci_low",
+        "monotonicity_spearman_by_date_ci_high",
         "net_long_short_by_cost",
         "gross_long_short_mean",
     ),
