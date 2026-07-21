@@ -388,6 +388,34 @@ def test_undefined_vwap_blocks_before_the_limit_gate_and_needs_no_limit_row():
     assert model.missing_limit_rows() == 0  # never even consulted
 
 
+def test_limit_tolerance_is_the_knob_for_vwap_rounding_at_a_locked_minute():
+    """A limit-locked minute prices AT the limit, but ``amount`` is rounded.
+
+    Measured on real cached 1min bars: on a locked minute (high == low == close,
+    the shape of a limit-locked minute) ``amount/volume`` equals that price
+    exactly only ~78% of the time, and falls more than 1e-6 BELOW it ~9% of the
+    time. With the default ``limit_tolerance=1e-6`` such a bar no longer trips the
+    up-limit gate; a one-fen band restores the block. Locked here so the
+    calibration is a visible decision rather than an accident of rounding.
+    """
+    panel = _daily_panel(["A"], close=50.0)
+    # every print at 11.00, but `amount` is rounded -> vwap = 10.999666...
+    bars = _bars([("A", f"{_JAN.date()} 14:51:00", 11.0, 3_000.0, 32_999.0)])
+    lim = _limits([(_JAN, "A", 11.0, 5.0)])
+    assert _fill(bars, "A", _JAN, _VWAP).exec_price == pytest.approx(10.999666, abs=1e-5)
+
+    def _can_buy(tol: float) -> bool:
+        model = IntradayTailEventModel(
+            calendar_panel=panel, bars=bars, cfg=_VWAP, price_limits=lim,
+            price_limit_check=True, require_price_limit_coverage=True,
+            limit_tolerance=tol,
+        )
+        return model.feasibility(_period(model, _JAN), ["A"])[0]["A"]
+
+    assert _can_buy(1e-6) is True    # default band: sub-fen rounding clears the gate
+    assert _can_buy(0.01) is False   # one-fen band: the locked minute blocks the buy
+
+
 def test_limit_gate_ignores_the_daily_close_under_vwap():
     """Perturbing the daily close cannot move an intraday RAW-vs-RAW decision."""
     bars = _bars([("A", f"{_JAN.date()} 14:51:00", 9.0, 100.0, 1_000.0)])  # vwap 10.0
