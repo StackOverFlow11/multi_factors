@@ -182,6 +182,12 @@ def test_exec_basis_eval_discloses_parameters_and_coverage_in_every_report(tmp_p
         assert "stk_mins_live_calls" in text
         for cause in ("no_bar", "bad_vwap", "bad_adj_factor"):
             assert f"lost_pairs_by_cause_{cause}" in text
+        # The bad_vwap loss is small but DIRECTIONAL — the excluded minutes are
+        # exactly the ones with no traded volume. The percentage must never stand
+        # alone as if smallness made it random.
+        assert "LIQUIDITY-CORRELATED, NON-RANDOM" in text
+    sanity_text = out.sanity_report_path.read_text(encoding="utf-8")
+    assert "liquidity-correlated, non-random" in sanity_text
     for path in (out.no_book_json, out.with_book_json):
         payload = json.loads(path.read_text(encoding="utf-8"))
         blob = json.dumps(payload)

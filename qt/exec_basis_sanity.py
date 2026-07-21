@@ -472,6 +472,14 @@ def render_sanity_report(
 
     lines.append("## Coverage loss vs close_to_close")
     lines.append("")
+    lines.append(
+        "⚠️ `bad_vwap` is a **liquidity-correlated, non-random** exclusion, not a "
+        "rounding loss: the dropped pairs are exactly the execution minutes with no "
+        "traded volume or amount, i.e. the names that did not trade at the fill "
+        "time. A small percentage is not the same as a random one — read the number "
+        "below as a biased sample restriction with a direction."
+    )
+    lines.append("")
     lines.append("| item | value |")
     lines.append("|---|---|")
     for label, value in coverage.items():

@@ -137,6 +137,14 @@ def build_disclosure(
             "no bar / undefined VWAP / unusable adj_factor -> NaN, counted by cause; "
             "never a bar-close, daily-close or adj_factor=1.0 fallback"
         ),
+        # The coverage loss is SMALL but it is not random, and the two must not be
+        # confused. Stated here so the percentage below can never stand alone and
+        # read as a rounding loss.
+        "coverage_bias_bad_vwap": (
+            "LIQUIDITY-CORRELATED, NON-RANDOM exclusion: the dropped pairs are "
+            "exactly the execution minutes with no traded volume/amount. Small is "
+            "not the same as random."
+        ),
     }
     disclosure.update(_flatten_coverage(coverage))
     disclosure.update(sanity.headline())
