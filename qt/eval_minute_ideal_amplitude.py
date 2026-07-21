@@ -56,6 +56,7 @@ from data.clean.schema import CORE_COLUMNS, DATE_LEVEL
 from factors.compute.intraday_derived import MinuteIdealAmplitudeFactor
 from factors.spec import FactorSpec
 from qt.config import RootConfig, load_config
+from qt.exec_basis_eval import ExecBasisEvaluation, run_exec_basis_evaluation
 from qt.pipeline import (
     _build_cache,
     _build_universe,
@@ -354,6 +355,7 @@ class MinuteIdealAmpEvalResult:
     no_book_metrics: dict
     with_book_metrics: dict
     reports: _RunReports
+    exec_basis: ExecBasisEvaluation
     log_path: Path
     elapsed: float
 
@@ -445,6 +447,22 @@ def run_eval_minute_ideal_amplitude(config_path: str) -> MinuteIdealAmpEvalResul
         report_dir=Path(cfg.output.report_dir),
     )
 
+    # Second evaluation basis (task card §2.3): the SAME factor values scored on
+    # the 14:51 VWAP exec-to-exec return instead of close-to-close. The reports
+    # above are the close_to_close control and are left untouched.
+    exec_basis = run_exec_basis_evaluation(
+        factor_series,
+        spec,
+        eval_cfg,
+        book_processed,
+        cfg=cfg,
+        panel=panel,
+        symbols=symbols,
+        logger=logger,
+        report_dir=Path(cfg.output.report_dir),
+        stem=_REPORT_STEM,
+    )
+
     no_book_metrics = extract_metrics(reports.no_book)
     with_book_metrics = extract_metrics(reports.with_book)
     logger.info(
@@ -465,6 +483,7 @@ def run_eval_minute_ideal_amplitude(config_path: str) -> MinuteIdealAmpEvalResul
         no_book_metrics=no_book_metrics,
         with_book_metrics=with_book_metrics,
         reports=reports,
+        exec_basis=exec_basis,
         log_path=log_path,
         elapsed=time.monotonic() - started,
     )
