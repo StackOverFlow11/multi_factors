@@ -182,7 +182,11 @@ def test_i5f_config_loads_and_enables():
     cfg = load_config(str(_CONFIG_DIR / "phase_i5f_intraday_liquidity_diagnostics.yaml"))
     ld = cfg.intraday.liquidity_diagnostics
     assert ld.enabled is True
-    assert ld.portfolio_notional == 10_000_000
+    # 1,000,000 RMB — the operator's stated total capital ceiling. It replaced the
+    # original 10,000,000, which was an order of magnitude above any book this
+    # project will run, so the capacity finding it produced described a portfolio
+    # that does not exist. The diagnostic is only meaningful at the real size.
+    assert ld.portfolio_notional == 1_000_000
     assert ld.max_participation_rate == 0.05
     assert ld.mode == "report_only"
 

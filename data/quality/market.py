@@ -139,6 +139,83 @@ def check_adj_factor(
     )
 
 
+def check_decreasing_adj_factor(
+    df: pd.DataFrame, *, dataset: str = "adj_factor", threshold: float = 0.01
+) -> QualityFinding | None:
+    """``adj_factor`` that FALLS materially from one date to the next, per symbol.
+
+    tushare's cumulative factor grows with each corporate action; it has no
+    mechanism to shrink. A material decrease therefore means the published series
+    is internally inconsistent, and because ``front_adjust`` multiplies raw prices
+    by it, the defect propagates straight into every return computed downstream.
+
+    This exists because a real one slipped through: ``920627.BJ`` oscillates
+    between two factor values, producing alternating -57.27% / +134.04% steps. It
+    was found by hand, after its +134% tail was briefly mistaken for a genuine
+    corporate-action distribution. A frame-level check would have named it
+    immediately. (It is a BSE name and sits in no index universe this project
+    evaluates, so nothing was restated — but that was luck, not detection.)
+
+    ``threshold`` is RELATIVE (a fraction of the previous factor), never absolute:
+    factors range from ~1 to ~500 across the cache, so an absolute cut would both
+    miss real breaks in small-factor names and fire on rounding in large-factor
+    ones.
+
+    It is deliberately not zero, and 1% is not a round number picked for comfort —
+    it is where a full-cache sweep puts the only defensible cut. Sweeping every
+    negative step in all 5562 symbols (7898 events, 4479 symbols):
+
+        threshold   events fired   symbols fired that are NOT known-defective
+          0.01%          3653        2429   <- pure float noise
+          0.10%           179           2
+          0.50%           178           1   (603081.SH)
+          1.00%           177           0
+          2.00%           176           0
+
+    Two facts set the cut. Below 1% the check starts naming symbols whose status
+    cannot be decided: 603081.SH's worst step is -0.776% against a raw close move
+    of -1.810% where a genuine action needs +0.782%, which has the shape of a
+    defect — but at that magnitude an ordinary daily move swamps the implied one,
+    so the price test has no power and the finding would be uninterpretable. Above
+    1% a real event is missed: 1% fires on 177 events, 2% on only 176, and the
+    extra one belongs to a known-defective symbol.
+
+    1% also leaves the smallest CONFIRMED defect (000998.SZ, -2.636%) at 2.6x the
+    bar rather than 1.3x. Erring toward catching defects is right here: a false
+    positive costs one WARNING line in a report-only layer, a false negative lets
+    corrupted prices through silently.
+
+    WARNING rather than HARD, and the distinction from its sibling matters. Every
+    HARD check in this module is a zero-parameter algebraic impossibility
+    (duplicate keys, non-positive OHLC, high<low, adj_factor<=0). Every check with
+    a tunable threshold is WARNING. But note this one's WARNING does NOT mean
+    "might be legitimate" the way check_extreme_returns' does — a >50% close move
+    really can be a genuine split or a halt reopening, whereas a cumulative
+    adjustment factor has no legitimate way to shrink at all. The severity reflects
+    calibration risk at the threshold, not doubt about the underlying claim.
+
+    Never a filter — this layer only reports.
+    """
+    d = reset_keys(df)
+    if not {"adj_factor", _SYMBOL, _DATE}.issubset(d.columns):
+        return None
+    d = d.sort_values([_SYMBOL, _DATE]).copy()
+    vals = pd.to_numeric(d["adj_factor"], errors="coerce")
+    d["adj_factor_change"] = vals.groupby(d[_SYMBOL]).pct_change().round(6)
+    mask = (d["adj_factor_change"] < -abs(threshold)).fillna(False)
+    if not mask.any():
+        return None
+    examples = row_examples(d, mask, [_SYMBOL, _DATE], extra="adj_factor_change")
+    return make_finding(
+        dataset, "decreasing_adj_factor", WARNING, count=int(mask.sum()),
+        examples=examples,
+        note=(
+            f"adj_factor fell by more than {abs(threshold):.2%} between consecutive "
+            f"dates; a cumulative adjustment factor should not decrease"
+        ),
+    )
+
+
 def check_extreme_returns(
     df: pd.DataFrame, *, dataset: str = "market_daily", threshold: float = 0.5
 ) -> QualityFinding | None:
@@ -230,7 +307,7 @@ def run_market_checks(
 def run_adj_factor_checks(
     df: pd.DataFrame, *, dataset: str = "adj_factor"
 ) -> list[QualityFinding]:
-    """Run the adj_factor frame checks (duplicate keys + positivity)."""
+    """Run the adj_factor frame checks (duplicate keys, positivity, monotonicity)."""
     findings = []
     dup = check_duplicate_keys(df, dataset=dataset)
     if dup is not None:
@@ -238,4 +315,7 @@ def run_adj_factor_checks(
     adj = check_adj_factor(df, dataset=dataset)
     if adj is not None:
         findings.append(adj)
+    dec = check_decreasing_adj_factor(df, dataset=dataset)
+    if dec is not None:
+        findings.append(dec)
     return findings

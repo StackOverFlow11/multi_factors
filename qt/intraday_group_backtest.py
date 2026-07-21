@@ -327,6 +327,13 @@ class GroupRunResult:
     up_limit_blocked_buys: int
     down_limit_blocked_sells: int
     missing_limit_rows: int
+    # The only set on which the executed-price gate and a close-based gate differ:
+    # the minute closed at a limit but traded through it, so the fill stands.
+    opened_limit_up_minutes: int
+    opened_limit_down_minutes: int
+    # Holding-period returns dropped for want of a usable adj_factor at an anchor;
+    # never defaulted to 1.0, so a non-zero count must reach the reader.
+    missing_adj_factor_pairs: int
     blocked_fill_reasons: dict[str, int]
 
 
@@ -430,6 +437,9 @@ def _run_one_group(
         up_limit_blocked_buys=model.up_limit_blocked_buys(),
         down_limit_blocked_sells=model.down_limit_blocked_sells(),
         missing_limit_rows=model.missing_limit_rows(),
+        opened_limit_up_minutes=model.opened_limit_up_minutes(),
+        opened_limit_down_minutes=model.opened_limit_down_minutes(),
+        missing_adj_factor_pairs=model.missing_adj_factor_pairs(),
         blocked_fill_reasons=blocked,
     )
     return result, shared_prices

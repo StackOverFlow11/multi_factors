@@ -15,9 +15,15 @@ Covers the goal's four test groups:
 3. Config — existing configs validate unchanged; negative tolerance fails; the I5b
    config enables the check; price_limit_check=false reproduces I5a feasibility.
 
-The comparison is RAW-vs-RAW only (raw 1min close vs raw stk_limit), never qfq /
-daily close — the daily panel here carries deliberately CONTRADICTORY closes to
+The comparison is RAW-vs-RAW only — the price that EXECUTES (the bar VWAP under
+the default basis, raw amount over raw volume) vs raw stk_limit, never qfq / the
+daily close. The daily panel here carries deliberately CONTRADICTORY closes to
 prove the limit gate ignores them.
+
+Note for future edits: these fixtures price each execution bar so its VWAP equals
+its close, which keeps the pre-PR#75 assertions valid on both bases but makes
+them BLIND to which of the two the gate reads. The tests at the bottom of this
+module cover that distinction directly.
 """
 
 from __future__ import annotations
@@ -401,3 +407,113 @@ def test_i5b_report_heading_names_the_actual_study():
     assert i5a_title.startswith("# Phase I5a")
     assert i5b_title.startswith("# Phase I5b")
     assert "execution-feasibility hardening" in i5b_intro.lower()
+
+
+# --- the report must state the gate input it ACTUALLY used (PR #75 follow-up) --- #
+#
+# PR #75 moved the limit gate from the bar close to the executed price (the bar
+# VWAP by default) but left both report writers still claiming "the selected
+# execution-minute raw 1min close". The run therefore SHIPPED a report that
+# misdescribed the check it had performed. These pin the corrected wording; the
+# mutation evidence for them is in the PR body.
+
+
+def test_limit_basis_prose_names_the_active_execution_basis():
+    from qt.intraday_tail_framework import limit_basis_lines
+
+    for basis in ("bar_vwap", "bar_close"):
+        text = " ".join(limit_basis_lines(basis))
+        assert f"`{basis}`" in text, f"the prose must name the active basis {basis!r}"
+        # The defect being locked out: asserting a close comparison regardless of basis.
+        assert "1min close to the raw" not in text
+        assert "1min close vs the" not in text
+
+
+def test_limit_basis_prose_does_not_claim_a_close_comparison_under_vwap():
+    from qt.intraday_tail_framework import limit_basis_lines
+
+    text = " ".join(limit_basis_lines("bar_vwap")).lower()
+    assert "executes" in text
+    # It must explain the LOCKED/OPENED distinction, which is the whole reason the
+    # executed price rather than the close is the faithful input.
+    assert "locked" in text and "opened" in text
+    # And it must still assert the raw-vs-raw property, which the move to a VWAP
+    # does not break (a bar VWAP is raw amount over raw volume).
+    assert "raw-vs-raw" in text
+
+
+def test_group_report_feasibility_prose_names_the_active_execution_basis():
+    from types import SimpleNamespace
+
+    from qt.intraday_group_report import _feasibility_lines
+
+    cfg = load_config(str(_I5B_CONFIG))
+    groups = (
+        SimpleNamespace(
+            group=1,
+            up_limit_blocked_buys=2,
+            down_limit_blocked_sells=0,
+            missing_limit_rows=0,
+            opened_limit_up_minutes=3,
+            opened_limit_down_minutes=1,
+            missing_adj_factor_pairs=4,
+        ),
+    )
+    result = SimpleNamespace(
+        config=cfg,
+        price_limit_check=True,
+        limit_coverage={"required": 10, "present": 10, "missing": 0},
+        stk_limit_gap_fetches=0,
+        groups=groups,
+    )
+    text = " ".join(_feasibility_lines(result))
+    assert f"`{cfg.intraday.execution_price_basis}`" in text
+    assert "1min close to the raw" not in text
+    # The divergence counters and the dropped-return count must reach the reader,
+    # not merely exist on the result object.
+    assert "opened limit-up" in text
+    assert "| 3 | 1 | 4 |" in text
+    assert "adj_factor" in text
+
+
+def test_no_module_repeats_the_pre_pr75_close_based_limit_claim():
+    """Guard the DEFECT CLASS, not just the two places already fixed.
+
+    The gate input moved from the bar close to the executed price in PR #75. The
+    first correction pass fixed the prose in the two obvious spots and MISSED a
+    third copy in `_write_report`'s "Limitations" section, so a run would have
+    emitted two contradictory descriptions of the same check in one document.
+
+    Review found it, and found why the other tests could not: none of them render
+    `_write_report` at all, so that location was structurally unreachable. The
+    honest fix for a claim that gets restated in prose in N places is to assert no
+    (N+1)th copy exists, rather than to enumerate the ones we happen to know.
+    """
+    import re
+    from pathlib import Path
+
+    import qt.intraday_group_report as gr
+    import qt.intraday_tail_framework as tf
+
+    # Phrasings that assert the LIMIT COMPARISON reads a close. "bar_close" the
+    # basis name and "that bar's single closing tick" the basis description are
+    # both legitimate and deliberately not matched.
+    forbidden = re.compile(
+        r"execution-minute\s+(\*\*raw\*\*\s+)?(1min\s+)?close"
+        r"|1min\s+close\s+to\s+the\s+raw"
+        r"|raw\s+execution-minute\s+close",
+        re.IGNORECASE,
+    )
+    for mod in (tf, gr):
+        src = Path(mod.__file__).read_text()
+        hits = [
+            f"line {i}: {ln.strip()}"
+            for i, ln in enumerate(src.splitlines(), 1)
+            if forbidden.search(ln)
+        ]
+        assert not hits, (
+            f"{Path(mod.__file__).name} still claims the price-limit gate compares "
+            f"a CLOSE. The gate reads the price that executes (the bar VWAP under "
+            f"the default basis). Derive the wording from execution_price_basis "
+            f"instead of restating it:\n  " + "\n  ".join(hits)
+        )
