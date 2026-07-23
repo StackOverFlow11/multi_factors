@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import pandas as pd
 
+from data.availability_policy import FINA_INDICATOR
 from factors.base import Factor
-from factors.spec import FactorSpec
+from factors.spec import FactorSpec, PanelField
 
 # financial fields that may be requested as a factor (P1; grossprofit_margin
 # joined in P3-5 as the conservative quality candidate — same ann_date as-of
@@ -65,6 +66,12 @@ class FinancialFactor(Factor):
         ``min_history_bars=0``: this factor does no temporal logic of its own —
         the value is already PIT-aligned upstream by ``ann_date`` as-of, so there
         is no warm-up window to exclude.
+
+        D1 declarations (derived, evidence): adjustment=none — the factor only
+        surfaces an ann_date-aligned fina_indicator column (``compute`` below
+        is a bare column select); no price channel, no qfq, no time-series
+        logic. overnight_boundary=none — no raw-price comparison exists, so
+        nothing can cross the ex-date basis break.
         """
         sign, family, description = _FIELD_META[self._field]
         return FactorSpec(
@@ -76,6 +83,9 @@ class FinancialFactor(Factor):
             forward_return_horizon=1,
             return_basis="close_to_close",
             input_fields=(self._field,),
+            requires=(PanelField(self._field, source=FINA_INDICATOR),),
+            adjustment="none",
+            overnight_boundary="none",
             family=family,
             min_history_bars=0,
         )

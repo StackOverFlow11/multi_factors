@@ -53,17 +53,10 @@ from data.feed.tushare_feed import TushareFeed
 from data.feed.tushare_fina import TushareFinancialFeed
 from data.feed.tushare_flags import TushareFlagsFeed
 from data.store.panel_store import PanelStore
-from factors.compute.candidates import (
-    VALUE_FIELDS,
-    LiquidityFactor,
-    OvernightMomentumFactor,
-    ReversalFactor,
-    ValueFactor,
-    VolatilityFactor,
-)
+from factors import registry as factor_registry
+from factors.compute.candidates import ValueFactor
 from factors.compute.financial import SUPPORTED_FIELDS as SUPPORTED_FINANCIAL_FIELDS
 from factors.compute.financial import FinancialFactor
-from factors.compute.momentum import MomentumFactor
 from factors.process.pipeline import ProcessingPipeline
 from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
@@ -769,9 +762,12 @@ def _enrich_tradability(
 def _build_factors(cfg: RootConfig) -> list:
     """Instantiate EVERY enabled factor from config, in config order (P3-1).
 
-    ``momentum*`` -> :class:`MomentumFactor` (price-based, P0). A financial field
-    name (e.g. ``roe``, ``netprofit_yoy``) -> :class:`FinancialFactor`, which needs
-    the tushare data path (ann_date alignment) — not available for demo data.
+    D1 (factor-refactor): dispatch goes through the factor REGISTRY —
+    :func:`factors.registry.build`, the ONE name -> class mapping (red line
+    #4); the old if/elif chain is retired. Behavior-preserving: same classes,
+    same params coercion, same config order; an unknown name and a
+    name/params mismatch still raise readable errors (now from the registry,
+    which also re-checks them at config-parse time via ``qt.config``).
 
     Multiple enabled factors each become their own factor-panel column; the
     combined score stays the alpha layer's equal-weight mean (no learned weights).
@@ -783,51 +779,9 @@ def _build_factors(cfg: RootConfig) -> list:
         raise ValueError(
             "No enabled factor in config.factors; the pipeline needs at least one."
         )
-    factors: list = []
-    for spec in enabled:
-        params = dict(spec.params)
-        window = int(params.get("window", 20))
-        if spec.name in SUPPORTED_FINANCIAL_FIELDS:
-            factor = FinancialFactor(field=spec.name)
-        elif spec.name in VALUE_FIELDS:
-            factor = ValueFactor(spec.name)
-        elif spec.name.startswith("overnight_mom"):
-            factor = OvernightMomentumFactor(
-                window=window,
-                open_col=str(params.get("open_col", "open")),
-                close_col=str(params.get("close_col", "close")),
-            )
-        elif spec.name.startswith("momentum"):
-            factor = MomentumFactor(
-                window=window, price_col=str(params.get("price_col", "close"))
-            )
-        elif spec.name.startswith("reversal"):
-            factor = ReversalFactor(
-                window=window, price_col=str(params.get("price_col", "close"))
-            )
-        elif spec.name.startswith("volatility"):
-            factor = VolatilityFactor(
-                window=window, price_col=str(params.get("price_col", "close"))
-            )
-        elif spec.name.startswith("liquidity"):
-            factor = LiquidityFactor(
-                window=window, amount_col=str(params.get("amount_col", "amount"))
-            )
-        else:
-            raise ValueError(
-                f"Unknown factor {spec.name!r}; expected 'momentum*', 'reversal*', "
-                f"'volatility*', 'liquidity*', 'overnight_mom*', one of "
-                f"{VALUE_FIELDS} or one of {SUPPORTED_FINANCIAL_FIELDS}."
-            )
-        # window-named factors derive their name from params: a spec named
-        # reversal_5 with params.window=10 would silently mislabel the column.
-        if factor.name != spec.name:
-            raise ValueError(
-                f"Factor name/params mismatch: config names {spec.name!r} but the "
-                f"params resolve to {factor.name!r} (window-named factors must "
-                "agree with params.window)."
-            )
-        factors.append(factor)
+    factors: list = [
+        factor_registry.build(spec.name, spec.params) for spec in enabled
+    ]
     names = [f.name for f in factors]
     dupes = sorted({n for n in names if names.count(n) > 1})
     if dupes:

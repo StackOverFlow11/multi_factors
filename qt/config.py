@@ -176,6 +176,27 @@ class FactorCfg(_Strict):
     enabled: bool = True
     params: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _name_hits_registry(self) -> "FactorCfg":
+        """Config-parse-time naming checkpoint (D1, design §3.1 / §6 pit #1).
+
+        An ENABLED factor name must resolve in the factor registry, so an
+        unknown name fails at ``validate-config`` / ``load_config`` instead of
+        minutes into a run. Lookup only — params/window consistency needs the
+        built instance and stays a ``registry.build`` (run-time) check.
+        Disabled entries are skipped, mirroring ``_build_factors``, which
+        never dispatched them either.
+        """
+        if self.enabled:
+            # Lazy import: keeps qt.config importable without loading the
+            # factor modules (pandas + data.clean) until a factor entry is
+            # actually validated; also keeps the layering one-directional
+            # (qt -> factors) at call time.
+            from factors.registry import resolve as _resolve_factor_name
+
+            _resolve_factor_name(self.name)
+        return self
+
 
 class StandardizeCfg(_Strict):
     enabled: bool = True

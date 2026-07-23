@@ -43,9 +43,14 @@ def test_financial_factor_on_demo_source_raises(tmp_path, example_config_path):
 
 
 def test_unknown_factor_name_raises(tmp_path, example_config_path):
-    cfg = _cfg(tmp_path, example_config_path, "totally_made_up", "demo")
+    # D1: the unknown-name check moved EARLIER — the registry lookup now also
+    # runs at config-parse time (the third naming checkpoint), so load_config
+    # itself rejects the name. pydantic's ValidationError subclasses
+    # ValueError and carries the registry's readable message. The same lookup
+    # still guards _build_factors / registry.build for non-config callers
+    # (locked separately in tests/test_factor_registry.py).
     with pytest.raises(ValueError, match="Unknown factor"):
-        _build_factors(cfg)
+        _cfg(tmp_path, example_config_path, "totally_made_up", "demo")
 
 
 def test_financial_fetch_uses_lookback_before_start(tmp_path, example_config_path, monkeypatch):

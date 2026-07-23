@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import pandas as pd
 
+from data.availability_policy import MARKET_DAILY
 from factors.base import Factor
-from factors.spec import FactorSpec
+from factors.spec import FactorSpec, PanelField
 
 
 class MomentumFactor(Factor):
@@ -65,6 +66,15 @@ class MomentumFactor(Factor):
         P3-3/P3-4 found momentum_20 IC ~= 0 and sign-flipping across cells — but
         the prior stays the STATED hypothesis, which is the point: the sign is
         fixed before the run and the verdict then checks it factually.
+
+        D1 declarations (derived, evidence): adjustment=returns_invariant —
+        ``compute`` is the ratio of two front-adjusted (qfq) closes
+        (``price / prev - 1``, this file), so the adjustment anchor cancels
+        exactly (data-layer lock:
+        tests/test_adjust.py::test_front_adjust_returns_invariant_to_anchor).
+        overnight_boundary=none — both legs sit on the SAME qfq basis, so no
+        RAW-price comparison ever crosses the ex-date basis break
+        (``front_adjust`` removed it upstream, data/clean/adjust.py).
         """
         return FactorSpec(
             factor_id=self.name,
@@ -78,6 +88,9 @@ class MomentumFactor(Factor):
             forward_return_horizon=1,
             return_basis="close_to_close",
             input_fields=(self._price_col,),
+            requires=(PanelField(self._price_col, source=MARKET_DAILY),),
+            adjustment="returns_invariant",
+            overnight_boundary="none",
             family="momentum",
             # value at t needs bars t-window..t -> the leading ``window`` rows
             # of every symbol are NaN by construction.
