@@ -321,5 +321,27 @@ def test_pairing_forwarding_rejects_the_cross_pairs_readably():
         require_legal_pairing("decision", "close_to_close")
 
 
+# --------------------------------------------------------------------------- #
+# timepoint 3: config parse (qt side calls the registry)
+# --------------------------------------------------------------------------- #
+def test_factor_cfg_rejects_an_unknown_enabled_name_at_parse_time():
+    from pydantic import ValidationError
+
+    from qt.config import FactorCfg
+
+    with pytest.raises(ValidationError, match="Unknown factor"):
+        FactorCfg(name="totally_made_up")
+
+
+def test_factor_cfg_accepts_known_names_and_skips_disabled_entries():
+    from qt.config import FactorCfg
+
+    FactorCfg(name="momentum_20")
+    FactorCfg(name="value_ep", params={})
+    # Disabled entries are not dispatched by _build_factors, so they are not
+    # name-checked either (mirrored behavior, locked here on purpose).
+    FactorCfg(name="totally_made_up", enabled=False)
+
+
 def test_default_registry_is_the_module_singleton_the_helpers_use():
     assert resolve("momentum_20") is DEFAULT_REGISTRY.resolve("momentum_20")
