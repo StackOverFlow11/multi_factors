@@ -19,7 +19,7 @@ from analytics.eval.figures import (
     render_factor_dashboard,
 )
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
-from factors.spec import FactorSpec
+from factors.spec import FactorSpec, PanelField
 
 
 # --------------------------------------------------------------------------- #
@@ -45,6 +45,10 @@ def _spec(**over):
               description="a synthetic factor computed as the 20d mean of X",
               expected_ic_sign=1, is_intraday=False, forward_return_horizon=1,
               return_basis="close_to_close", input_fields=("close", "amount"),
+              # Contract v1.0 mandatory declarations (D1).
+              requires=(PanelField("close", source="market_daily"),
+                        PanelField("amount", source="market_daily")),
+              adjustment="returns_invariant", overnight_boundary="none",
               family="microstructure")
     kw.update(over)
     return FactorSpec(**kw)

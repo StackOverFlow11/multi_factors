@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from data.availability_policy import MARKET_DAILY, STK_MINS_1MIN
 from data.clean.intraday_aggregate import (
     JUMP_LOOKBACK_DAYS,
     JUMP_MIN_PAIRS,
@@ -91,7 +92,19 @@ from data.clean.intraday_volume_prv import (
     VOLUME_PRV_SIGMA_K,
 )
 from factors.base import Factor
-from factors.spec import FactorSpec
+from factors.spec import FactorSpec, PanelField
+
+
+def _minute_requires(*fields: str) -> tuple[PanelField, ...]:
+    """The stk_mins_1min requires tuple of a minute-derived factor (D1).
+
+    Truthful as-of-today provenance (design §9 D1 row: DECLARE, do not move
+    data flows — the materializer migration is D4): every factor in this
+    module is aggregated upstream from the cached 1min bars, so its endpoint
+    requirement is the 1min field set its aggregation reads. The daily panel
+    column each ``compute`` selects is DERIVED from exactly these fields.
+    """
+    return tuple(PanelField(f, source=STK_MINS_1MIN) for f in fields)
 
 
 class JumpAmountCorrFactor(Factor):
@@ -135,6 +148,15 @@ class JumpAmountCorrFactor(Factor):
         >= ``JUMP_MIN_PAIRS`` jump-pairs accumulate in the trailing window), not a
         fixed leading count — the honest NaN rate is reported by data_coverage
         rather than hidden behind a fabricated warm-up window.
+
+        D1 declarations (D0 pre-assignment table row 1): adjustment=
+        returns_invariant — the jump is a within-(symbol, day) amplitude
+        z-score of the SAME-DAY ratio (high-low)/open
+        (data/clean/intraday_aggregate.py:420) and the correlated quantity is
+        ``amount`` (anchor-free), so the adjustment anchor cancels.
+        overnight_boundary=none — jump/amount pairs are strictly same-session
+        adjacent minutes (intraday_aggregate.py:421-422); no raw-price
+        comparison crosses the overnight boundary.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -155,6 +177,9 @@ class JumpAmountCorrFactor(Factor):
             # are declared for honest provenance disclosure (data_coverage lists
             # them); the daily panel surfaces the pre-aggregated column itself.
             input_fields=("high", "low", "open", "amount"),
+            requires=_minute_requires("high", "low", "open", "amount"),
+            adjustment="returns_invariant",
+            overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
         )
@@ -216,6 +241,22 @@ class MinuteIdealAmplitudeFactor(Factor):
         DATA-dependent (a value appears once >= ``IDEAL_AMP_MIN_MINUTES`` valid
         pooled minutes accumulate in the trailing window), not a fixed leading
         count — the honest NaN rate is reported by data_coverage.
+
+        D1 declarations (D0 pre-assignment table row 2 + note 1, the table's
+        flagged judgment call): adjustment=returns_invariant — the amplitude
+        itself is the same-day ratio high/low - 1 (anchor cancels;
+        data/clean/intraday_amplitude.py:24-27). overnight_boundary=
+        CROSSED_DISCLOSED (candidate) — the pooled ranking key is the RAW
+        minute close across the trailing multi-day window, so when the window
+        contains an ex-date the pooled ordering interleaves bars on two
+        different price bases; the definition is pinned to the report (Wind
+        ranks on the raw price) and deliberately kept. OPEN OBLIGATION,
+        tracked here per D0 note 1: of the three CROSSED_DISCLOSED
+        requirements (crossing is real / values kept by definition / deviation
+        MEASURED and disclosed) the third — a PR-L-style ex-date deviation
+        measurement (share of pooling windows containing a true ex-date +
+        realized rank-perturbation magnitude) — is still MISSING and is owed
+        in D2 alongside that stage's overnight-boundary property tests.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -238,6 +279,9 @@ class MinuteIdealAmplitudeFactor(Factor):
             # for honest provenance disclosure (data_coverage lists them); the daily
             # panel surfaces the pre-aggregated column itself.
             input_fields=("high", "low", "close"),
+            requires=_minute_requires("high", "low", "close"),
+            adjustment="returns_invariant",
+            overnight_boundary="crossed_disclosed",
             family="microstructure",
             min_history_bars=0,
         )
@@ -309,6 +353,13 @@ class AmpMarginalAnomalyVolFactor(Factor):
         The description spells out the FIVE pinned interpretations of the
         under-specified report (bar freq, lookback, threshold, weighted-vol operator,
         within-day lag) so a reader sees exactly what was assumed.
+
+        D1 declarations (D0 pre-assignment table row 3): adjustment=
+        returns_invariant — amp is the same-day ratio high/low - 1 and the
+        selected-bar statistic is a std of minute RETURNS (ratios), so the
+        anchor cancels throughout. overnight_boundary=none — Δamp and the
+        bar-return are BOTH within-day lagged, "the overnight gap never
+        contaminates a pair" (data/clean/intraday_amp_anomaly.py:25-26).
         """
         return FactorSpec(
             factor_id=self.name,
@@ -335,6 +386,9 @@ class AmpMarginalAnomalyVolFactor(Factor):
             # honest provenance disclosure (data_coverage lists them); the daily panel
             # surfaces the pre-aggregated column itself.
             input_fields=("high", "low", "close"),
+            requires=_minute_requires("high", "low", "close"),
+            adjustment="returns_invariant",
+            overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
         )
@@ -407,6 +461,14 @@ class VolumePeakCountFactor(Factor):
         report (PIT truncation, strictly-prior same-slot baseline, μ+σ eruptive
         threshold, mild-neighbour peak rule, valid-day gate) so a reader sees exactly
         what was assumed.
+
+        D1 declarations (D0 pre-assignment table row 4 + note 3): adjustment=
+        none — the factor reads the pure volume channel, never a price
+        (data/clean/intraday_volume_prv.py:52-55). overnight_boundary=none —
+        no raw-price comparison exists. The KNOWN raw-volume magnitude jump
+        across split days is disclosed at the definition site and deliberately
+        NOT corrected (report alignment); per D0 note 3 it belongs to NEITHER
+        taxonomy axis — do not "fix" it via these declarations.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -435,6 +497,9 @@ class VolumePeakCountFactor(Factor):
             # honest provenance disclosure (data_coverage lists it); the daily panel
             # surfaces the pre-aggregated column itself.
             input_fields=("volume",),
+            requires=_minute_requires("volume"),
+            adjustment="none",
+            overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
         )
@@ -506,6 +571,13 @@ class IntradayAmpCutFactor(Factor):
         cuts EACH DAY by the 1-MINUTE RETURN, then takes the trailing-10-valid-day mean /
         std of the daily cut and combines them cross-sectionally (the report finds the two
         only ~30% correlated).
+
+        D1 declarations (D0 pre-assignment table row 5): adjustment=
+        returns_invariant — amp is the same-day ratio high/low - 1 and the
+        cut key r = close_t/close_{t-1} - 1 is a within-day ratio, so the
+        anchor cancels in both. overnight_boundary=none — r is WITHIN-DAY
+        lagged, "no overnight gap; PR-E precedent"
+        (data/clean/intraday_amp_cut.py:27-28).
         """
         return FactorSpec(
             factor_id=self.name,
@@ -534,6 +606,9 @@ class IntradayAmpCutFactor(Factor):
             # honest provenance disclosure (data_coverage lists them); the daily panel
             # surfaces the pre-aggregated column itself.
             input_fields=("high", "low", "close"),
+            requires=_minute_requires("high", "low", "close"),
+            adjustment="returns_invariant",
+            overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
         )
@@ -607,6 +682,14 @@ class PeakIntervalKurtosisFactor(Factor):
         statistic — the shape of the gap distribution rather than the peak count — plus
         the two interpretations the report leaves open (interval unit, kurtosis
         convention).
+
+        D1 declarations (D0 pre-assignment table row 6): adjustment=none — the
+        peak identification is PR-F's pure volume machinery (reused, not
+        re-implemented; data/clean/intraday_peak_interval.py:8-9) and the
+        statistic is a kurtosis of trading-minute POSITION gaps (:20-21), so
+        no price is ever read. overnight_boundary=none — no raw-price
+        comparison exists. The split-day raw-volume σ pollution is disclosed
+        (same as PR-F, :51-53) and per D0 note 3 belongs to neither axis.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -641,6 +724,9 @@ class PeakIntervalKurtosisFactor(Factor):
             # honest provenance disclosure (data_coverage lists it); the daily panel
             # surfaces the pre-aggregated column itself.
             input_fields=("volume",),
+            requires=_minute_requires("volume"),
+            adjustment="none",
+            overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
         )
@@ -717,6 +803,15 @@ class ValleyRelativeVwapFactor(Factor):
         classification, but a PRICE LEVEL at the VALLEYS rather than a count or timing of
         the PEAKS) plus the pinned choices, including the one place we KNOWINGLY DEVIATE
         from the report: our day VWAP covers the PIT-visible window only.
+
+        D1 declarations (D0 pre-assignment table row 7): adjustment=
+        returns_invariant — both VWAP legs are sums over the SAME trading day
+        and "a split/dividend adjustment factor is constant within a day, so
+        it cancels exactly in the ratio"
+        (data/clean/intraday_valley_vwap.py:33-35). Price information arrives
+        via Σamount/Σvolume, which is why requires lists no OHLC field — the
+        anomaly is real and intended. overnight_boundary=none — both legs are
+        same-day; nothing crosses the overnight boundary.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -755,6 +850,9 @@ class ValleyRelativeVwapFactor(Factor):
             # honest provenance disclosure (data_coverage lists them); the daily panel
             # surfaces the pre-aggregated column itself.
             input_fields=("volume", "amount"),
+            requires=_minute_requires("volume", "amount"),
+            adjustment="returns_invariant",
+            overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
         )
@@ -832,6 +930,13 @@ class ValleyRidgeVwapRatioFactor(Factor):
         VWAP identity, DENOMINATOR swapped from the whole visible day to the ridge bars)
         plus the pinned choices — above all the ASYMMETRIC bar floor, which exists
         because ridge bars are structurally far scarcer than valley bars.
+
+        D1 declarations (D0 pre-assignment table row 8): adjustment=
+        returns_invariant — the same same-day two-leg cancellation argument as
+        PR-I, with the denominator swapped to the ridge VWAP
+        (data/clean/intraday_valley_ridge_vwap.py:42-45); price arrives via
+        Σamount/Σvolume, so requires lists no OHLC field. overnight_boundary=
+        none — both legs are same-day.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -880,6 +985,9 @@ class ValleyRidgeVwapRatioFactor(Factor):
             # honest provenance disclosure (data_coverage lists them); the daily panel
             # surfaces the pre-aggregated column itself.
             input_fields=("volume", "amount"),
+            requires=_minute_requires("volume", "amount"),
+            adjustment="returns_invariant",
+            overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
         )
@@ -959,6 +1067,14 @@ class RidgeMinuteReturnFactor(Factor):
         a RETURN statistic instead of a count / timing moment / price level) plus the
         pinned choices — above all the SIMPLE-SUM convention, the within-day return lag and
         the raw closes, none of which the report specifies.
+
+        D1 declarations (D0 pre-assignment table row 9): adjustment=
+        returns_invariant — the minute return close_t/close_(t-1) - 1 is a
+        within-day ratio, and "a split/dividend adjustment factor is constant
+        WITHIN a day, so it cancels exactly"
+        (data/clean/intraday_ridge_return.py:39-42). overnight_boundary=none —
+        the same docstring's own claim, "no return ever straddles an ex-date
+        boundary" (the within-day lag drops each day's first visible bar).
         """
         return FactorSpec(
             factor_id=self.name,
@@ -1014,6 +1130,9 @@ class RidgeMinuteReturnFactor(Factor):
             # honest provenance disclosure (data_coverage lists them); the daily panel
             # surfaces the pre-aggregated column itself.
             input_fields=("volume", "close"),
+            requires=_minute_requires("volume", "close"),
+            adjustment="returns_invariant",
+            overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
         )
@@ -1086,6 +1205,22 @@ class ValleyPriceQuantileFactor(Factor):
         its five siblings: the PREV_CLOSE-extended range read at OUR 14:50 visibility
         rather than the report's true daily close, and the reversal neutralization taken
         at T-1 so day d's 15:00 close is never an input to day d's value.
+
+        D1 declarations (D0 pre-assignment table row 10 + note 2 — the
+        two-axes-differ exemplar): adjustment=returns_invariant — the rev20
+        leg is a ratio of FRONT-ADJUSTED daily closes (anchor cancels;
+        data/clean/intraday_valley_quantile.py:49-55, :403-404) and the minute
+        legs are raw but fully same-day, so an ANCHOR perturbation does not
+        move the value. overnight_boundary=CROSSED_DISCLOSED — prev_close is a
+        raw close on the PREVIOUS day's basis entering day d's range, the
+        pinned definition keeps the ex-date values, and the deviation is
+        MEASURED and disclosed (0.73% true ex-dates / ~0.21% ex-date AND
+        range-distorted; intraday_valley_quantile.py:56-72 and pinned in
+        tests/test_valley_price_quantile_factor.py). All three
+        CROSSED_DISCLOSED requirements are met — unlike PR-D, nothing is owed.
+        ``requires`` adds market_daily close beyond the minute fields: the T-1
+        rev20 neutralization reads the qfq DAILY close panel (a real second
+        endpoint, declared truthfully rather than mirrored off input_fields).
         """
         return FactorSpec(
             factor_id=self.name,
@@ -1158,6 +1293,15 @@ class ValleyPriceQuantileFactor(Factor):
             # provenance disclosure (data_coverage lists them); the daily panel surfaces
             # the pre-aggregated column itself.
             input_fields=("volume", "amount", "high", "low", "close"),
+            requires=(
+                *_minute_requires("volume", "amount", "high", "low", "close"),
+                # The T-1 rev20 neutralization reads the front-adjusted DAILY
+                # close panel — a genuine market_daily requirement on top of
+                # the minute fields (see the docstring's D1 paragraph).
+                PanelField("close", source=MARKET_DAILY),
+            ),
+            adjustment="returns_invariant",
+            overnight_boundary="crossed_disclosed",
             family="microstructure",
             min_history_bars=0,
         )
@@ -1239,6 +1383,14 @@ class PeakRidgeAmountRatioFactor(Factor):
         The description spells out the AGGREGATION FORM, which is the one place this
         factor's definition departs from its siblings: the report specifies a RATIO OF
         20-DAY SUMS, not the mean of daily ratios that §7.1 (PR-J) specifies.
+
+        D1 declarations (D0 pre-assignment table row 11): adjustment=none —
+        "``amount`` is traded VALUE in RMB, which no split or dividend
+        adjustment factor rescales ... there is nothing to cancel"
+        (data/clean/intraday_amount_ratio.py:53-57); volume only drives the
+        reused classification, and no price is ever read (zero price content —
+        one disclaimer covers both axes). overnight_boundary=none — no
+        raw-price comparison exists.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -1297,6 +1449,9 @@ class PeakRidgeAmountRatioFactor(Factor):
             # for honest provenance disclosure (data_coverage lists them); the daily panel
             # surfaces the pre-aggregated column itself.
             input_fields=("volume", "amount"),
+            requires=_minute_requires("volume", "amount"),
+            adjustment="none",
+            overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
         )

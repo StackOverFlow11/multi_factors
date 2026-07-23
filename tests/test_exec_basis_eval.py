@@ -24,7 +24,7 @@ from analytics.eval.verdict import AXIS_NOT_ASSESSED
 from data.cache.intraday_cache import ENDPOINT as MINUTE_ENDPOINT
 from data.cache.intraday_parquet_store import KEY_COLS, IntradayParquetStore
 from data.clean.intraday_schema import RAW_INTRADAY_FREQ
-from factors.spec import FactorSpec
+from factors.spec import FactorSpec, PanelField
 from qt.config import (
     AlphaCfg,
     BacktestCfg,
@@ -126,6 +126,8 @@ def _fixture(tmp_path, n_days: int = 40):
         description="synthetic minute-derived factor", expected_ic_sign=1,
         is_intraday=False, forward_return_horizon=1,
         return_basis="close_to_close", input_fields=("close",),
+        requires=(PanelField("close", source="stk_mins_1min"),),
+        adjustment="returns_invariant", overnight_boundary="none",
         family="microstructure",
     )
     eval_cfg = EvalConfig(
@@ -227,6 +229,8 @@ def test_exec_basis_eval_shares_one_artifact_across_factors(tmp_path):
         description="a different synthetic minute factor", expected_ic_sign=-1,
         is_intraday=False, forward_return_horizon=1,
         return_basis="close_to_close", input_fields=("close",),
+        requires=(PanelField("close", source="stk_mins_1min"),),
+        adjustment="returns_invariant", overnight_boundary="none",
     )
     other_factor = factor.rename("other_minute_factor") * -1.0
     second = run_exec_basis_evaluation(

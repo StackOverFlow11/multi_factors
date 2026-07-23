@@ -68,6 +68,7 @@ from factors.spec import (
     INTRADAY_RETURN_BASIS,
     RETURN_BASES,
     FactorSpec,
+    PanelField,
 )
 
 
@@ -82,6 +83,10 @@ def _spec(**overrides) -> FactorSpec:
         forward_return_horizon=1,
         return_basis="close_to_close",
         input_fields=("close",),
+        # Contract v1.0 mandatory declarations (D1).
+        requires=(PanelField("close", source="market_daily"),),
+        adjustment="returns_invariant",
+        overnight_boundary="none",
     )
     base.update(overrides)
     return FactorSpec(**base)

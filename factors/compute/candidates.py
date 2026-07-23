@@ -27,12 +27,18 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from data.availability_policy import DAILY_BASIC, MARKET_DAILY
 from factors.base import Factor
 from factors.compute.momentum import MomentumFactor
-from factors.spec import FactorSpec
+from factors.spec import FactorSpec, PanelField
 
 # daily_basic-derived value fields the pipeline can enrich + surface (P3-5).
 VALUE_FIELDS: tuple[str, ...] = ("value_ep", "value_bp")
+
+# The daily_basic source field behind each surfaced value column (D1 requires
+# declaration: the factor reads the enriched panel column, but the DATA it
+# needs is the published ratio on this endpoint field).
+_VALUE_SOURCE_FIELD: dict[str, str] = {"value_ep": "pe", "value_bp": "pb"}
 
 # Per-field evaluation contract metadata for the value pack. expected_ic_sign=+1
 # for both: the classic value prior (cheap earns more than expensive), and the
@@ -68,6 +74,13 @@ class ReversalFactor(Factor):
         hypothesis is the exact negation of MomentumFactor's +1 prior (short-
         horizon losers bounce back). Project evidence: no signal — P3-5 found
         reversal_5/20 sign-flipping across cells.
+
+        D1 declarations (derived): requires / adjustment / overnight_boundary
+        are INHERITED from the underlying momentum spec — negation changes the
+        sign of the value, not its inputs, its anchor dependence, or its
+        overnight-boundary behaviour (this class delegates ``compute`` to
+        :class:`MomentumFactor`, so the provenance is identical by
+        construction).
         """
         base = self._momentum.spec
         return FactorSpec(
@@ -79,6 +92,9 @@ class ReversalFactor(Factor):
             forward_return_horizon=base.forward_return_horizon,
             return_basis=base.return_basis,
             input_fields=base.input_fields,
+            requires=base.requires,
+            adjustment=base.adjustment,
+            overnight_boundary=base.overnight_boundary,
             family="reversal",
             min_history_bars=base.min_history_bars,
         )
@@ -115,6 +131,16 @@ class VolatilityFactor(Factor):
         project's second independently-confirmed hypothesis: P3-5 test IC 3/3
         negative (-0.044~-0.079), P3-7 SUPPORTED on 2/2 holdout cells, P3-8
         GENERALIZES to CSI500 (test IC -0.0272).
+
+        D1 declarations (D0 pre-assignment table row 14): adjustment=
+        returns_invariant — the input is per-symbol ``pct_change`` of the
+        pipeline's qfq close panel (``compute`` below), so the anchor cancels
+        in every return ratio (data-layer lock:
+        tests/test_adjust.py::test_front_adjust_returns_invariant_to_anchor).
+        overnight_boundary=none — all returns are ratios of SAME-basis qfq
+        closes; in the decision view every input is <= d-1 (the market_daily
+        close row of data/availability_policy.py), so no raw-price comparison
+        mixes day d's new basis with old-basis history.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -128,6 +154,9 @@ class VolatilityFactor(Factor):
             forward_return_horizon=1,
             return_basis="close_to_close",
             input_fields=(self._price_col,),
+            requires=(PanelField(self._price_col, source=MARKET_DAILY),),
+            adjustment="returns_invariant",
+            overnight_boundary="none",
             family="lowvol",
             # pct_change loses row 0 and the rolling std needs ``window`` returns
             # -> the leading ``window`` rows are NaN.
@@ -180,6 +209,13 @@ class LiquidityFactor(Factor):
         NEGATIVELY with forward returns. Project evidence: P3-5 test IC 3/3
         negative but small in magnitude; P3-6 showed adding it to the
         value+lowvol subset is no free lunch (better on 1 cell, worse on 2).
+
+        D1 declarations (derived, evidence): adjustment=none — the only input
+        is the turnover ``amount`` column (``compute`` below: rolling mean of
+        amount, then log); traded VALUE in RMB is not rescaled by any
+        split/dividend adjustment factor, so the price channel is never
+        touched. overnight_boundary=none — no price comparison exists at all,
+        let alone one crossing the overnight boundary.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -193,6 +229,9 @@ class LiquidityFactor(Factor):
             forward_return_horizon=1,
             return_basis="close_to_close",
             input_fields=(self._amount_col,),
+            requires=(PanelField(self._amount_col, source=MARKET_DAILY),),
+            adjustment="none",
+            overnight_boundary="none",
             family="liquidity",
             # rolling mean over ``window`` amounts -> first valid row is
             # ``window-1`` (no pct_change involved, unlike volatility).
@@ -255,6 +294,18 @@ class OvernightMomentumFactor(Factor):
 
         NOT is_intraday: it is derived from DAILY open/close bars, so it carries
         no minute decision-cutoff / execution contract.
+
+        D1 declarations (derived, evidence): adjustment=returns_invariant —
+        the value is a sum of log ratios ``log(open[t] / close[t-1])`` on the
+        FRONT-ADJUSTED panel; both legs carry the same qfq anchor, which
+        cancels in the ratio (class docstring: "Both prices are front-adjusted
+        by the same anchor, so the ratio is ex-dividend-safe"; data-layer lock
+        tests/test_adjust.py::test_front_adjust_returns_invariant_to_anchor).
+        overnight_boundary=none — the ratio does SPAN the overnight gap, but
+        both legs are qfq prices on one continuous basis, so no RAW-price
+        comparison crosses an ex-date basis BREAK (``front_adjust`` removed
+        it); the taxonomy's ``none`` is exactly "no raw-price comparison
+        crosses the boundary" (data/availability_policy.py).
         """
         return FactorSpec(
             factor_id=self.name,
@@ -268,6 +319,12 @@ class OvernightMomentumFactor(Factor):
             forward_return_horizon=1,
             return_basis="close_to_close",
             input_fields=(self._open_col, self._close_col),
+            requires=(
+                PanelField(self._open_col, source=MARKET_DAILY),
+                PanelField(self._close_col, source=MARKET_DAILY),
+            ),
+            adjustment="returns_invariant",
+            overnight_boundary="none",
             family="momentum",
             # row 0 has no prior close and the rolling sum needs ``window`` full
             # overnight returns -> the leading ``window`` rows are NaN.
@@ -317,6 +374,15 @@ class ValueFactor(Factor):
         expected_ic_sign=+1 for both fields — see ``_VALUE_META`` above for the
         prior and the project's independent confirmation (P3-5/P3-7/P3-8).
         ``min_history_bars=0``: the ratio is published same-day, no warm-up.
+
+        D1 declarations (D0 pre-assignment table rows 12-13): adjustment=none
+        — the factor only surfaces the enriched 1/pe (resp. 1/pb) column: a
+        published same-day ratio with no price channel, no qfq and no
+        time-series logic of its own (``compute`` below is a bare column
+        select). overnight_boundary=none — no raw-price comparison exists.
+        ``requires`` names the daily_basic SOURCE field (pe / pb), not the
+        derived panel column: what the factor needs from the data layer is the
+        published ratio.
         """
         return FactorSpec(
             factor_id=self.name,
@@ -327,6 +393,11 @@ class ValueFactor(Factor):
             forward_return_horizon=1,
             return_basis="close_to_close",
             input_fields=(self._field,),
+            requires=(
+                PanelField(_VALUE_SOURCE_FIELD[self._field], source=DAILY_BASIC),
+            ),
+            adjustment="none",
+            overnight_boundary="none",
             family="value",
             min_history_bars=0,
         )

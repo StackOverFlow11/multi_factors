@@ -58,7 +58,7 @@ from analytics.eval.stats import (
     spearman_series_by_date,
 )
 from analytics.factor import compute_ic
-from factors.spec import FactorSpec
+from factors.spec import FactorSpec, PanelField
 from qt.intraday_groups import assign_quantile_buckets as canonical_buckets
 
 DATE = "date"
@@ -156,6 +156,10 @@ def make_spec(**overrides) -> FactorSpec:
         forward_return_horizon=1,
         return_basis="close_to_close",
         input_fields=("close",),
+        # Contract v1.0 mandatory declarations (D1).
+        requires=(PanelField("close", source="market_daily"),),
+        adjustment="returns_invariant",
+        overnight_boundary="none",
     )
     kwargs.update(overrides)
     return FactorSpec(**kwargs)

@@ -22,7 +22,7 @@ from analytics.eval.ir import EvalContext, build_eval_ir
 from data.cache.intraday_cache import ENDPOINT as MINUTE_ENDPOINT
 from data.cache.intraday_parquet_store import KEY_COLS, IntradayParquetStore
 from data.clean.intraday_schema import RAW_INTRADAY_FREQ, normalize_intraday_bars
-from factors.spec import FactorSpec
+from factors.spec import FactorSpec, PanelField
 from qt.config import (
     AlphaCfg,
     BacktestCfg,
@@ -408,6 +408,9 @@ def _daily_spec() -> FactorSpec:
         forward_return_horizon=1,
         return_basis="close_to_close",
         input_fields=("close",),
+        requires=(PanelField("close", source="stk_mins_1min"),),
+        adjustment="returns_invariant",
+        overnight_boundary="none",
         family="microstructure",
     )
 
