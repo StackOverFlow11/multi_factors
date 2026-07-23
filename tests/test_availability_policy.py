@@ -341,3 +341,17 @@ def test_horizon_source_is_consistent_per_endpoint():
     """All six market_daily field rows share one horizon source."""
     sources = {r.horizon_source for r in rules_for_source(MARKET_DAILY)}
     assert sources == {RevisionHorizonSource.REFRESH_RECENT_DAYS}
+
+
+def test_bool_day_counts_rejected_not_coerced_to_int():
+    """bool is an int subclass; without the explicit guard True would pass as 1."""
+    with pytest.raises(ValueError, match="must be an int"):
+        revision_horizon(
+            MARKET_DAILY, refresh_recent_days=True, recent_tail_overrides={}
+        )
+    with pytest.raises(ValueError, match="must be an int"):
+        revision_horizon(
+            FINA_INDICATOR,
+            refresh_recent_days=14,
+            recent_tail_overrides={FINA_INDICATOR: True},
+        )
