@@ -48,11 +48,24 @@ def _finite(series: pd.Series) -> pd.Series:
 
 
 def _pick_warmup(series: pd.Series, rng: np.random.RandomState) -> tuple:
-    """A symbol's FIRST finite row (its warm-up end on the factor's own axis)."""
-    for sym in rng.permutation(_symbols(series)):
+    """A symbol's FIRST finite row (its warm-up end on the factor's own axis).
+
+    Prefers a symbol with a real leading-NaN ramp. Some factors emit rows only
+    once every accumulation floor is already crossed (amp_cut's combine drops
+    non-finite stat pairs), so no ramp exists on the panel — then the symbol's
+    FIRST EMITTED row IS the warm-up end and is used as the anchor.
+    """
+    syms = rng.permutation(_symbols(series))
+    for sym in syms:
         sub = series.xs(sym, level="symbol").sort_index()
         fin = np.isfinite(sub.to_numpy(float))
         if fin.any() and not fin[0]:  # a real warm-up ramp exists
+            j = int(np.argmax(fin))
+            return (sub.index[j], str(sym))
+    for sym in syms:  # fallback: first emitted (already finite) row
+        sub = series.xs(sym, level="symbol").sort_index()
+        fin = np.isfinite(sub.to_numpy(float))
+        if fin.any():
             j = int(np.argmax(fin))
             return (sub.index[j], str(sym))
     raise RuntimeError("no warm-up row found")

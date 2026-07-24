@@ -88,6 +88,12 @@ def read_minutes(
     only), and PR-E (amp anomaly) resamples the FULL day to 5min FIRST and
     PIT-filters the DERIVED bars by their own available_time.
     """
+    # Clip to the evaluation plane's start: the cache holds BACKFILLED bars
+    # from before 2021-07-01, but the frozen panels were computed on
+    # store.read_range(cfg.data.start, ...) — reading earlier months would
+    # hand the check a richer history than the engine ever saw (the first
+    # G run's early-window failures were exactly this).
+    lo = max(lo, WINDOW_LO)
     months = pd.period_range(lo, hi, freq="M")
     parts = []
     base = (
