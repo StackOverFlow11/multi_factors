@@ -540,7 +540,7 @@ def hand_intraday_amp_cut(symbols: list[str], target: str, d: pd.Timestamp) -> f
 
 
 def _vpq_qbar_one(symbol: str, d: pd.Timestamp) -> float:
-    bars = read_minutes(symbol, d - pd.Timedelta(days=200), d)
+    bars = read_minutes(symbol, d - pd.Timedelta(days=130), d)
     if bars.empty:
         return float("nan")
     work = classify(bars)

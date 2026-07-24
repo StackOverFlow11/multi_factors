@@ -255,15 +255,19 @@ def run_hand_anchors(out_path: Path) -> int:
         compare("intraday_amp_cut_10", cls, (d, sym), hand,
                 note=f"cross_section={int(fin.sum())}")
 
-    # ---------------- valley price quantile (cross-section; 2 dates) --------
+    # ---------------- valley price quantile (cross-section; 3 dates) --------
+    # 5 rows amortized over 3 distinct dates: each date costs a full-universe
+    # hand cross-section (qbar for every covered symbol), so the two extra
+    # interior rows share the first random date (disclosed amortization).
     series = _panel("valley_price_quantile_20")
     w = _pick_warmup(series, rng)
-    r1, r2 = _pick_random(series, rng, 2)
+    (r1,) = _pick_random(series, rng, 1)
     e = _pick_exdate(series, rng, H.VPQ_LOOKBACK)
-    picks = [("warmup_end", w), ("ex_date_window", e), ("random", r1), ("random", r2)]
+    picks = [("warmup_end", w), ("ex_date_window", e), ("random", r1)]
     same_date = _finite(series).xs(r1[0], level="date", drop_level=False)
-    extra_sym = str(same_date.index[rng.randint(len(same_date))][1])
-    picks.append(("random", (r1[0], extra_sym)))
+    for _ in range(2):
+        extra_sym = str(same_date.index[rng.randint(len(same_date))][1])
+        picks.append(("random", (r1[0], extra_sym)))
     vpq_cache: dict = {}
     for cls, (d, sym) in picks:
         if d not in vpq_cache:
