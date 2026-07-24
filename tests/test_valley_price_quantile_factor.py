@@ -43,18 +43,7 @@ import pandas as pd
 import pytest
 
 from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from data.clean.intraday_valley_quantile import (
-    VALLEY_QUANTILE_LOOKBACK_DAYS,
-    VALLEY_QUANTILE_MIN_CROSS_SECTION,
-    VALLEY_QUANTILE_MIN_VALLEY_BARS,
-    VALLEY_QUANTILE_REVERSAL_DAYS,
-    compute_valley_price_quantile,
-    compute_valley_price_quantile_stats,
-    residualize_on_reversal,
-    reversal_20,
-    valley_price_quantile_by_day,
-)
-from data.clean.intraday_volume_prv import (
+from factors.compute.minute.primitives import (
     VOLUME_PRV_BASELINE_DAYS,
     VOLUME_PRV_BASELINE_MIN_OBS,
     VOLUME_PRV_MIN_CLASSIFIABLE,
@@ -63,7 +52,18 @@ from data.clean.intraday_volume_prv import (
     peak_mask_for_symbol,
     prepare_visible_minute_bars,
 )
-from factors.compute.intraday_derived import ValleyPriceQuantileFactor
+from factors.compute.minute.valley_price_quantile import (
+    VALLEY_QUANTILE_LOOKBACK_DAYS,
+    VALLEY_QUANTILE_MIN_CROSS_SECTION,
+    VALLEY_QUANTILE_MIN_VALLEY_BARS,
+    VALLEY_QUANTILE_REVERSAL_DAYS,
+    ValleyPriceQuantileFactor,
+    compute_valley_price_quantile,
+    compute_valley_price_quantile_stats,
+    residualize_on_reversal,
+    reversal_20,
+    valley_price_quantile_by_day,
+)
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"
@@ -861,9 +861,9 @@ def test_prior_factor_modules_are_untouched_by_this_pr():
     behaviour on a trivial input, so an accidental edit to the shared module shows up
     here as well as in the five factors' own test files.
     """
-    from data.clean.intraday_ridge_return import compute_ridge_minute_return
-    from data.clean.intraday_valley_ridge_vwap import compute_valley_ridge_vwap_ratio
-    from data.clean.intraday_valley_vwap import compute_valley_relative_vwap
+    from factors.compute.minute.ridge_minute_return import compute_ridge_minute_return
+    from factors.compute.minute.valley_ridge_vwap_ratio import compute_valley_ridge_vwap_ratio
+    from factors.compute.minute.valley_relative_vwap import compute_valley_relative_vwap
 
     empty = empty_intraday_bars()
     for fn in (

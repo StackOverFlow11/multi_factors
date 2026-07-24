@@ -25,17 +25,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from data.clean.intraday_aggregate import JUMP_LOOKBACK_DAYS
-from data.clean.intraday_amount_ratio import PEAK_RIDGE_LOOKBACK_DAYS
-from data.clean.intraday_amp_anomaly import AMP_ANOMALY_LOOKBACK_DAYS
-from data.clean.intraday_amp_cut import AMP_CUT_LOOKBACK_DAYS
-from data.clean.intraday_amplitude import IDEAL_AMP_LOOKBACK_DAYS
-from data.clean.intraday_peak_interval import PEAK_INTERVAL_LOOKBACK_DAYS
-from data.clean.intraday_ridge_return import RIDGE_RETURN_LOOKBACK_DAYS
-from data.clean.intraday_valley_quantile import VALLEY_QUANTILE_LOOKBACK_DAYS
-from data.clean.intraday_valley_ridge_vwap import VALLEY_RIDGE_LOOKBACK_DAYS
-from data.clean.intraday_valley_vwap import VALLEY_VWAP_LOOKBACK_DAYS
-from data.clean.intraday_volume_prv import VOLUME_PRV_LOOKBACK_DAYS
 from factors.compute.candidates import (
     VALUE_FIELDS,
     LiquidityFactor,
@@ -45,17 +34,48 @@ from factors.compute.candidates import (
     VolatilityFactor,
 )
 from factors.compute.financial import SUPPORTED_FIELDS, FinancialFactor
-from factors.compute.intraday_derived import (
+from factors.compute.minute.amp_marginal_anomaly_vol import (
+    AMP_ANOMALY_LOOKBACK_DAYS,
     AmpMarginalAnomalyVolFactor,
+)
+from factors.compute.minute.intraday_amp_cut import (
+    AMP_CUT_LOOKBACK_DAYS,
     IntradayAmpCutFactor,
+)
+from factors.compute.minute.jump_amount_corr import (
+    JUMP_LOOKBACK_DAYS,
     JumpAmountCorrFactor,
+)
+from factors.compute.minute.minute_ideal_amplitude import (
+    IDEAL_AMP_LOOKBACK_DAYS,
     MinuteIdealAmplitudeFactor,
+)
+from factors.compute.minute.peak_interval_kurtosis import (
+    PEAK_INTERVAL_LOOKBACK_DAYS,
     PeakIntervalKurtosisFactor,
+)
+from factors.compute.minute.peak_ridge_amount_ratio import (
+    PEAK_RIDGE_LOOKBACK_DAYS,
     PeakRidgeAmountRatioFactor,
+)
+from factors.compute.minute.ridge_minute_return import (
+    RIDGE_RETURN_LOOKBACK_DAYS,
     RidgeMinuteReturnFactor,
+)
+from factors.compute.minute.valley_price_quantile import (
+    VALLEY_QUANTILE_LOOKBACK_DAYS,
     ValleyPriceQuantileFactor,
+)
+from factors.compute.minute.valley_relative_vwap import (
+    VALLEY_VWAP_LOOKBACK_DAYS,
     ValleyRelativeVwapFactor,
+)
+from factors.compute.minute.valley_ridge_vwap_ratio import (
+    VALLEY_RIDGE_LOOKBACK_DAYS,
     ValleyRidgeVwapRatioFactor,
+)
+from factors.compute.minute.volume_peak_count import (
+    VOLUME_PRV_LOOKBACK_DAYS,
     VolumePeakCountFactor,
 )
 from factors.compute.momentum import MomentumFactor

@@ -23,14 +23,7 @@ import pandas as pd
 import pytest
 
 from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from data.clean.intraday_valley_ridge_vwap import (
-    VALLEY_RIDGE_LOOKBACK_DAYS,
-    VALLEY_RIDGE_MIN_RIDGE_BARS,
-    VALLEY_RIDGE_MIN_VALLEY_BARS,
-    compute_valley_ridge_vwap_ratio,
-    valley_ridge_vwap_ratio_by_day,
-)
-from data.clean.intraday_volume_prv import (
+from factors.compute.minute.primitives import (
     VOLUME_PRV_BASELINE_DAYS,
     VOLUME_PRV_BASELINE_MIN_OBS,
     VOLUME_PRV_MIN_VALID_DAYS,
@@ -38,7 +31,14 @@ from data.clean.intraday_volume_prv import (
     peak_mask_for_symbol,
     prepare_visible_minute_bars,
 )
-from factors.compute.intraday_derived import ValleyRidgeVwapRatioFactor
+from factors.compute.minute.valley_ridge_vwap_ratio import (
+    VALLEY_RIDGE_LOOKBACK_DAYS,
+    VALLEY_RIDGE_MIN_RIDGE_BARS,
+    VALLEY_RIDGE_MIN_VALLEY_BARS,
+    ValleyRidgeVwapRatioFactor,
+    compute_valley_ridge_vwap_ratio,
+    valley_ridge_vwap_ratio_by_day,
+)
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"
@@ -718,7 +718,7 @@ def test_valley_and_peak_and_classifiable_unchanged_by_the_ridge_exposure():
 
 def test_volume_peak_count_unchanged_by_the_ridge_exposure():
     """PR-F's factor value is bit-identical (same hand case as the PR-I lock)."""
-    from data.clean.intraday_volume_prv import compute_volume_peak_count
+    from factors.compute.minute.volume_peak_count import compute_volume_peak_count
 
     vols, amts = _case_b_day()
     rows = _background(_BG_DAYS, _CASE_B_N) + _session("2021-07-11", vols, amts)
@@ -738,7 +738,7 @@ def test_volume_peak_count_unchanged_by_the_ridge_exposure():
 
 def test_peak_interval_kurtosis_unchanged_by_the_ridge_exposure():
     """PR-H's factor value is bit-identical (the PR-H hand case, verbatim)."""
-    from data.clean.intraday_peak_interval import compute_peak_interval_kurtosis
+    from factors.compute.minute.peak_interval_kurtosis import compute_peak_interval_kurtosis
 
     n = 25
     vols = [100.0] * n
@@ -760,7 +760,7 @@ def test_peak_interval_kurtosis_unchanged_by_the_ridge_exposure():
 
 def test_valley_relative_vwap_unchanged_by_the_ridge_exposure():
     """PR-I's factor value is bit-identical (the PR-I case-A hand value, verbatim)."""
-    from data.clean.intraday_valley_vwap import compute_valley_relative_vwap
+    from factors.compute.minute.valley_relative_vwap import compute_valley_relative_vwap
 
     n = 12
     erupt = (3, 7)

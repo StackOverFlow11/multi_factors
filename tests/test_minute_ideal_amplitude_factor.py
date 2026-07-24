@@ -13,14 +13,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data.clean.intraday_amplitude import (
+from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
+from factors.compute.minute.minute_ideal_amplitude import (
     IDEAL_AMP_LAMBDA,
     IDEAL_AMP_LOOKBACK_DAYS,
     IDEAL_AMP_MIN_MINUTES,
+    MinuteIdealAmplitudeFactor,
     compute_minute_ideal_amplitude,
 )
-from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from factors.compute.intraday_derived import MinuteIdealAmplitudeFactor
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"

@@ -64,6 +64,21 @@ TIME_LEVEL = "time"
 SYMBOL_LEVEL = "symbol"
 INTRADAY_INDEX_NAMES: list[str] = [TIME_LEVEL, SYMBOL_LEVEL]
 
+# Daily-aggregation view of minute bars: the (date, symbol) grid every
+# minute-DERIVED daily factor emits. Homed HERE since D2 (moved from
+# data.clean.intraday_aggregate, which re-exports them) so that both the
+# data-layer generic core (intraday_aggregate) and the factor math in
+# factors.compute.minute can import one definition without an import cycle —
+# the aggregate module re-exports the migrated MMP/jump math FROM factors, so
+# the factor modules must never import the aggregate module back.
+DATE_LEVEL = "date"
+DAILY_INDEX_NAMES: list[str] = [DATE_LEVEL, SYMBOL_LEVEL]
+
+# Session time-of-day defaults shared by the PIT cutoff machinery (I3) and the
+# minute factors (D2). Same single-home rationale as DAILY_INDEX_NAMES above.
+DEFAULT_DECISION_TIME = "14:50:00"
+DEFAULT_SESSION_OPEN = "09:30:00"
+
 RAW_INTRADAY_FREQ = "1min"
 
 # The schema can represent derived coarser bars, but raw feeds/cache should only

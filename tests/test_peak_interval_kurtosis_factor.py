@@ -19,23 +19,23 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data.clean.intraday_peak_interval import (
+from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
+from factors.compute.minute.peak_interval_kurtosis import (
     PEAK_INTERVAL_LOOKBACK_DAYS,
     PEAK_INTERVAL_MIN_INTERVALS,
+    PeakIntervalKurtosisFactor,
     compute_peak_interval_kurtosis,
     excess_kurtosis,
     peak_intervals_by_day,
 )
-from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from data.clean.intraday_volume_prv import (
+from factors.compute.minute.primitives import (
     VOLUME_PRV_BASELINE_DAYS,
     VOLUME_PRV_BASELINE_MIN_OBS,
     VOLUME_PRV_SIGMA_K,
-    compute_volume_peak_count,
     peak_mask_for_symbol,
     prepare_visible_minute_bars,
 )
-from factors.compute.intraday_derived import PeakIntervalKurtosisFactor
+from factors.compute.minute.volume_peak_count import compute_volume_peak_count
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"
