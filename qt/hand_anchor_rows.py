@@ -367,7 +367,10 @@ def run_hand_anchors(out_path: Path) -> int:
                         break
             if ex_row is not None:
                 rows.append(("ex_date_window", (ex_row, sym), ""))
-        for _ in range(2 if kind != "liquidity" else 3):
+        # >= 5 rows per factor (R12): warmup + ex-date + 3 random for the
+        # price factors, warmup + 4 random for liquidity (amount channel — the
+        # ex-date class is not applicable and is disclosed, not faked).
+        for _ in range(3 if kind != "liquidity" else 4):
             j = int(rng.randint(need + 1, len(dates)))
             rows.append(("random", (dates[j], sym), ""))
         for cls, (d, s), note in rows:
