@@ -27,12 +27,24 @@ from factors.store.fingerprint import (
 )
 from factors.store.hashing import params_hash, short_hash
 from factors.store.keys import StoreKey, store_key
+from factors.store.run_registry import (
+    STATUSES,
+    RunRecord,
+    RunRegistry,
+    assert_registry_consistent,
+)
+from factors.store.values import FactorValueStore
 
 __all__ = [
     "ALLOWED_INTERNAL_IMPORTS",
     "FINGERPRINT_VERSION",
+    "STATUSES",
+    "FactorValueStore",
+    "RunRecord",
+    "RunRegistry",
     "StoreKey",
     "adj_events_hash",
+    "assert_registry_consistent",
     "code_hash",
     "data_fingerprint",
     "factor_source_files",
