@@ -19,16 +19,16 @@ import pandas as pd
 import pytest
 
 from data.clean.intraday_aggregate import resample_intraday_bars
-from data.clean.intraday_amp_anomaly import (
+from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
+from factors.compute.minute.amp_marginal_anomaly_vol import (
     AMP_ANOMALY_FREQ,
     AMP_ANOMALY_LOOKBACK_DAYS,
     AMP_ANOMALY_MIN_POOL,
     AMP_ANOMALY_MIN_SELECTED,
     AMP_ANOMALY_SIGMA_K,
+    AmpMarginalAnomalyVolFactor,
     compute_amp_marginal_anomaly_vol,
 )
-from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from factors.compute.intraday_derived import AmpMarginalAnomalyVolFactor
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"

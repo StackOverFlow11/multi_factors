@@ -21,13 +21,7 @@ import pandas as pd
 import pytest
 
 from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from data.clean.intraday_valley_vwap import (
-    VALLEY_VWAP_LOOKBACK_DAYS,
-    VALLEY_VWAP_MIN_VALLEY_BARS,
-    compute_valley_relative_vwap,
-    valley_vwap_ratio_by_day,
-)
-from data.clean.intraday_volume_prv import (
+from factors.compute.minute.primitives import (
     VOLUME_PRV_BASELINE_DAYS,
     VOLUME_PRV_BASELINE_MIN_OBS,
     VOLUME_PRV_MIN_VALID_DAYS,
@@ -35,7 +29,13 @@ from data.clean.intraday_volume_prv import (
     peak_mask_for_symbol,
     prepare_visible_minute_bars,
 )
-from factors.compute.intraday_derived import ValleyRelativeVwapFactor
+from factors.compute.minute.valley_relative_vwap import (
+    VALLEY_VWAP_LOOKBACK_DAYS,
+    VALLEY_VWAP_MIN_VALLEY_BARS,
+    ValleyRelativeVwapFactor,
+    compute_valley_relative_vwap,
+    valley_vwap_ratio_by_day,
+)
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"
@@ -538,7 +538,7 @@ def test_valley_is_exactly_classifiable_and_not_eruptive():
 
 def test_volume_peak_count_unchanged_by_the_exposure_refactor():
     """PR-F's factor value is bit-identical whether or not amount is carried."""
-    from data.clean.intraday_volume_prv import compute_volume_peak_count
+    from factors.compute.minute.volume_peak_count import compute_volume_peak_count
 
     vols, amts = _case_b_day()
     rows = _background(_BG_DAYS, _CASE_B_N) + _session("2021-07-11", vols, amts)
@@ -557,7 +557,7 @@ def test_volume_peak_count_unchanged_by_the_exposure_refactor():
 
 def test_peak_interval_kurtosis_unchanged_by_the_exposure_refactor():
     """PR-H's factor value is bit-identical whether or not amount is carried."""
-    from data.clean.intraday_peak_interval import compute_peak_interval_kurtosis
+    from factors.compute.minute.peak_interval_kurtosis import compute_peak_interval_kurtosis
 
     # the PR-H hand case: peaks at 1, 3, 6, 10, 15, 21, 23 -> intervals [2,3,4,5,6,2]
     n = 25

@@ -6,9 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data.clean.intraday_aggregate import compute_jump_amount_corr
 from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from factors.compute.intraday_derived import JumpAmountCorrFactor
+from factors.compute.minute.jump_amount_corr import (
+    JumpAmountCorrFactor,
+    compute_jump_amount_corr,
+)
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"

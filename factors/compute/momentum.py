@@ -23,6 +23,7 @@ import pandas as pd
 
 from data.availability_policy import MARKET_DAILY
 from factors.base import Factor
+from factors.ops import ts_window_return
 from factors.spec import FactorSpec, PanelField
 
 
@@ -117,11 +118,11 @@ class MomentumFactor(Factor):
             )
 
         price = panel[self._price_col]
-        # Group on the symbol index level so the ratio never crosses symbols.
-        # ``shift(window)`` looks strictly backward within each symbol, so the
-        # value at t uses only bars at t and t-window (both <= t): no lookahead.
-        prev = price.groupby(level="symbol").shift(self._window)
-        momentum = price / prev - 1.0
+        # D2: the per-symbol strictly-backward ratio lives in factors.ops —
+        # ``ts_window_return`` groups on the symbol level and lags ``window``
+        # rows, so the value at t uses only bars at t and t-window (both <= t):
+        # no lookahead, no cross-symbol leakage (ops convention #1).
+        momentum = ts_window_return(price, self._window)
 
         # Preserve the exact panel index/order; name it for the factor panel.
         return momentum.reindex(panel.index).rename(self.name)

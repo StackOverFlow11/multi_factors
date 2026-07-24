@@ -21,20 +21,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data.clean.intraday_amp_cut import (
+from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
+from factors.compute.minute.intraday_amp_cut import (
     AMP_CUT_LAMBDA,
     AMP_CUT_LOOKBACK_DAYS,
     AMP_CUT_MIN_CROSS_SECTION,
     AMP_CUT_MIN_DAY_MINUTES,
     AMP_CUT_MIN_VALID_DAYS,
+    IntradayAmpCutFactor,
     V_MEAN_COL,
     V_STD_COL,
     combine_amp_cut_cross_section,
     compute_amp_cut_stats,
     compute_intraday_amp_cut,
 )
-from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from factors.compute.intraday_derived import IntradayAmpCutFactor
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"

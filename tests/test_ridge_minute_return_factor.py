@@ -34,14 +34,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data.clean.intraday_ridge_return import (
-    RIDGE_RETURN_LOOKBACK_DAYS,
-    RIDGE_RETURN_MIN_RIDGE_BARS,
-    compute_ridge_minute_return,
-    ridge_minute_return_by_day,
-)
 from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from data.clean.intraday_volume_prv import (
+from factors.compute.minute.primitives import (
     VOLUME_PRV_BASELINE_DAYS,
     VOLUME_PRV_BASELINE_MIN_OBS,
     VOLUME_PRV_MIN_VALID_DAYS,
@@ -49,7 +43,13 @@ from data.clean.intraday_volume_prv import (
     peak_mask_for_symbol,
     prepare_visible_minute_bars,
 )
-from factors.compute.intraday_derived import RidgeMinuteReturnFactor
+from factors.compute.minute.ridge_minute_return import (
+    RIDGE_RETURN_LOOKBACK_DAYS,
+    RIDGE_RETURN_MIN_RIDGE_BARS,
+    RidgeMinuteReturnFactor,
+    compute_ridge_minute_return,
+    ridge_minute_return_by_day,
+)
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"
@@ -717,7 +717,7 @@ def _prv_kw(**over):
 
 def test_volume_peak_count_unchanged_by_pr_k():
     """PR-F's factor value is bit-identical (the PR-J lock's hand case, verbatim)."""
-    from data.clean.intraday_volume_prv import compute_volume_peak_count
+    from factors.compute.minute.volume_peak_count import compute_volume_peak_count
 
     closes, vols = _case_b_day()
     rows = _background(_BG_DAYS, _CASE_B_N) + _session("2021-07-11", closes, vols)
@@ -729,7 +729,7 @@ def test_volume_peak_count_unchanged_by_pr_k():
 
 def test_peak_interval_kurtosis_unchanged_by_pr_k():
     """PR-H's factor value is bit-identical (the PR-H hand case, verbatim)."""
-    from data.clean.intraday_peak_interval import compute_peak_interval_kurtosis
+    from factors.compute.minute.peak_interval_kurtosis import compute_peak_interval_kurtosis
 
     n = 25
     vols = [100.0] * n
@@ -746,7 +746,7 @@ def test_valley_relative_vwap_unchanged_by_pr_k():
     This one needs AMOUNTS set independently of the closes, so it builds its own frame
     rather than going through ``_bars`` (whose amount is close * volume).
     """
-    from data.clean.intraday_valley_vwap import compute_valley_relative_vwap
+    from factors.compute.minute.valley_relative_vwap import compute_valley_relative_vwap
 
     n = 12
     erupt = (3, 7)
@@ -765,7 +765,7 @@ def test_valley_relative_vwap_unchanged_by_pr_k():
 
 def test_valley_ridge_vwap_ratio_unchanged_by_pr_k():
     """PR-J's factor value is bit-identical (the PR-J case-A hand value, verbatim)."""
-    from data.clean.intraday_valley_ridge_vwap import compute_valley_ridge_vwap_ratio
+    from factors.compute.minute.valley_ridge_vwap_ratio import compute_valley_ridge_vwap_ratio
 
     n = 16
     ridges, peak = (3, 4, 8, 9), 12

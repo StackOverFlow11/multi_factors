@@ -36,16 +36,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import data.clean.intraday_amount_ratio as amount_ratio_mod
-from data.clean.intraday_amount_ratio import (
+import factors.compute.minute.peak_ridge_amount_ratio as amount_ratio_mod
+from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
+from factors.compute.minute.peak_ridge_amount_ratio import (
     PEAK_RIDGE_LOOKBACK_DAYS,
     PEAK_RIDGE_MIN_PEAK_BARS,
     PEAK_RIDGE_MIN_RIDGE_BARS,
+    PeakRidgeAmountRatioFactor,
     compute_peak_ridge_amount_ratio,
     peak_ridge_amount_by_day,
 )
-from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from data.clean.intraday_volume_prv import (
+from factors.compute.minute.primitives import (
     VOLUME_PRV_BASELINE_DAYS,
     VOLUME_PRV_BASELINE_MIN_OBS,
     VOLUME_PRV_MIN_CLASSIFIABLE,
@@ -54,7 +55,6 @@ from data.clean.intraday_volume_prv import (
     peak_mask_for_symbol,
     prepare_visible_minute_bars,
 )
-from factors.compute.intraday_derived import PeakRidgeAmountRatioFactor
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"

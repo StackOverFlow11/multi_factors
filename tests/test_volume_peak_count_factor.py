@@ -19,17 +19,19 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data.clean.intraday_volume_prv import (
+from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
+from factors.compute.minute.primitives import (
     VOLUME_PRV_BASELINE_DAYS,
     VOLUME_PRV_BASELINE_MIN_OBS,
-    VOLUME_PRV_LOOKBACK_DAYS,
     VOLUME_PRV_MIN_CLASSIFIABLE,
     VOLUME_PRV_MIN_VALID_DAYS,
     VOLUME_PRV_SIGMA_K,
+)
+from factors.compute.minute.volume_peak_count import (
+    VOLUME_PRV_LOOKBACK_DAYS,
+    VolumePeakCountFactor,
     compute_volume_peak_count,
 )
-from data.clean.intraday_schema import empty_intraday_bars, normalize_intraday_bars
-from factors.compute.intraday_derived import VolumePeakCountFactor
 from factors.spec import FactorSpec
 
 _SYM = "000001.SZ"
