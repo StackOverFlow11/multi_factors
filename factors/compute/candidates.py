@@ -30,6 +30,7 @@ import pandas as pd
 from data.availability_policy import DAILY_BASIC, MARKET_DAILY
 from factors.base import Factor
 from factors.compute.momentum import MomentumFactor
+from factors.ops import log_positive, ts_lag, ts_mean, ts_pct_change, ts_std, ts_sum
 from factors.spec import FactorSpec, PanelField
 
 # daily_basic-derived value fields the pipeline can enrich + surface (P3-5).
@@ -170,14 +171,10 @@ class VolatilityFactor(Factor):
                 f"{list(panel.columns)}."
             )
         price = panel[self._price_col]
-        grouped = price.groupby(level="symbol", group_keys=False)
-        # pct_change within each symbol (never across); rolling std needs a FULL
-        # window of returns -> leading rows are NaN, all inputs are <= t.
-        vol = grouped.apply(
-            lambda s: s.pct_change().rolling(
-                self._window, min_periods=self._window
-            ).std(ddof=1)
-        )
+        # D2 (factors.ops): pct_change within each symbol (never across); the
+        # rolling std needs a FULL window of returns -> leading rows are NaN,
+        # all inputs are <= t (ops conventions #1/#2).
+        vol = ts_std(ts_pct_change(price), self._window)
         return vol.reindex(panel.index).rename(self.name)
 
 
@@ -245,13 +242,11 @@ class LiquidityFactor(Factor):
                 f"amount from the bar feed); panel has {list(panel.columns)}."
             )
         amount = panel[self._amount_col]
-        grouped = amount.groupby(level="symbol", group_keys=False)
-        mean_amt = grouped.apply(
-            lambda s: s.rolling(self._window, min_periods=self._window).mean()
-        )
-        # log of a non-positive mean is undefined -> NaN (degenerate liquidity).
-        safe = mean_amt.where(mean_amt > 0)
-        return np.log(safe).reindex(panel.index).rename(self.name)
+        # D2 (factors.ops): per-symbol full-window rolling mean; the log of a
+        # non-positive mean is undefined -> NaN (degenerate liquidity), never a
+        # silent ``-inf`` (``log_positive``).
+        mean_amt = ts_mean(amount, self._window)
+        return log_positive(mean_amt).reindex(panel.index).rename(self.name)
 
 
 class OvernightMomentumFactor(Factor):
@@ -340,13 +335,13 @@ class OvernightMomentumFactor(Factor):
             )
         open_px = panel[self._open_col]
         close_px = panel[self._close_col]
-        # strictly-lagged close within each symbol; never crosses symbols.
-        prev_close = close_px.groupby(level="symbol").shift(1)
+        # D2 (factors.ops): strictly-lagged close within each symbol (``ts_lag``
+        # never crosses symbols); the full-window rolling sum keeps the leading
+        # window NaN (ops convention #2).
+        prev_close = ts_lag(close_px, 1)
         ratio = (open_px / prev_close).where((open_px > 0) & (prev_close > 0))
         overnight = np.log(ratio)
-        mom = overnight.groupby(level="symbol", group_keys=False).apply(
-            lambda s: s.rolling(self._window, min_periods=self._window).sum()
-        )
+        mom = ts_sum(overnight, self._window)
         return mom.reindex(panel.index).rename(self.name)
 
 
