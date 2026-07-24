@@ -57,7 +57,7 @@ from factors import registry as factor_registry
 from factors.compute.candidates import ValueFactor
 from factors.compute.financial import SUPPORTED_FIELDS as SUPPORTED_FINANCIAL_FIELDS
 from factors.compute.financial import FinancialFactor
-from factors.process.pipeline import ProcessingPipeline
+from factors.process.orchestrate import covariates_from_panel, process_factor_panel
 from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
 from qt.reports import write_phase0_summary
@@ -967,13 +967,18 @@ def _process_factors(
 ) -> pd.DataFrame:
     """Run drop_missing + (winsorize) + neutralize + z-score from config toggles.
 
-    Neutralization pulls the ``industry`` / ``market_cap`` covariates off the panel
-    (placed there by :func:`_maybe_enrich_covariates`). When neutralize is enabled
-    but they are absent, ``ProcessingPipeline`` raises a readable error.
+    D4 (factor-refactor R9): a THIN delegate to
+    :func:`factors.process.orchestrate.process_factor_panel`, the single home of
+    the processing orchestration (so the eval and backtest paths share ONE truth
+    without ``analytics -> qt``). Behavior is preserved verbatim — same covariate
+    extraction, same pipeline arguments. Neutralization pulls the ``industry`` /
+    ``market_cap`` covariates off the panel (placed there by
+    :func:`_maybe_enrich_covariates`); when neutralize is enabled but they are
+    absent, the orchestrator's ``ProcessingPipeline`` raises a readable error.
     """
-    industry = panel["industry"] if "industry" in panel.columns else None
-    market_cap = panel["market_cap"] if "market_cap" in panel.columns else None
-    pipeline = ProcessingPipeline(
+    industry, market_cap = covariates_from_panel(panel)
+    return process_factor_panel(
+        factor_panel,
         drop_missing=cfg.processing.drop_missing,
         standardize=cfg.processing.standardize.enabled,
         winsorize=cfg.processing.winsorize.enabled,
@@ -981,7 +986,6 @@ def _process_factors(
         industry=industry,
         market_cap=market_cap,
     )
-    return pipeline.transform(factor_panel)
 
 
 def _maybe_enrich_covariates(
