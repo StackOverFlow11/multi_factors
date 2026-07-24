@@ -333,6 +333,21 @@ def run_hand_anchors(out_path: Path) -> int:
             compare(factor_id, "guard_boundary",
                     found, H.hand_value_ratio(found[1], found[0], field),
                     note=f"{field}<=0 -> NaN")
+        else:
+            # Disclose "searched but not found" so the JSON is self-describing:
+            # a missing guard_boundary row must be distinguishable from a
+            # forgotten stratification class (review D2, LOW).
+            results.append(
+                {
+                    "factor_id": factor_id, "class": "guard_boundary_skipped",
+                    "date": "", "symbol": "", "hand": None, "engine": None,
+                    "rel_diff": None, "ok": True,
+                    "note": (f"scanned {SCAN_SYMBOLS} random symbols; no "
+                             f"{field}<=0 row found — class searched, not omitted"),
+                }
+            )
+            print(f"SKIP {factor_id:28s} guard_boundary: no {field}<=0 row "
+                  f"in {SCAN_SYMBOLS} scanned symbols (disclosed)")
         first = series.xs(_symbols(series)[0], level="symbol").index[0]
         k0 = (first, _symbols(series)[0])
         compare(factor_id, "first_row", k0, H.hand_value_ratio(k0[1], k0[0], field),
