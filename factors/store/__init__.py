@@ -26,6 +26,14 @@ from factors.store.fingerprint import (
     schema_version_hash,
 )
 from factors.store.hashing import params_hash, short_hash
+from factors.store.incremental import (
+    CacheHorizonConfig,
+    IncrementalResult,
+    endpoint_horizons,
+    factor_lookback_depth,
+    overlap_window,
+    tail_recompute,
+)
 from factors.store.keys import StoreKey, store_key
 from factors.store.run_registry import (
     STATUSES,
@@ -39,7 +47,9 @@ __all__ = [
     "ALLOWED_INTERNAL_IMPORTS",
     "FINGERPRINT_VERSION",
     "STATUSES",
+    "CacheHorizonConfig",
     "FactorValueStore",
+    "IncrementalResult",
     "RunRecord",
     "RunRegistry",
     "StoreKey",
@@ -47,11 +57,15 @@ __all__ = [
     "assert_registry_consistent",
     "code_hash",
     "data_fingerprint",
+    "endpoint_horizons",
+    "factor_lookback_depth",
     "factor_source_files",
     "module_import_violations",
+    "overlap_window",
     "params_hash",
     "schema_version_hash",
     "shared_set_labeled_files",
     "short_hash",
     "store_key",
+    "tail_recompute",
 ]

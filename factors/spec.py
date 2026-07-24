@@ -19,6 +19,13 @@ enforcement points the metaclass already guards). The taxonomy semantics and
 the per-factor pre-assignments live in ``docs/factors/refactor_d0_contract.md``
 (D0); this module never restates that table.
 
+CONTRACT v1.1 (factor-refactor D3 — an ADDITIVE change stated outright, #74
+precedent): the OPTIONAL ``lookback_depth`` field declares the factor's
+transitive lookback depth (trading days) for the D3 tail-recompute engine. It is
+optional here so contract v1.0 specs stay valid, but validated to a positive int
+when present, and the store engine HARD-REQUIRES it (never a silent 0/headline
+fallback) at the point it is consumed. See the ``lookback_depth`` attribute note.
+
 Two objects together form the provenance an evaluator requires (design doc
 ``tmp/design/factor_eval_contract_v0.1.md`` §1):
 
@@ -167,6 +174,18 @@ class FactorSpec:
     price_adjust: str = "qfq"
     family: str | None = None
     min_history_bars: int = 0
+    # Contract v1.1 ADDITIVE (factor-refactor D3): the factor's TRANSITIVE lookback
+    # depth in trading days — the sum of every nested lookback plus the valid-day
+    # slack, NOT the headline window (design §六.18: a nested-lookback factor such
+    # as ridge = lookback_days=20 over a baseline_days=20 has a depth of ~40+, and
+    # sizing anything by the headline 20 systematically under-samples). The D3
+    # tail-recompute engine sizes its incremental overlap window and warm-up load
+    # from this (``factors.store.incremental``). Declared OPTIONAL here (default
+    # None) so contract v1.0 specs stay valid; the engine HARD-REQUIRES it (a
+    # readable error, NEVER a silent 0 or headline fallback) at the point it is
+    # actually consumed — see ``factors.store.incremental.factor_lookback_depth``.
+    # Validated to a positive int WHEN present.
+    lookback_depth: int | None = None
     decision_cutoff: str | None = None
     data_lag: str | None = None
     session_open: str | None = None
@@ -240,6 +259,15 @@ class FactorSpec:
             raise ValueError(
                 f"FactorSpec.family must be None or a non-empty string; got "
                 f"{self.family!r} for {self.factor_id!r}."
+            )
+        depth = self.lookback_depth
+        if depth is not None and (
+            isinstance(depth, bool) or not isinstance(depth, int) or depth < 1
+        ):
+            raise ValueError(
+                f"FactorSpec.lookback_depth must be None or a positive int (the "
+                f"TRANSITIVE lookback depth in trading days, NOT the headline "
+                f"window); got {depth!r} for {self.factor_id!r}."
             )
 
     def _check_inputs(self) -> None:
