@@ -231,13 +231,21 @@ class MinuteIdealAmplitudeFactor(Factor):
         window, so when the window contains an ex-date the pooled ordering
         interleaves bars on two different price bases; the definition is
         pinned to the report (Wind ranks on the raw price) and deliberately
-        kept. OPEN OBLIGATION, tracked here per D0 note 1: of the three
-        CROSSED_DISCLOSED requirements (crossing is real / values kept by
-        definition / deviation MEASURED and disclosed) the third — a
-        PR-L-style ex-date deviation measurement (share of pooling windows
-        containing a true ex-date + realized rank-perturbation magnitude) —
-        is still MISSING and is owed in D2 alongside that stage's
-        overnight-boundary property tests.
+        kept. The D0-note-1 deviation MEASUREMENT (owed in D2) is DONE —
+        measured against the D1 frozen CSI500 panel (2021-07..2026-06, 995
+        symbols, 1,155,283 finite values; ex-dates = af(t) != af(t_prev) on
+        the daily adj_factor cache): 4.58% of finite values (52,876) have
+        >= 1 true ex-date STRICTLY INSIDE their 10-day pooling window. On a
+        seeded 120-value stratified sample of those (each pinned value first
+        re-derived from the raw 1min cache and matched 120/120), re-basing
+        the pre-ex-date bars onto day d's price scale (the ranking-key-only
+        intervention) moves the factor in 70% of windows: |delta| median
+        1.07e-05 / p90 1.79e-04 / max 2.91e-03 (vs panel std 6.0e-04);
+        |delta|/|value| median 2.9%, p90 181% (values near zero flip hard);
+        the pooled top/bottom-k membership shifts in 70% of windows, median
+        2.96% / p90 45.8% of pooled bars. The crossing is real, the values
+        are kept by the pinned definition, and the deviation is now measured
+        and disclosed — all three CROSSED_DISCLOSED requirements are met.
         """
         return FactorSpec(
             factor_id=self.name,

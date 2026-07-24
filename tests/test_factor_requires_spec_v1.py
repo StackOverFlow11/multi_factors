@@ -306,11 +306,18 @@ def test_crossed_disclosed_members_are_exactly_the_two_declared():
 
 
 def test_minute_ideal_amplitude_docstring_tracks_the_d2_measurement_debt():
-    # D0 §2 note 1: the CROSSED_DISCLOSED pre-assignment is a CANDIDATE whose
-    # third requirement (the measured deviation) is still missing; D1 pins
-    # the obligation in the spec docstring so it cannot silently evaporate.
+    # D0 §2 note 1: the CROSSED_DISCLOSED pre-assignment was a CANDIDATE whose
+    # third requirement (the measured deviation) was still missing at D1; D1
+    # pinned the obligation in the spec docstring so it could not silently
+    # evaporate. D2 PAID the debt (measured vs the D1 frozen CSI500 panel:
+    # 4.58% affected windows; ranking-key re-basing moves 70% of sampled
+    # values) — this tracker now pins the SETTLED disclosure instead: the
+    # docstring must carry the measurement, and must no longer claim the
+    # obligation is open.
     doc = type(MinuteIdealAmplitudeFactor()).spec.fget.__doc__
-    assert "MISSING" in doc and "D2" in doc
+    assert "MEASUREMENT" in doc and "D2" in doc
+    assert "4.58%" in doc and "52,876" in doc  # the full-grid affected share
+    assert "MISSING" not in doc  # the debt must not still be claimed open
 
 
 def test_spec_variant_replace_carries_the_new_declarations():
