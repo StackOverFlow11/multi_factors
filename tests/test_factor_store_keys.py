@@ -31,7 +31,10 @@ from factors.store import (
     shared_set_labeled_files,
     store_key,
 )
-from factors.store.code_hash import factor_module_labeled_file
+from factors.store.code_hash import (
+    _onehop_dependency_files,
+    factor_module_labeled_file,
+)
 from factors.store.hashing import content_hash_of_labeled_files, short_hash
 
 
@@ -89,18 +92,26 @@ def test_code_hash_distinguishes_different_modules():
     assert code_hash(_ridge()) != code_hash(_vol())
 
 
+def _folded_items(factor):
+    """The exact (label, path) set code_hash folds: own + shared set + one-hop deps."""
+    own = factor_module_labeled_file(factor)
+    shared = list(shared_set_labeled_files())
+    onehop = _onehop_dependency_files(own[0], own[1])
+    labels = {own[0]} | {label for label, _ in shared}
+    return [own, *shared] + [pair for pair in onehop if pair[0] not in labels]
+
+
 def test_code_hash_changes_when_a_shared_set_member_content_changes(tmp_path):
     # MUTATION (D3 acceptance): mutate a shared-set member's CONTENT -> the hash
     # MUST change, proving the shared set is genuinely folded into code_hash.
     factor = _vol()
-    own = factor_module_labeled_file(factor)
-    shared = list(shared_set_labeled_files())
-    base = content_hash_of_labeled_files([own, *shared])
+    folded = _folded_items(factor)
+    base = content_hash_of_labeled_files(folded)
 
     target_label = "factors.compute.minute.primitives"
-    mutated_items = [own]
+    mutated_items = []
     swapped = False
-    for label, path in shared:
+    for label, path in folded:
         if label == target_label:
             copy = tmp_path / "primitives_mutated.py"
             copy.write_bytes(Path(path).read_bytes() + b"\n# D3 mutation\n")
@@ -109,11 +120,50 @@ def test_code_hash_changes_when_a_shared_set_member_content_changes(tmp_path):
         else:
             mutated_items.append((label, path))
     assert swapped, "shared set unexpectedly lacks the primitives module"
-    mutated = content_hash_of_labeled_files(mutated_items)
-    assert mutated != base
+    assert content_hash_of_labeled_files(mutated_items) != base
 
-    # And the real code_hash equals the un-mutated fold (the shared set IS in it).
+    # And the real code_hash equals the un-mutated fold (shared set + one-hop IS in it).
     assert code_hash(factor) == base
+
+
+def test_one_hop_folds_a_composed_module_but_not_unrelated_modules():
+    # Review MEDIUM: candidates.py composes MomentumFactor, so momentum.py is a
+    # ONE-HOP dep of every candidates factor (reversal / value / volatility) — a
+    # change to momentum.py must invalidate them. A factor in ANOTHER module
+    # (financial.py) does NOT import momentum, so momentum stays out of its deps
+    # (no global over-invalidation).
+    reversal = build("reversal_20", {"window": 20})
+    own = factor_module_labeled_file(reversal)
+    reversal_hops = {label for label, _ in _onehop_dependency_files(own[0], own[1])}
+    assert "factors.compute.momentum" in reversal_hops
+
+    roe = build("roe")
+    own_f = factor_module_labeled_file(roe)
+    roe_hops = {label for label, _ in _onehop_dependency_files(own_f[0], own_f[1])}
+    assert "factors.compute.momentum" not in roe_hops
+
+
+def test_code_hash_changes_when_a_one_hop_dep_content_changes(tmp_path):
+    # MUTATION: mutate a ONE-HOP dep (momentum.py) content -> a candidates factor's
+    # code hash changes (the composed-module stale-reuse hole is closed).
+    reversal = build("reversal_20", {"window": 20})
+    folded = _folded_items(reversal)
+    base = content_hash_of_labeled_files(folded)
+    assert code_hash(reversal) == base
+    assert "factors.compute.momentum" in {label for label, _ in folded}
+
+    mutated_items = []
+    swapped = False
+    for label, path in folded:
+        if label == "factors.compute.momentum":
+            copy = tmp_path / "momentum_mutated.py"
+            copy.write_bytes(Path(path).read_bytes() + b"\n# one-hop mutation\n")
+            mutated_items.append((label, copy))
+            swapped = True
+        else:
+            mutated_items.append((label, path))
+    assert swapped
+    assert content_hash_of_labeled_files(mutated_items) != base
 
 
 def test_content_hash_is_path_independent(tmp_path):

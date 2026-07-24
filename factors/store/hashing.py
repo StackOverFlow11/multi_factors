@@ -28,6 +28,10 @@ _HASH_VERSION = "factors.store hashing v1"
 #: Default short-hash length (hex chars). 16 hex = 64 bits: collision-negligible
 #: for the store's key space, and keeps filenames readable (design §3.4 keeps the
 #: fingerprint OUT of the filename; params/code hashes stay short in it).
+#: NIT (review): the 64-bit truncation's collision risk is known and ignorable —
+#: the code hash is not a security boundary and is not part of the DATA fingerprint
+#: (which is validated in full on read), so this follows the usual git short-hash
+#: convention (a truncated content id, not a cryptographic commitment).
 SHORT_HASH_CHARS = 16
 
 

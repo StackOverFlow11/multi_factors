@@ -1,36 +1,40 @@
 """Factor code identity: enumerated shared set + AST import allowlist (D3, §3.4/R3).
 
 A stored factor value is only valid while the CODE that produced it is unchanged.
-``code_hash(factor)`` = content hash of the factor's own module file PLUS a small,
-ENUMERATED shared set of machinery every factor leans on:
+``code_hash(factor)`` = content hash of THREE parts:
 
-    {factors.compute.minute.primitives, factors.ops.*, factors.base, factors.spec}
+1. the factor's own module file;
+2. the ENUMERATED shared set every factor leans on:
+   ``{factors.compute.minute.primitives, factors.ops.*, factors.base, factors.spec}``;
+3. the factor module's DIRECT project-internal imports that are NOT already in the
+   shared set — folded ONE HOP, module-granular, derived from the AST (never a
+   manual list, red line #6).
 
-Design decision R3 (``tmp/design/factor_refactor_design_v3.md`` §3.4): we do NOT
-build a transitive-import-graph walker — the §3.2 migration already collapsed the
-factor closure into this fixed set. Instead TWO guards keep the set honest:
+Part 3 closes the momentum->reversal stale-reuse hole (review MEDIUM): candidates.py
+composes ``MomentumFactor``, so momentum.py's value surface (which ops function it
+calls, ``price_col``, the reindex) folds into the code hash of every factor DEFINED
+in candidates.py (reversal / value / volatility). A change to momentum.py therefore
+invalidates those factors' keys — but NOT factors in other modules (e.g.
+financial.py never imports momentum), so it is not a global over-invalidation.
 
-1. **AST import allowlist** (:func:`module_import_violations`): a factor module may
-   import only the stdlib + numpy/pandas + an enumerated set of first-party leaves.
-   A new first-party import that is not on the list makes the D3 allowlist test go
-   red, FORCING a human to decide whether the new dependency belongs in the code
-   hash — equivalent to an auto-closure, with a far smaller implementation. Dynamic
-   imports (``importlib`` / ``__import__``) are refused for the same reason (they
-   would hide a dependency from the static walk).
-2. **A drift/mutation test**: changing the content of a shared-set member changes
-   ``code_hash`` (proved in the D3 store-keys test).
+ONE HOP only, no transitive-closure walk (design §3.4 "明确不做：闭包扩到全 data/"):
+momentum's own rolling core lives in ``factors.ops``, which IS the shared set, so one
+hop suffices. Granularity is the module FILE — folding momentum.py also invalidates
+value_ep (also defined in candidates.py), the SAME granularity as "editing
+candidates.py itself invalidates all its factors"; the direction is safe
+(over-invalidation costs a recompute, under-invalidation serves a stale value).
 
-WHAT IS DELIBERATELY NOT HASHED (documented limitation, out of the closing-14
-scope): the PIT/schema-bearing ``data.clean`` modules go into the DATA fingerprint
-(``factors.store.fingerprint``, the schema-version dimension), not here — folding
-them into ``code_hash`` would over-invalidate on data-layer churn (design §3.4
-"明确不做：闭包扩到全 data/"). ``data.availability_policy`` / ``factors.requires``
-are pure declaration leaves (enum values / a metadata dataclass) whose content does
-not change a computed factor value. And ``factors.compute.momentum`` is allowlisted
-(candidates.py composes it for ReversalFactor) but not in the shared set: none of
-the closing 14 factors is factor-on-factor, and momentum's rolling math lives in
-``factors.ops`` (which IS in the shared set). When the first residual/composed
-factor lands, add its composed module to the shared set (design §11).
+Two consequences, both over-invalidate-safe and disclosed: (a) declaration-only
+leaves reached this way (e.g. ``data.availability_policy``, imported by many factors)
+fold into their importers' keys — harmless, since their content does not change a
+computed value; (b) a PIT/schema module a factor imports (``data.clean.
+intraday_schema``) folds here AND drives the DATA fingerprint's schema-version
+dimension (``factors.store.fingerprint``) — the overlap only ever over-invalidates.
+
+The AST import allowlist (:func:`module_import_violations`) still guards WHAT a
+factor may import (stdlib + numpy/pandas + an enumerated set of first-party leaves);
+a new first-party import goes red, forcing review. Dynamic imports (``importlib`` /
+``__import__``) are refused (they would hide a dependency from the static walk).
 
 Layering: imports the stdlib, ``factors.base`` (type only) and the sibling
 ``hashing`` leaf. Never qt / feeds / analytics.
@@ -105,21 +109,72 @@ def factor_module_labeled_file(factor: Factor | type[Factor]) -> tuple[str, Path
     return (module_name, Path(source))
 
 
+def _in_shared_set(module_name: str) -> bool:
+    """Whether ``module_name`` is already a shared-set member (folded globally)."""
+    if module_name in _SHARED_SET_SINGLE_MODULES:
+        return True
+    return any(
+        module_name == pkg or module_name.startswith(pkg + ".")
+        for pkg in _SHARED_SET_PACKAGES
+    )
+
+
+def _direct_project_imports(source: str) -> set[str]:
+    """The project-internal modules a source file imports DIRECTLY (AST, one hop).
+
+    Absolute imports only (relative imports are refused by the allowlist anyway);
+    filtered to first-party roots. No transitive walk — this is the ``import`` line
+    set of exactly one file.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:  # pragma: no cover - a factor module always parses
+        return set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if not node.level and node.module:
+                modules.add(node.module)
+    return {m for m in modules if _root(m) in _FIRST_PARTY_ROOTS}
+
+
+def _onehop_dependency_files(
+    own_module_name: str, own_path: Path
+) -> list[tuple[str, Path]]:
+    """One-hop code deps: the factor module's direct project imports NOT in the
+    shared set, as ``(module_dotted_name, path)`` (module-granular, from the AST).
+    """
+    out: list[tuple[str, Path]] = []
+    for module_name in sorted(_direct_project_imports(own_path.read_text())):
+        if module_name == own_module_name or _in_shared_set(module_name):
+            continue
+        try:
+            out.append((module_name, _module_file(module_name)))
+        except Exception:  # noqa: BLE001 - an unresolvable import is skipped, not fatal
+            continue
+    return out
+
+
 def code_hash(factor: Factor | type[Factor]) -> str:
-    """Full sha256 hex of the factor's module + the enumerated shared set.
+    """Full sha256 hex of the factor's module + shared set + one-hop deps.
 
     Deterministic and checkout-independent (content + module labels only, never
     paths). Two factors defined in the SAME module (e.g. value_ep / volatility_20
     both in candidates.py) share this hash — their store keys still differ via
     factor_id + params_hash, but a change to that shared module invalidates both,
-    which is correct.
+    which is correct. The ONE-HOP deps (module docstring) fold a composed module
+    (candidates.py -> momentum.py) into the importer's hash, so a change there
+    invalidates the factors that USE it without a transitive-closure walk.
     """
     own = factor_module_labeled_file(factor)
     shared = list(shared_set_labeled_files())
-    # If the factor's own module IS a shared-set member (none today), dedup so the
-    # fold never sees a duplicate label.
-    labels = {own[0]}
-    items = [own] + [pair for pair in shared if pair[0] not in labels]
+    onehop = _onehop_dependency_files(own[0], own[1])
+    # Dedup by label: the own module + shared set take precedence; a one-hop dep
+    # that is also (somehow) a shared-set label is already folded.
+    labels = {own[0]} | {label for label, _ in shared}
+    items = [own] + shared + [pair for pair in onehop if pair[0] not in labels]
     return content_hash_of_labeled_files(items)
 
 
@@ -136,23 +191,28 @@ _FIRST_PARTY_ROOTS: frozenset[str] = frozenset(
 #: The ONLY internal modules a factor module may import (dotted prefixes). A new
 #: entry here is a deliberate, reviewed act — the point of the allowlist is that
 #: adding one forces the question "should this be in the code-hash shared set?".
+#: DELIBERATELY NARROW (review LOW-3): only modules a shipped factor actually
+#: imports are listed. ``data.clean.schema`` / ``factors.requires`` were removed
+#: as dead entries — if a future factor imports one, this test goes red and forces
+#: an explicit decision (the intended behaviour). Every allowlisted internal import
+#: a factor makes ALSO folds into that factor's code hash via the one-hop rule
+#: (module docstring), so the allowlist and the code hash cannot silently drift.
 ALLOWED_INTERNAL_IMPORTS: frozenset[str] = frozenset(
     {
-        # shared compute set (folded into code_hash)
+        # shared compute set (folded into code_hash directly)
         "factors.base",
         "factors.spec",
-        "factors.requires",
         "factors.compute.minute.primitives",
         "factors.ops",
-        # daily-factor composition (candidates.py -> momentum); allowlisted but
-        # not in the shared set (documented in the module docstring)
+        # daily-factor composition (candidates.py -> momentum); folded into the
+        # importer's code hash by the one-hop rule
         "factors.compute.momentum",
-        # PIT / schema / declaration leaves (data layer): permitted, NOT in the
-        # code hash — the schema modules feed the DATA fingerprint instead
+        # PIT / schema / declaration leaves (data layer). One-hop folds these into
+        # the importer's code hash too (over-invalidate-safe); the schema module
+        # ALSO drives the DATA fingerprint's schema-version dimension.
         "data.availability_policy",
         "data.clean.intraday_schema",
         "data.clean.intraday_aggregate",
-        "data.clean.schema",
     }
 )
 

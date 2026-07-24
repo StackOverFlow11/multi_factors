@@ -58,7 +58,16 @@ RecomputeFn = Callable[[pd.Timestamp | None, pd.Timestamp, int], pd.Series]
 
 @dataclass(frozen=True)
 class CacheHorizonConfig:
-    """The LIVE cache-config values the revision horizon is derived from (R5)."""
+    """The LIVE cache-config values the revision horizon is derived from (R5).
+
+    D4-WIRING NOTE (review LOW-2): the D4 materializer MUST construct this from the
+    live ``data.cache`` config — ``refresh_recent_days=cfg.data.cache.
+    refresh_recent_days`` and ``fina_tail_days=cfg.data.cache.fina_tail_days`` (the
+    single source unified in commit 1). The ``400`` default here is a convenience
+    for tests / standalone use, NOT a value to rely on in production wiring — a
+    config whose fina tail differs from 400 would silently under/over-size the
+    overlap if the default were used.
+    """
 
     refresh_recent_days: int
     fina_tail_days: int = 400
@@ -166,6 +175,30 @@ def tail_recompute(
             overlap_rows_validated=0,
             overlap_window=w_dep,
             lookback_depth=w_dep,
+        )
+
+    # LOW-1: validate the stored fingerprint's SCHEMA dimension FIRST. A schema-version
+    # change (the PIT/schema machinery changed the values) makes stored values stale
+    # for a reason that is NOT an upstream data revision — so a mismatch is a MISS
+    # (full recompute), never a (loud) returns_invariant revision. This routes through
+    # the fingerprint the way ``read_valid`` does, but keeps the price_level per-symbol
+    # anchor mismatch on the existing adjustment-classified overlap path below.
+    stored_fp = store.stored_fingerprint(key)
+    if stored_fp is None or stored_fp.get("schema_version") != fingerprint.get(
+        "schema_version"
+    ):
+        full = recompute(None, today, w_dep)
+        store.write(key, full, fingerprint=fingerprint)
+        return IncrementalResult(
+            action="schema_void_full",
+            rows_appended=len(full),
+            overlap_rows_validated=0,
+            overlap_window=w_dep,
+            lookback_depth=w_dep,
+            notes=(
+                "schema-version changed (or the stored fingerprint was absent); full "
+                "recompute — this is a schema miss, NOT an upstream data revision.",
+            ),
         )
 
     stored = stored.sort_index(kind="mergesort")

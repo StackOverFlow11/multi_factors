@@ -297,3 +297,38 @@ def test_price_level_mismatch_is_expected_not_a_loud_revision(tmp_path, caplog):
     assert result.revision_detected is False
     assert any("price_level overlap mismatch" in n for n in result.notes)
     assert not any("REVISION detected" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# LOW-1: a schema-version change is a MISS (full recompute), NOT a data revision
+# --------------------------------------------------------------------------- #
+def test_schema_version_change_triggers_full_recompute_not_a_revision(tmp_path, caplog):
+    dates = _business_dates(30)
+    raw = _raw_panel(dates)
+    recompute = _make_recompute(raw)
+    today = dates[-1]
+    factor = _make_factor(lookback_depth=_TRANSITIVE_DEPTH, adjustment="returns_invariant")
+    full = recompute(None, today, _TRANSITIVE_DEPTH)
+
+    store = FactorValueStore(tmp_path)
+    cutoff = dates[-6]
+    # seed under an OLD schema version, then tail-recompute under a NEW one
+    fp_old = dict(_fp(), schema_version="SCHEMA_OLD")
+    store.write(
+        _key(), full[full.index.get_level_values("date") <= cutoff], fingerprint=fp_old
+    )
+    fp_new = dict(_fp(), schema_version="SCHEMA_NEW")
+    with caplog.at_level(logging.WARNING):
+        result = tail_recompute(
+            store, _key(), factor, recompute=recompute, today=today,
+            horizon_cfg=CacheHorizonConfig(refresh_recent_days=1), fingerprint=fp_new,
+            logger=logging.getLogger("test.tailrecompute"),
+        )
+    # a schema change is a MISS -> full recompute, NOT a loud returns_invariant revision
+    assert result.action == "schema_void_full"
+    assert result.revision_detected is False
+    assert result.mismatched_symbols == ()
+    assert not any("REVISION detected" in r.message for r in caplog.records)
+    # the store now carries the new schema and the full column
+    assert store.stored_fingerprint(_key())["schema_version"] == "SCHEMA_NEW"
+    assert len(store.read(_key())) == len(full)
