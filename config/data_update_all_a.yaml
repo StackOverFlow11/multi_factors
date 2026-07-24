@@ -44,6 +44,9 @@ data:
     root_dir: artifacts/cache/tushare/v1
     refresh_recent_days: 14
     refresh_dimension_days: 30
+    fina_tail_days: 400       # fina late-disclosure refetch tail (revision horizon,
+                              # single source; R5). == lookback_days below on purpose
+                              # so late disclosures across the full lookback are caught.
     force_refresh: []
 
 # universe is IGNORED for symbol resolution when data_update.universe_scope=all_a
@@ -89,14 +92,14 @@ data_update:
   lookback_days: 400        # dense endpoints: re-warm [today - lookback, today]
   tail_refresh_days: 14     # recent-tail always refetched (corrections/delays)
   not_ready_days: 1         # today may be unpublished at 21:00 -> not_ready, not covered
-  fina_tail_days: 400       # refetch recent report periods to catch LATE disclosures
+  # fina_tail_days moved to data.cache.fina_tail_days (single source; R5). It is
+  # 400 == lookback_days on purpose, so fina's gap spans the whole window every
+  # night (a redundant re-upsert of already-stored report periods, NOT a quota
+  # multiplier — one call per symbol per window); left equal so late disclosures
+  # across the full lookback are caught.
   # NOTE: the cache ALWAYS stores the canonical fina superset (roe / netprofit_yoy
   # / grossprofit_margin) regardless of this list, so a warm here never blocks a
-  # later config that needs a different field. fina_tail_days == lookback_days here,
-  # so fina's gap spans the whole window every night (a redundant re-upsert of
-  # already-stored report periods, NOT a quota multiplier — one call per symbol per
-  # window); left equal on purpose so late disclosures across the full lookback are
-  # caught.
+  # later config that needs a different field.
   fina_fields:
     - roe
     - netprofit_yoy

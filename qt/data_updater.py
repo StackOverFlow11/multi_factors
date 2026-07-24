@@ -205,7 +205,11 @@ def _build_caches(cfg: RootConfig, du, today_ts):
         force_refresh=tuple(du.force_refresh),
         today=today_ts,
         not_ready_days=du.not_ready_days,
-        recent_tail_overrides={"fina_indicator": du.fina_tail_days},
+        # R5 single source: the fina revision horizon lives on ``data.cache``, so
+        # the warm and the backtest read-through resolve the SAME value and can
+        # never drift (it used to be ``du.fina_tail_days`` on the data_update
+        # section, a knob that could drift from the backtest builder's).
+        recent_tail_overrides={"fina_indicator": cfg.data.cache.fina_tail_days},
         max_workers=du.concurrency.max_workers,
     )
     intraday_cache = TushareIntradayCache(

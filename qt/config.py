@@ -80,6 +80,17 @@ class CacheCfg(_Strict):
     # this many days (a slow-moving freshness policy). 0 disables staleness
     # refresh (only force_refresh re-pulls them).
     refresh_dimension_days: int = 30
+    # Late-disclosure refetch tail for fina_indicator — the REVISION HORIZON of
+    # the financial endpoint (factor-refactor R5). ``ann_date`` can trail its
+    # report period by up to ~400 trading days, so a read-through fetch must
+    # refetch this trailing window to catch a late disclosure. THIS IS THE SINGLE
+    # SOURCE OF TRUTH for the fina revision horizon: BOTH cache builders — the
+    # backtest read-through (``qt.pipeline._build_cache``) AND the ``data-update``
+    # warm (``qt.data_updater``) — resolve it from here, so the horizon can never
+    # drift between the two paths. That drift is the exact defect R5 diagnosed:
+    # the backtest builder used to pass NO fina override at all, silently
+    # understating the fina horizon to ``refresh_recent_days`` (14).
+    fina_tail_days: int = 400
     # Endpoint names (e.g. "market_daily", "index_weight") to always refetch in
     # full, ignoring coverage — for forcing a clean re-pull of one endpoint.
     force_refresh: list[str] = Field(default_factory=list)
@@ -101,6 +112,15 @@ class CacheCfg(_Strict):
         if v < 0:
             raise ValueError(
                 f"data.cache.refresh_dimension_days must be >= 0; got {v}."
+            )
+        return v
+
+    @field_validator("fina_tail_days")
+    @classmethod
+    def _check_fina_tail_days(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(
+                f"data.cache.fina_tail_days must be >= 0; got {v}."
             )
         return v
 
@@ -847,7 +867,11 @@ class DataUpdateCfg(_Strict):
     lookback_days: int = 400
     tail_refresh_days: int = 14
     not_ready_days: int = 1
-    fina_tail_days: int = 400
+    # NOTE: the fina late-disclosure refetch tail moved to ``data.cache.fina_tail_days``
+    # (factor-refactor R5): it is the revision horizon of the fina ENDPOINT, a
+    # property of the cache, and BOTH the data-update warm and the backtest
+    # read-through now resolve it from that single source so the two paths can
+    # never drift. Set it under ``data.cache`` — declaring it here is a config error.
     fina_fields: list[str] = Field(default_factory=lambda: ["roe", "netprofit_yoy"])
     rate_limit_per_min: int = 450
     force_refresh: list[str] = Field(default_factory=list)
@@ -874,7 +898,7 @@ class DataUpdateCfg(_Strict):
 
     @field_validator(
         "lookback_days", "tail_refresh_days", "not_ready_days",
-        "fina_tail_days", "rate_limit_per_min",
+        "rate_limit_per_min",
     )
     @classmethod
     def _check_non_negative(cls, v: int) -> int:

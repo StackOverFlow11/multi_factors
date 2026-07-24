@@ -571,6 +571,12 @@ def _build_cache(cfg: RootConfig):
         refresh_recent_days=cache_cfg.refresh_recent_days,
         refresh_dimension_days=cache_cfg.refresh_dimension_days,
         force_refresh=tuple(cache_cfg.force_refresh),
+        # R5: pass the fina late-disclosure refetch tail (the revision horizon of
+        # the fina endpoint) so the backtest read-through refetches it — the
+        # data-update warm already did, and the two builders must agree (this is
+        # the single source ``data.cache.fina_tail_days``). Without it the fina
+        # horizon silently collapsed to refresh_recent_days (14).
+        recent_tail_overrides={"fina_indicator": cache_cfg.fina_tail_days},
         schema_guard=schema_guard,
     )
 
