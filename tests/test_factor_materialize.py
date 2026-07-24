@@ -122,6 +122,67 @@ def test_is_minute_factor():
 
 
 # --------------------------------------------------------------------------- #
+# valid-day POOLED classification (review HIGH) — a CLOSED partition
+# --------------------------------------------------------------------------- #
+def test_valid_day_pooled_classification_is_pinned():
+    """Every minute factor is classified pooled (valid-day trailing window,
+    unbounded calendar depth) or bounded (all-trading-day window). Pinned by CODE
+    INSPECTION of the rolling mechanism, not by observed divergence (only 3 of the
+    8 pooled factors happened to diverge on the review's data — #82 lesson)."""
+    from factors.compute.minute.binding import is_valid_day_pooled
+    from factors.compute.minute.intraday_amp_cut import IntradayAmpCutFactor
+    from factors.compute.minute.minute_ideal_amplitude import MinuteIdealAmplitudeFactor
+    from factors.compute.minute.peak_interval_kurtosis import PeakIntervalKurtosisFactor
+    from factors.compute.minute.peak_ridge_amount_ratio import PeakRidgeAmountRatioFactor
+    from factors.compute.minute.ridge_minute_return import RidgeMinuteReturnFactor
+    from factors.compute.minute.valley_price_quantile import ValleyPriceQuantileFactor
+    from factors.compute.minute.valley_relative_vwap import ValleyRelativeVwapFactor
+    from factors.compute.minute.valley_ridge_vwap_ratio import ValleyRidgeVwapRatioFactor
+    from factors.compute.minute.volume_peak_count import VolumePeakCountFactor
+    from factors.compute.minute.amp_marginal_anomaly_vol import AmpMarginalAnomalyVolFactor
+
+    pooled = [
+        VolumePeakCountFactor(), PeakIntervalKurtosisFactor(), IntradayAmpCutFactor(),
+        ValleyRelativeVwapFactor(), ValleyRidgeVwapRatioFactor(), RidgeMinuteReturnFactor(),
+        PeakRidgeAmountRatioFactor(), ValleyPriceQuantileFactor(),
+    ]
+    bounded = [
+        JumpAmountCorrFactor(), MinuteIdealAmplitudeFactor(), AmpMarginalAnomalyVolFactor(),
+    ]
+    for f in pooled:
+        assert is_valid_day_pooled(f), f"{f.name} must be valid-day pooled"
+    for f in bounded:
+        assert not is_valid_day_pooled(f), f"{f.name} must be bounded"
+    assert len(pooled) == 8 and len(bounded) == 3  # the whole 11-factor minute surface
+
+
+def test_unclassified_minute_factor_raises():
+    """A minute factor in NEITHER partition set is a readable error (never
+    silently treated as bounded, which would reintroduce the divergence)."""
+    from factors.compute.minute.binding import is_valid_day_pooled
+
+    class _UnclassifiedMinute(Factor):
+        name = "unclassified_minute"
+
+        @property
+        def spec(self) -> FactorSpec:
+            return FactorSpec(
+                factor_id="unclassified_minute", version="1.0", description="fixture",
+                expected_ic_sign=1, is_intraday=False, forward_return_horizon=1,
+                return_basis="close_to_close", input_fields=("close",),
+                requires=(PanelField("close", source="stk_mins_1min"),),
+                adjustment="returns_invariant", overnight_boundary="none",
+                family="fixture", min_history_bars=0, lookback_depth=20,
+            )
+
+        def compute(self, panel):  # pragma: no cover - never reached
+            return panel["close"].rename(self.name)
+
+    with pytest.raises(KeyError, match="not classified"):
+        is_valid_day_pooled(_UnclassifiedMinute())
+
+
+# --------------------------------------------------------------------------- #
 # Daily decision-view materialization + R18 daily lag
 # --------------------------------------------------------------------------- #
 def test_daily_decision_materialize_is_finite():

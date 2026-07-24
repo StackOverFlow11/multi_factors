@@ -30,13 +30,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+import numpy as np
 import pandas as pd
 
 from data.availability_policy import STK_MINS_1MIN, OvernightBoundary, View
 from data.clean.intraday_schema import DEFAULT_DECISION_TIME
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from factors.base import Factor
-from factors.compute.minute.binding import is_minute_bound, minute_raw_from_bars
+from factors.compute.minute.binding import (
+    is_minute_bound,
+    is_valid_day_pooled,
+    minute_raw_from_bars,
+)
 from factors.store.incremental import CacheHorizonConfig
 from factors.view_lag import (
     daily_decision_lag,
@@ -50,6 +55,19 @@ from factors.view_lag import (
 #: trim to ``lookback_depth`` trading days, not this buffer (design §3.5 P8).
 def _load_buffer_calendar_days(warmup: int) -> int:
     return int(warmup) * 2 + 25
+
+
+#: One backward-expansion chunk (calendar days) for the valid-day-pooled
+#: saturation loop. Generous vs the baseline depth so a single no-change across a
+#: chunk implies saturation (the boundary days gained far more than baseline_days
+#: of prior history, so their classification is stable). See ``_materialize_pooled``.
+def _saturation_chunk_calendar_days(warmup: int) -> int:
+    return int(warmup) * 2 + 40
+
+
+#: Hard ceiling on saturation-expansion chunks (defensive; the loop terminates
+#: structurally on value-stability or provider exhaustion long before this).
+_MAX_SATURATION_CHUNKS: int = 500
 
 
 # --------------------------------------------------------------------------- #
@@ -215,6 +233,14 @@ def _materialize_minute(
         # Readable error (e.g. valley_price_quantile needs the daily panel too).
         return minute_raw_from_bars(factor, sources.minute.minute_bars([], load_start, emit_end))
     # Load one extra calendar day past emit_end so bar cutoffs on emit_end resolve.
+    # POOLED (valid-day trailing window): the pool counts VALID days, so its
+    # CALENDAR depth is data-dependent and UNBOUNDED — a fixed trim would make the
+    # value depend on load geometry (review HIGH / red line #6). Load by
+    # SATURATION-EXPANSION instead (below); bounded factors keep the fixed trim.
+    if is_valid_day_pooled(factor):
+        return _materialize_pooled(
+            factor, view, list(symbols), emit_start, emit_end, warmup, sources, decision_cutoff,
+        )
     bars = sources.minute.minute_bars(
         list(symbols), load_start, emit_end + pd.Timedelta(days=1)
     )
@@ -224,6 +250,66 @@ def _materialize_minute(
         bars = minute_decision_cutoff(bars, decision_time=decision_cutoff)
     bars = _trim_minute(bars, emit_start, warmup)
     return minute_raw_from_bars(factor, bars)
+
+
+def _materialize_pooled(
+    factor, view, symbols, emit_start, emit_end, warmup, sources, decision_cutoff,
+) -> pd.Series:
+    """Saturation-expanding load for a valid-day-pooled factor (design §3.3, review HIGH).
+
+    Expands the load backward in chunks and recomputes the EMIT-range values until
+    they stop changing (saturated: adding more history no longer alters the pool
+    composition or the boundary classifications) OR the provider returns no more
+    earlier bars (the real data start — the structural terminal). The chunk is
+    generous vs ``baseline_days`` so one no-change implies saturation. The returned
+    values are load-geometry-free: the finite<->NaN divergence between a single-date
+    fill and a batch fill is eliminated (the residual across the two fills is only
+    the pandas-accumulation float-reorder, JC1 <= 1e-12, because the two fills may
+    terminate at different — but each individually saturated — load starts).
+    """
+    chunk = pd.Timedelta(days=_saturation_chunk_calendar_days(warmup))
+    end = emit_end + pd.Timedelta(days=1)
+    load_start = emit_start - chunk
+    prev_emit: pd.Series | None = None
+    prev_nbars = -1
+    for _ in range(_MAX_SATURATION_CHUNKS):
+        bars = sources.minute.minute_bars(symbols, load_start, end)
+        nbars = len(bars)
+        if nbars == 0:
+            return _empty_series(factor.name)
+        work = bars
+        if view is View.DECISION:
+            work = minute_decision_cutoff(work, decision_time=decision_cutoff)
+        emit = _restrict_emit(
+            minute_raw_from_bars(factor, work), emit_start, emit_end, factor.name
+        )
+        if prev_emit is not None and _pooled_emit_saturated(prev_emit, emit):
+            return emit
+        if nbars == prev_nbars:  # provider exhausted -> real data start reached
+            return emit
+        prev_emit, prev_nbars = emit, nbars
+        load_start = load_start - chunk
+    return prev_emit if prev_emit is not None else _empty_series(factor.name)
+
+
+def _pooled_emit_saturated(prev: pd.Series, cur: pd.Series, tol: float = 1e-12) -> bool:
+    """True iff the emit-range values stopped changing across a chunk expansion.
+
+    Compares on the union index (NaN where absent): the NaN mask must match
+    EXACTLY (a finite<->NaN flip is a real pool change, not saturation) and the
+    finite values must agree within ``tol`` (a chunk changes the array length, so
+    the pandas rolling-sum accumulation reorders finite values at ~1e-15 even when
+    the pool composition is stable — that float-reorder is not a pool change).
+    """
+    index = prev.index.union(cur.index)
+    a = prev.reindex(index).to_numpy(dtype=float)
+    b = cur.reindex(index).to_numpy(dtype=float)
+    if not np.array_equal(np.isnan(a), np.isnan(b)):
+        return False
+    finite = ~np.isnan(a)
+    if not finite.any():
+        return True
+    return bool(np.allclose(a[finite], b[finite], rtol=0.0, atol=tol))
 
 
 def _trim_daily(panel: pd.DataFrame, emit_start: pd.Timestamp, warmup: int) -> pd.DataFrame:

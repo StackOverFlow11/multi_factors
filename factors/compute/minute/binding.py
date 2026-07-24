@@ -116,6 +116,68 @@ _DEFERRED: dict[type[Factor], str] = {
 }
 
 
+#: VALID-DAY POOLED factors (design §3.3 review HIGH): their trailing window
+#: counts VALID days (invalid days do NOT occupy a slot — they roll over a
+#: valid-day-indexed series via ``primitives.rolling_valid_days`` or an equivalent
+#: ``.loc[valid_days].rolling(...)`` / valid-day python loop), so the CALENDAR
+#: lookback depth of a trailing ``lookback_days`` valid-day pool is DATA-DEPENDENT
+#: and UNBOUNDED, and loading more history can also re-classify boundary days.
+#: A fixed ``lookback_depth`` trim therefore truncates sparse-valid-day symbols'
+#: pools, making the stored value depend on LOAD GEOMETRY (red line #6: the value
+#: must be f(factor, params, view, data), never the anchor/window shape). The
+#: materializer must load these to SATURATION (design's structural terminal =
+#: real data start) so single-fill and batch-fill agree. Classification is
+#: STRUCTURAL (by the rolling mechanism, code-inspected), NOT by observed
+#: divergence: only ridge_minute_return / valley_ridge_vwap_ratio /
+#: peak_ridge_amount_ratio happened to diverge on the review's data, but
+#: volume_peak_count / peak_interval_kurtosis / intraday_amp_cut /
+#: valley_relative_vwap roll over valid days too and are the "happens-to-be-clean"
+#: representatives (#82 lesson: never fix only what you observed).
+#: valley_price_quantile is DEFERRED (needs the daily panel) but declared HERE so
+#: D5 cannot bind it carrying the fixed-depth defect.
+VALID_DAY_POOLED_FACTORS: frozenset[type[Factor]] = frozenset({
+    VolumePeakCountFactor,
+    PeakIntervalKurtosisFactor,
+    IntradayAmpCutFactor,
+    ValleyRelativeVwapFactor,
+    ValleyRidgeVwapRatioFactor,
+    RidgeMinuteReturnFactor,
+    PeakRidgeAmountRatioFactor,
+    ValleyPriceQuantileFactor,
+})
+
+#: The bounded minute factors (trailing window over ALL trading days, not valid
+#: days) — a fixed lookback_depth trim is load-geometry-free for these. Kept as
+#: an explicit set so the classification is a CLOSED partition of the minute
+#: surface (a new minute factor missing from BOTH sets is a readable error).
+_BOUNDED_MINUTE_FACTORS: frozenset[type[Factor]] = frozenset({
+    JumpAmountCorrFactor,
+    MinuteIdealAmplitudeFactor,
+    AmpMarginalAnomalyVolFactor,
+})
+
+
+def is_valid_day_pooled(factor: Factor) -> bool:
+    """True iff ``factor``'s trailing window counts VALID days (unbounded depth).
+
+    Readable error for a minute factor in NEITHER partition set — a new minute
+    factor must be classified explicitly (never silently treated as bounded,
+    which would reintroduce the load-geometry divergence).
+    """
+    cls = type(factor)
+    if cls in VALID_DAY_POOLED_FACTORS:
+        return True
+    if cls in _BOUNDED_MINUTE_FACTORS:
+        return False
+    raise KeyError(
+        f"{factor.name} ({cls.__name__}) is a minute factor not classified as "
+        f"valid-day-pooled or bounded in factors.compute.minute.binding. Add it to "
+        f"exactly one partition set (VALID_DAY_POOLED_FACTORS if its trailing "
+        f"window counts VALID days, else _BOUNDED_MINUTE_FACTORS) — a missing "
+        f"classification would silently size its saturation load wrong."
+    )
+
+
 def is_minute_bound(factor: Factor) -> bool:
     """True iff ``factor`` has a bars-only raw-compute binding here."""
     return type(factor) in _MINUTE_BINDINGS
@@ -139,4 +201,10 @@ def minute_raw_from_bars(factor: Factor, bars: pd.DataFrame) -> pd.Series:
     )
 
 
-__all__ = ["BindingFn", "is_minute_bound", "minute_raw_from_bars"]
+__all__ = [
+    "VALID_DAY_POOLED_FACTORS",
+    "BindingFn",
+    "is_minute_bound",
+    "is_valid_day_pooled",
+    "minute_raw_from_bars",
+]

@@ -38,7 +38,6 @@ from data.clean.intraday_schema import (
 )
 from factors import registry as factor_registry
 from factors.compute.minute.binding import minute_raw_from_bars
-from factors.materialize import MaterializeSources, materialize_range
 from factors.view_lag import minute_decision_cutoff
 
 DEFAULT_CACHE_ROOT = "artifacts/cache/tushare/v1"
@@ -125,23 +124,33 @@ def run_hotpath_smoke(
     emit_start = pd.Timestamp(start).normalize()
     emit_end = pd.Timestamp(end).normalize()
 
-    # -- NAIVE: each factor materialized separately (one provider load per factor).
+    # The smoke isolates the READ amortization only, so BOTH paths use the same
+    # BOUNDED load window (never the valid-day-pooled SATURATION expansion, which
+    # is a separate correctness path — its multi-load cost would confound a pure
+    # read-cost comparison). The bounded window comfortably covers each factor's
+    # trailing depth; the shared load uses the max depth so every factor is served.
+    max_depth = max(int(f.spec.lookback_depth) for f in factors)
+    end_bar = emit_end + pd.Timedelta(days=1)
+
+    # -- NAIVE: read + normalize + cutoff ONCE PER FACTOR (its own bounded window).
     naive_provider = CacheMinuteProvider(cache_root)
-    naive_src = MaterializeSources(minute=naive_provider)
     t0 = time.monotonic()
     for factor in factors:
-        materialize_range(
-            factor, view="decision", symbols=symbols, emit_start=emit_start,
-            emit_end=emit_end, sources=naive_src, decision_cutoff=cutoff,
+        w = int(factor.spec.lookback_depth)
+        ls = emit_start - pd.Timedelta(days=w * 2 + 25)
+        bars = minute_decision_cutoff(
+            naive_provider.minute_bars(symbols, ls, end_bar), decision_time=cutoff
         )
+        raw = minute_raw_from_bars(factor, bars)
+        dd = raw.index.get_level_values("date")
+        _ = raw[(dd >= emit_start) & (dd <= emit_end)]
     naive_seconds = time.monotonic() - t0
 
     # -- SHARED: read + normalize + cutoff ONCE, then compute every factor.
-    max_depth = max(int(f.spec.lookback_depth) for f in factors)
     shared_provider = CacheMinuteProvider(cache_root)
     load_start = emit_start - pd.Timedelta(days=max_depth * 2 + 25)
     t0 = time.monotonic()
-    bars = shared_provider.minute_bars(symbols, load_start, emit_end + pd.Timedelta(days=1))
+    bars = shared_provider.minute_bars(symbols, load_start, end_bar)
     bars = minute_decision_cutoff(bars, decision_time=cutoff)
     raw_rows = len(bars)
     for factor in factors:

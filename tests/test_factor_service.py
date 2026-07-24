@@ -106,8 +106,49 @@ class MinuteProv:
         return MINUTE[(t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end))]
 
 
+def _sparse_minute():
+    """Sparse-valid minute data: every 3rd day is thin (fewer bars) so the
+    valid-day density is < 1 — the window where a fixed lookback_depth trim makes
+    valid-day-POOLED factors (ridge / valley_ridge / peak_ridge) diverge
+    finite<->NaN between a single-date fill and a batch fill (the review HIGH)."""
+    rng = np.random.RandomState(11)
+    rows = []
+    for si, s in enumerate(SYMS):
+        for di, d in enumerate(DATES[:80]):
+            n = 120 if (di % 3 == 0) else 238
+            base = pd.Timestamp(d) + pd.Timedelta("09:31:00")
+            price = 100.0 + si * 5 + rng.normal(0, 2)
+            for i in range(n):
+                t = base + pd.Timedelta(minutes=i)
+                price += rng.normal(0, 0.05)
+                slot = 1e4 * (1.0 + 0.3 * np.sin(i / 12.0))
+                erupt = 6.0 if (rng.rand() < 0.06) else 1.0
+                vol = slot * erupt * (1.0 + 0.1 * rng.rand())
+                w = 0.15 * price * (1.0 + (2.0 if erupt > 1 else 0.0)) * (0.5 + rng.rand())
+                hi, lo = price + abs(w) * rng.rand(), price - abs(w) * rng.rand()
+                cl = lo + (hi - lo) * rng.rand()
+                rows.append((t, s, price, hi, lo, cl, vol, cl * vol))
+    frame = pd.DataFrame(rows, columns=["time", "symbol", "open", "high", "low", "close", "volume", "amount"])
+    return normalize_intraday_bars(frame, freq="1min")
+
+
+SPARSE_MINUTE = _sparse_minute()
+
+
+class SparseMinuteProv:
+    def minute_bars(self, symbols, start, end):
+        if not symbols:
+            return SPARSE_MINUTE.iloc[0:0]
+        t = SPARSE_MINUTE.index.get_level_values("time")
+        return SPARSE_MINUTE[(t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end))]
+
+
 def _sources():
     return MaterializeSources(daily=DailyProv(), minute=MinuteProv())
+
+
+def _sparse_sources():
+    return MaterializeSources(minute=SparseMinuteProv())
 
 
 def _store_series(store, factor_id, view=View.DECISION):
@@ -186,6 +227,68 @@ def test_reduced_warmup_breaks_single_equals_batch(monkeypatch):
         av, bv = sa.to_numpy(), sb.to_numpy()
         # the NaN pattern (per-date all-NaN vs batch finite near the tail) differs.
         assert not np.array_equal(np.isnan(av), np.isnan(bv))
+
+
+# --------------------------------------------------------------------------- #
+# P8 EXPANSION: valid-day POOLED factors (review HIGH) on a sparse-valid window
+# --------------------------------------------------------------------------- #
+# WHY these factors and this window (the review's "false confidence"): the P8
+# single==batch test above uses volume_peak_count, which is ALSO valid-day pooled
+# but happened to have dense-enough valid days to stay clean — it is the
+# "happens-to-be-clean nested representative". The review showed that on a sparse-
+# valid window ridge_minute_return / valley_ridge_vwap_ratio / peak_ridge_amount_
+# ratio produce a single-fill=finite / batch-fill=NaN divergence (e.g. the clean
+# cell ridge_minute_return_20 (2021-03-18, 000002.SZ): single=1.6976..., batch=NaN),
+# because the trailing pool counts VALID days and a fixed lookback_depth trim
+# truncates the pool differently for a per-date fill vs a batch fill. The
+# materializer now loads these factors to SATURATION (real data start, no trim),
+# so the value is load-geometry-free and the two stores agree.
+_POOLED_DIVERGENT = ["ridge_minute_return_20", "valley_ridge_vwap_ratio_20", "peak_ridge_amount_ratio_20"]
+
+
+def test_pooled_factor_single_equals_batch_on_sparse_valid_window():
+    """The valid-day-pooled factors that diverge under a fixed trim now agree
+    (saturation load) — single-fill store == batch-fill store, and the pool is
+    fuller than a truncated one so the result is non-vacuous (real finite values)."""
+    dates = list(DATES[55:75])
+    for fid in _POOLED_DIVERGENT:
+        with tempfile.TemporaryDirectory() as ta, tempfile.TemporaryDirectory() as tb:
+            a, b = FactorValueStore(ta), FactorValueStore(tb)
+            _fill_single(a, [fid], dates, _sparse_sources())
+            _fill_batch(b, [fid], dates, _sparse_sources())
+            sa = _store_series(a, fid).sort_index()
+            sb = _store_series(b, fid).sort_index()
+            assert sa.index.equals(sb.index), fid
+            av, bv = sa.to_numpy(), sb.to_numpy()
+            assert np.array_equal(np.isnan(av), np.isnan(bv)), f"{fid}: NaN mask diverges"
+            finite = ~np.isnan(av)
+            assert finite.sum() > 0, f"{fid}: vacuous (no finite values)"
+            # saturation gives shared-prefix accumulation -> BIT identical.
+            assert np.array_equal(av[finite], bv[finite]), f"{fid}: finite values diverge"
+
+
+def test_disabling_saturation_reintroduces_pooled_divergence(monkeypatch):
+    """MUTATION: treating a pooled factor as fixed-depth (saturation OFF) brings
+    back the single-fill/batch-fill finite<->NaN divergence -> the saturation
+    load is load-bearing. rc=1 (this asserts the divergence) with the mutation;
+    rc=0 (the test above) without it."""
+    import factors.materialize as mat
+
+    monkeypatch.setattr(mat, "is_valid_day_pooled", lambda factor: False)
+    dates = list(DATES[55:75])
+    any_diverged = False
+    for fid in _POOLED_DIVERGENT:
+        with tempfile.TemporaryDirectory() as ta, tempfile.TemporaryDirectory() as tb:
+            a, b = FactorValueStore(ta), FactorValueStore(tb)
+            _fill_single(a, [fid], dates, _sparse_sources())
+            _fill_batch(b, [fid], dates, _sparse_sources())
+            sa = _store_series(a, fid).sort_index()
+            sb = _store_series(b, fid).sort_index()
+            av = sa.reindex(sb.index).to_numpy()
+            bv = sb.to_numpy()
+            if not np.array_equal(np.isnan(av), np.isnan(bv)):
+                any_diverged = True
+    assert any_diverged, "saturation-off must reintroduce a pooled divergence"
 
 
 # --------------------------------------------------------------------------- #
