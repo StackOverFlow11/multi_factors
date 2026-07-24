@@ -96,6 +96,10 @@ class MomentumFactor(Factor):
             # value at t needs bars t-window..t -> the leading ``window`` rows
             # of every symbol are NaN by construction.
             min_history_bars=self._window,
+            # D4 pre-registration: close[t]/close[t-window]-1 reads close over the
+            # inclusive span t-window..t -> transitive depth = window + 1 trailing
+            # trading days (the denominator adds one day beyond the headline; §六.18).
+            lookback_depth=self._window + 1,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:

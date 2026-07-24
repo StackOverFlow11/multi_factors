@@ -696,6 +696,13 @@ class ValleyPriceQuantileFactor(Factor):
             overnight_boundary="crossed_disclosed",
             family="microstructure",
             min_history_bars=0,
+            # D4 pre-registration (§六.18, NESTED lookback): trailing
+            # ``lookback_days`` valid days, each bar classified against a
+            # strictly-prior ``VOLUME_PRV_BASELINE_DAYS``-day same-slot baseline
+            # (lookback_days + baseline_days); the daily reversal neutralized
+            # against spans only ``VALLEY_QUANTILE_REVERSAL_DAYS`` (< that sum), so
+            # the minute chain dominates -> depth = lookback_days + baseline_days.
+            lookback_depth=self._lookback_days + VOLUME_PRV_BASELINE_DAYS,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:

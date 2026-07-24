@@ -293,6 +293,12 @@ class VolumePeakCountFactor(Factor):
             overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
+            # D4 pre-registration (§六.18, NESTED lookback): a value at d pools the
+            # trailing ``lookback_days`` valid days, and each bar is classified
+            # against its strictly-prior ``VOLUME_PRV_BASELINE_DAYS``-day same-slot
+            # baseline, so the earliest input reaches lookback_days + baseline_days
+            # trailing trading days -> that sum is the transitive depth.
+            lookback_depth=self._lookback_days + VOLUME_PRV_BASELINE_DAYS,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:

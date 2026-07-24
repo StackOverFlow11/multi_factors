@@ -88,6 +88,11 @@ class FinancialFactor(Factor):
             overnight_boundary="none",
             family=family,
             min_history_bars=0,
+            # D4 pre-registration: a bare same-day column select of the
+            # ann_date-aligned value; the value at d reads only the single latest
+            # as-of column entry -> depth = 1 (the ann_date lookback lives in the
+            # 400-day fina revision horizon, not in this trailing-window depth).
+            lookback_depth=1,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
