@@ -231,13 +231,15 @@ def _store_series(store, factor_id, view=View.DECISION):
     return store.read(key)
 
 
-def _fill_single(store, factor_ids, dates, src):
+def _fill_single(store, factor_ids, dates, src, universe=None):
     for d in dates:
-        cross_section(factor_ids, SYMS, DecisionPoint(date=d), store=store, sources=src)
+        cross_section(factor_ids, universe or SYMS, DecisionPoint(date=d),
+                      store=store, sources=src)
 
 
-def _fill_batch(store, factor_ids, dates, src):
-    panel(factor_ids, SYMS, [DecisionPoint(date=d) for d in dates], store=store, sources=src)
+def _fill_batch(store, factor_ids, dates, src, universe=None):
+    panel(factor_ids, universe or SYMS, [DecisionPoint(date=d) for d in dates],
+          store=store, sources=src)
 
 
 # --------------------------------------------------------------------------- #
@@ -343,7 +345,7 @@ def test_pooled_factor_single_equals_batch_on_sparse_valid_window():
 
 def test_pooled_single_equals_batch_across_a_long_no_bar_gap():
     """THE REVIEW COUNTEREXAMPLE, committed: a no-bar gap WIDER than one expansion
-    chunk (95 trading days = a suspension), emit AFTER the gap, and the trailing
+    chunk (``_GAP_TRADING_DAYS`` = a suspension), emit AFTER the gap, and the trailing
     valid-day pool must reach back ACROSS it.
 
     This is what defeated the value-stability fixed point (a chunk landing wholly
@@ -357,12 +359,10 @@ def test_pooled_single_equals_batch_across_a_long_no_bar_gap():
     * reverting the criterion to the value-stability fixed point -> this test
       FAILS (rc=1): both fills terminate inside the gap and emit all-NaN, caught
       by the non-vacuity assertion below; restored -> passes (rc=0).
-    * dropping the baseline LOCKING OFFSET (``loaded_days[baseline_days]`` ->
-      ``loaded_days[0]``) does NOT fail on these fixtures — recorded honestly:
-      the offset is a correctness margin these fixtures do not isolate (the
-      valid-day count criterion alone already forces enough history here). It is
-      kept because the locking argument requires it in general; a fixture that
-      isolates it would need boundary days whose classification actually flips.
+    * dropping the baseline LOCKING OFFSET does NOT fail on THIS fixture (the
+      valid-day count alone already forces enough history here); it IS isolated
+      by ``test_dropping_the_locking_offset_yields_a_wrong_value``, whose sparse
+      recent block puts an unlocked band inside the criterion's margin.
     """
     dates = GAPPED_POST_DATES[10:22]  # after the gap, pool still spans it
     for fid in _POOLED_DIVERGENT:
@@ -378,6 +378,227 @@ def test_pooled_single_equals_batch_across_a_long_no_bar_gap():
             finite = ~np.isnan(av)
             assert finite.sum() > 0, f"{fid}: vacuous (no finite values across the gap)"
             assert np.allclose(av[finite], bv[finite], rtol=0.0, atol=1e-12), fid
+
+
+#: Zero-output fixture (review HIGH): symbol A has bars throughout; symbol B has
+#: an ancient block and a recent block with a LONG suspension between, so in a
+#: shallow load window B produces ZERO factor rows.
+_ZO_DATES = pd.bdate_range("2021-01-04", periods=130)
+_ZO_A, _ZO_B = "600000.SH", "600519.SH"
+_ZO_SYMS = [_ZO_A, _ZO_B]
+
+
+def _zero_output_minute():
+    rng = np.random.RandomState(99)
+    rows = []
+    plan = ((_ZO_A, list(range(130))), (_ZO_B, list(range(10, 25)) + list(range(120, 130))))
+    for si, (s, days) in enumerate(plan):
+        for di in days:
+            base = pd.Timestamp(_ZO_DATES[di]) + pd.Timedelta("09:31:00")
+            price = 100.0 + si * 5 + rng.normal(0, 2)
+            for i in range(238):
+                t = base + pd.Timedelta(minutes=i)
+                price += rng.normal(0, 0.05)
+                slot = 1e4 * (1.0 + 0.3 * np.sin(i / 12.0))
+                erupt = 6.0 if (rng.rand() < 0.06) else 1.0
+                vol = slot * erupt * (1.0 + 0.1 * rng.rand())
+                w = 0.15 * price * (1.0 + (2.0 if erupt > 1 else 0.0)) * (0.5 + rng.rand())
+                hi, lo = price + abs(w) * rng.rand(), price - abs(w) * rng.rand()
+                cl = lo + (hi - lo) * rng.rand()
+                rows.append((t, s, price, hi, lo, cl, vol, cl * vol))
+    frame = pd.DataFrame(rows, columns=["time", "symbol", "open", "high", "low", "close", "volume", "amount"])
+    return normalize_intraday_bars(frame, freq="1min")
+
+
+ZERO_OUTPUT_MINUTE = _zero_output_minute()
+
+
+class ZeroOutputMinuteProv:
+    def minute_bars(self, symbols, start, end):
+        if not symbols:
+            return ZERO_OUTPUT_MINUTE.iloc[0:0]
+        t = ZERO_OUTPUT_MINUTE.index.get_level_values("time")
+        sym = ZERO_OUTPUT_MINUTE.index.get_level_values("symbol")
+        keep = (t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end)) & sym.isin(list(symbols))
+        return ZERO_OUTPUT_MINUTE[keep]
+
+    def earliest_available(self, symbols):
+        return _ZO_DATES[0]
+
+
+def test_zero_output_symbol_is_not_silently_dropped():
+    """REVIEW HIGH: a symbol producing ZERO rows in the current load window must
+    still VETO saturation — otherwise a single-date fill drops it from the
+    cross-section entirely while a batch fill keeps it (silent name-dropping =
+    sample-coverage bias, forbidden by the I5a red line).
+
+    Measured before the fix: volume_peak_count_20 single-fill ``600519.SH rows=0``
+    vs batch-fill ``rows=10 finite=6`` — the criterion's per-symbol counts were
+    ``{'600000.SH': 67}`` with 600519 absent entirely. After the fix both fills
+    carry the same symbols and the same rows.
+    """
+    dates = list(_ZO_DATES[90:130])  # the review's emit window (indices 90..129)
+    fid = "volume_peak_count_20"
+    with tempfile.TemporaryDirectory() as ta, tempfile.TemporaryDirectory() as tb:
+        a, b = FactorValueStore(ta), FactorValueStore(tb)
+        _fill_single(a, [fid], dates, MaterializeSources(minute=ZeroOutputMinuteProv()),
+                     universe=_ZO_SYMS)
+        _fill_batch(b, [fid], dates, MaterializeSources(minute=ZeroOutputMinuteProv()),
+                    universe=_ZO_SYMS)
+        sa = _store_series(a, fid).sort_index()
+        sb = _store_series(b, fid).sort_index()
+        # the thin symbol must be present in BOTH stores (never silently dropped)
+        syms_a = set(map(str, sa.index.get_level_values("symbol")))
+        syms_b = set(map(str, sb.index.get_level_values("symbol")))
+        assert _ZO_B in syms_a, f"{_ZO_B} silently dropped by the single-date fill"
+        assert syms_a == syms_b, f"symbol sets diverge: single={syms_a} batch={syms_b}"
+        assert sa.index.equals(sb.index)
+        av, bv = sa.to_numpy(), sb.to_numpy()
+        assert np.array_equal(np.isnan(av), np.isnan(bv))
+        finite = ~np.isnan(av)
+        assert finite.sum() > 0
+        assert np.allclose(av[finite], bv[finite], rtol=0.0, atol=1e-12)
+
+
+def test_zero_output_symbol_veto_mutation(monkeypatch):
+    """MUTATION for the HIGH: restricting the criterion to OUTPUT symbols (the
+    pre-fix behaviour) reintroduces the silent drop -> this test's assertion of
+    the drop proves the requested-symbol iteration is load-bearing."""
+    import factors.materialize as mat
+
+    real = mat._pooled_pool_saturated
+
+    def output_only(full, bars, emit_start, *, baseline_days, lookback_days, symbols):
+        present = [s for s in symbols if str(s) in set(map(str, full.index.get_level_values("symbol")))]
+        return real(full, bars, emit_start, baseline_days=baseline_days,
+                    lookback_days=lookback_days, symbols=present)
+
+    monkeypatch.setattr(mat, "_pooled_pool_saturated", output_only)
+    dates = list(_ZO_DATES[90:130])  # the review's emit window (indices 90..129)
+    fid = "volume_peak_count_20"
+    with tempfile.TemporaryDirectory() as ta, tempfile.TemporaryDirectory() as tb:
+        a, b = FactorValueStore(ta), FactorValueStore(tb)
+        _fill_single(a, [fid], dates, MaterializeSources(minute=ZeroOutputMinuteProv()),
+                     universe=_ZO_SYMS)
+        _fill_batch(b, [fid], dates, MaterializeSources(minute=ZeroOutputMinuteProv()),
+                    universe=_ZO_SYMS)
+        sa, sb = _store_series(a, fid), _store_series(b, fid)
+        syms_a = set(map(str, sa.index.get_level_values("symbol"))) if sa is not None else set()
+        syms_b = set(map(str, sb.index.get_level_values("symbol"))) if sb is not None else set()
+        assert syms_a != syms_b or _ZO_B not in syms_a, (
+            "the output-symbols-only criterion should drop the thin symbol from "
+            "the single-date fill"
+        )
+
+
+#: Locking-offset isolation fixture (review task 3(b), adopted verbatim in shape).
+_LO_DATES = pd.bdate_range("2020-01-01", periods=210)
+_LO_SYM = "600000.SH"
+_LO_E_IDX = 200
+#: deep history (reachable only by a second expansion) + a SPARSE recent block of
+#: 33 every-other-day bar-days ending exactly at the emit date. In the shallow
+#: window the sparse block is all there is, and its local days 10..19 are
+#: classifiable but NOT yet final (baseline below full depth) — the UNLOCKED band
+#: the offset exists to exclude.
+_LO_BAR_DAYS = list(range(40, 100)) + [_LO_E_IDX - 2 * j for j in range(32, -1, -1)]
+
+
+def _locking_offset_minute():
+    rng = np.random.RandomState(2026)
+    rows = []
+    for di in _LO_BAR_DAYS:
+        base = pd.Timestamp(_LO_DATES[di]) + pd.Timedelta("09:31:00")
+        price = 100.0 + rng.normal(0, 2)
+        for i in range(238):
+            t = base + pd.Timedelta(minutes=i)
+            price += rng.normal(0, 0.05)
+            slot = 1e4 * (1.0 + 0.3 * np.sin(i / 12.0))
+            erupt = 6.0 if (rng.rand() < 0.06) else 1.0
+            vol = slot * erupt * (1.0 + 0.1 * rng.rand())
+            w = 0.15 * price * (1.0 + (2.0 if erupt > 1 else 0.0)) * (0.5 + rng.rand())
+            hi, lo = price + abs(w) * rng.rand(), price - abs(w) * rng.rand()
+            cl = lo + (hi - lo) * rng.rand()
+            rows.append((t, _LO_SYM, price, hi, lo, cl, vol, cl * vol))
+    frame = pd.DataFrame(rows, columns=["time", "symbol", "open", "high", "low", "close", "volume", "amount"])
+    return normalize_intraday_bars(frame, freq="1min")
+
+
+LOCKING_OFFSET_MINUTE = _locking_offset_minute()
+
+
+class LockingOffsetProv:
+    def minute_bars(self, symbols, start, end):
+        if not symbols:
+            return LOCKING_OFFSET_MINUTE.iloc[0:0]
+        t = LOCKING_OFFSET_MINUTE.index.get_level_values("time")
+        return LOCKING_OFFSET_MINUTE[(t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end))]
+
+    def earliest_available(self, symbols):
+        return _LO_DATES[0]
+
+
+def test_locking_offset_is_load_bearing():
+    """The BASELINE LOCKING OFFSET produces the load-geometry-free value.
+
+    Ground truth = computing on the WHOLE history at once. With the offset the
+    saturation loop expands past the unlocked band and reproduces it exactly;
+    dropping the offset (``loaded_days[baseline_days]`` -> ``loaded_days[0]``)
+    lets the criterion stop one chunk early with the pool still drawing on days
+    whose classification is not final, yielding a silently WRONG value.
+
+    MUTATION rc: with ``baseline_days=0`` forced this test FAILS (rc=1, the
+    mutated value != truth); unmutated it passes (rc=0). This replaces the
+    earlier honest note that the offset was not isolated by the gap fixtures.
+    """
+    import factors.materialize as mat
+    from factors.compute.minute.binding import minute_raw_from_bars
+    from factors.view_lag import minute_decision_cutoff
+
+    factor = factor_registry.build("volume_peak_count_20")
+    emit = _LO_DATES[_LO_E_IDX]
+    truth_full = minute_raw_from_bars(
+        factor, minute_decision_cutoff(LOCKING_OFFSET_MINUTE, decision_time="14:50:00")
+    )
+    truth = float(truth_full.loc[(emit, _LO_SYM)])
+
+    got = mat.materialize_range(
+        factor, view=View.DECISION, symbols=[_LO_SYM], emit_start=emit, emit_end=emit,
+        sources=MaterializeSources(minute=LockingOffsetProv()),
+    )
+    assert float(got.iloc[0]) == truth, (
+        "the saturated value must equal the whole-history (load-geometry-free) value"
+    )
+
+
+def test_dropping_the_locking_offset_yields_a_wrong_value(monkeypatch):
+    """MUTATION evidence for the offset: forcing ``baseline_days=0`` makes the
+    criterion accept the unlocked band and return a value that differs from the
+    whole-history truth (measured on this fixture: 438.0 vs the true 416.0)."""
+    import factors.materialize as mat
+    from factors.compute.minute.binding import minute_raw_from_bars
+    from factors.view_lag import minute_decision_cutoff
+
+    factor = factor_registry.build("volume_peak_count_20")
+    emit = _LO_DATES[_LO_E_IDX]
+    truth = float(
+        minute_raw_from_bars(
+            factor, minute_decision_cutoff(LOCKING_OFFSET_MINUTE, decision_time="14:50:00")
+        ).loc[(emit, _LO_SYM)]
+    )
+    real = mat._pooled_pool_saturated
+
+    def no_offset(full, bars, emit_start, *, baseline_days, lookback_days, symbols):
+        return real(full, bars, emit_start, baseline_days=0,
+                    lookback_days=lookback_days, symbols=symbols)
+
+    monkeypatch.setattr(mat, "_pooled_pool_saturated", no_offset)
+    mutated = mat.materialize_range(
+        factor, view=View.DECISION, symbols=[_LO_SYM], emit_start=emit, emit_end=emit,
+        sources=MaterializeSources(minute=LockingOffsetProv()),
+    )
+    assert float(mutated.iloc[0]) != truth, (
+        "dropping the locking offset must produce a load-geometry-dependent value"
+    )
 
 
 def test_disabling_saturation_reintroduces_pooled_divergence(monkeypatch):

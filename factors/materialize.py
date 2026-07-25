@@ -330,10 +330,20 @@ def _materialize_pooled(
         if at_floor or _pooled_pool_saturated(
             full, work, emit_start,
             baseline_days=baseline_days, lookback_days=lookback_days,
+            symbols=symbols,
         ):
             return last
         load_start = load_start - chunk
-    return last if last is not None else _empty_series(factor.name)
+    # Never silently return an UNSATURATED result (red line #9: no silent
+    # degradation). Unreachable in practice — 500 chunks is >160 years of history
+    # — so hitting it means the loop is not converging, which must be loud.
+    raise RuntimeError(
+        f"{factor.name}: pooled saturation did not converge after "
+        f"{_MAX_SATURATION_CHUNKS} expansion chunks (expanded back to "
+        f"{load_start.date()} for {len(symbols)} symbol(s), declared floor "
+        f"{floor.date()}). Refusing to return an unsaturated value, which would "
+        f"depend on load geometry."
+    )
 
 
 def _provider_earliest(provider, symbols, factor) -> pd.Timestamp:
@@ -358,18 +368,37 @@ def _pooled_pool_saturated(
     *,
     baseline_days: int,
     lookback_days: int,
+    symbols: list[str],
 ) -> bool:
     """The structural criterion (see :func:`_materialize_pooled` for the argument).
 
-    True iff, for EVERY symbol present, the LOCKED sub-window (the loaded trading
-    days after dropping the first ``baseline_days``) holds at least
+    True iff, for EVERY REQUESTED symbol, the LOCKED sub-window (the loaded
+    trading days after dropping the first ``baseline_days``) holds at least
     ``lookback_days`` valid days at or before ``emit_start`` — valid days being
-    the factor's own output dates. A symbol whose whole history is loaded shorter
-    than that is honestly under-warmed and is handled by the floor terminal, not
-    here.
+    the factor's own output dates.
+
+    ITERATING THE REQUESTED SYMBOLS, NOT THE OUTPUT SYMBOLS, IS LOAD-BEARING
+    (review HIGH): a symbol that produces ZERO rows in the current load window (a
+    long suspension, thin coverage) is absent from the output, so iterating the
+    output would give it NO VETO — yet it is exactly the symbol that a deeper load
+    would unlock. The consequence was worse than a wrong value: a single-date fill
+    dropped such a name from the cross-section entirely while a batch fill kept it
+    (measured: volume_peak_count_20 single ``rows=0`` vs batch ``rows=10``), which
+    is the silent name-dropping the I5a red line forbids (a missing symbol is a
+    sample-coverage bias, and must be loud). Counting an absent symbol as 0 valid
+    days vetoes termination, so the loop expands until it too is saturated or the
+    declared floor is reached.
+
+    COST, stated plainly: any requested symbol that cannot accumulate
+    ``lookback_days`` valid days before ``emit_start`` (a recent listing, a long
+    suspension, a coverage hole) drags the WHOLE universe's load back to the
+    declared floor. That cost already existed for symbols with SOME output but too
+    few valid days; this fix only extends the same conservative behaviour to
+    zero-output symbols. A per-symbol saturation start is the D5 optimization —
+    and NOT a pure one: ``intraday_amp_cut`` z-scores across the loaded
+    cross-section, so changing per-symbol load depth changes its cross-section
+    composition.
     """
-    if full.empty:
-        return False
     loaded_days = pd.DatetimeIndex(
         pd.unique(pd.DatetimeIndex(bars.index.get_level_values("time")).normalize())
     ).sort_values()
@@ -378,9 +407,9 @@ def _pooled_pool_saturated(
     locked_from = loaded_days[baseline_days]  # first day with a FINAL classification
 
     out_dates = full.index.get_level_values(DATE_LEVEL)
-    out_symbols = full.index.get_level_values(SYMBOL_LEVEL)
-    for symbol in pd.unique(out_symbols):
-        mine = out_dates[(out_symbols == symbol)]
+    out_symbols = pd.Index(full.index.get_level_values(SYMBOL_LEVEL))
+    for symbol in symbols:  # the REQUESTED universe, not just what produced rows
+        mine = out_dates[out_symbols == str(symbol)]
         final_valid = mine[(mine >= locked_from) & (mine <= emit_start)]
         if len(final_valid) < lookback_days:
             return False
