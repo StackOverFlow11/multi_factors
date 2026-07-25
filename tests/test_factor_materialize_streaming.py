@@ -514,15 +514,31 @@ def test_an_early_saturating_symbol_matches_the_whole_history_value():
     """The soundness claim of per-symbol saturation, on a fixture where it BITES.
 
     A dense symbol here stops at its first expansion chunk — far short of the
-    declared floor (asserted above) — so this compares a genuinely EARLY-terminated
-    load against computing on the symbol's whole history. That is the whole content
-    of the criterion: "further history cannot change any emit value".
+    declared floor — so this compares a genuinely EARLY-terminated load against
+    computing on the symbol's whole history. That is the whole content of the
+    criterion: "further history cannot change any emit value".
+
+    The early termination is asserted HERE, not borrowed from the test above: if
+    the fixture ever grew short enough that the first chunk already reached the
+    floor, both sides would load the same bars and this would agree for the wrong
+    reason — a test that cannot fail.
     """
     factor = factor_registry.build("volume_peak_count_20")
+    starts: list[pd.Timestamp] = []
+
+    class RecordingProv(LongProv):
+        def minute_bars(self, symbols, start, end):
+            starts.append(pd.Timestamp(start))
+            return super().minute_bars(symbols, start, end)
+
     got = materialize_range(
         factor, view=View.CLOSE, symbols=list(LONG_DENSE),
         emit_start=LONG_EMIT_START, emit_end=LONG_EMIT_END,
-        sources=MaterializeSources(minute=LongProv()),
+        sources=MaterializeSources(minute=RecordingProv()),
+    )
+    assert min(starts) > LONG_DATES[0], (
+        "the dense symbols reached the declared floor, so 'early saturation' is not "
+        "being exercised and this comparison would be vacuous"
     )
     full = minute_raw_from_bars(factor, LONG_MINUTE)
     d = full.index.get_level_values("date")
@@ -536,7 +552,13 @@ def test_an_early_saturating_symbol_matches_the_whole_history_value():
 
 def test_cross_sectional_factor_sees_the_whole_universe_not_the_streamed_symbol():
     """intraday_amp_cut's combine runs on the ASSEMBLED panel: a new symbol joins
-    the cross-section and moves the z-scores, exactly as in the one-frame path."""
+    the cross-section and moves the z-scores, exactly as in the one-frame path.
+
+    The move is asserted, not assumed. If the extra member left every existing
+    value untouched, agreeing with the one-frame reference would prove nothing
+    about WHICH cross-section the combine saw — the streamed values would be
+    consistent with a per-symbol cross-section too.
+    """
     factor = factor_registry.build("intraday_amp_cut_10")
     got = _streamed(
         factor, provider=StreamProv(DENSE_PLUS_LATE), symbols=[*SYMBOLS, _LATE_SYMBOL]
@@ -544,6 +566,16 @@ def test_cross_sectional_factor_sees_the_whole_universe_not_the_streamed_symbol(
     want = _truth(factor, bars=DENSE_PLUS_LATE)
     n = _assert_bit_identical(got, want, "amp_cut with a late-listing member")
     assert n > 0
+
+    without = _streamed(factor)  # the same 12 symbols, no new member
+    shared = got[pd.Index(got.index.get_level_values("symbol")).isin(SYMBOLS)]
+    common = without.index.intersection(shared.index)
+    assert len(common) > 0, "vacuous: the two runs share no cell"
+    moved = int((shared.loc[common].to_numpy() != without.loc[common].to_numpy()).sum())
+    assert moved > 0, (
+        "the extra cross-section member changed nothing, so this test cannot tell "
+        "a whole-universe combine from a per-symbol one"
+    )
 
 
 # --------------------------------------------------------------------------- #
