@@ -299,6 +299,44 @@ def test_splitting_around_the_whole_factor_destroys_the_cross_sectional_factor()
     _assert_bit_identical(_streamed(factor), right, "intraday_amp_cut streamed")
 
 
+@pytest.mark.parametrize("factor_id", STREAMED_FACTOR_IDS)
+def test_cross_sectional_classification_matches_the_factors_actual_behaviour(factor_id):
+    """``CROSS_SECTIONAL_MINUTE_FACTORS`` is a CHECKED fact, not a declaration.
+
+    A factor is per-symbol pure iff splitting around the WHOLE factor reproduces
+    the whole-universe values. This asserts BOTH directions on every bound factor:
+    the nine declared pure ones must survive that split bit-identically, and the
+    one declared cross-sectional must not. A factor that acquired a cross-section
+    without being added to the set would be caught here — the alternative is a
+    comment that is true on the day it is written.
+    """
+    factor = factor_registry.build(factor_id)
+    parts = []
+    for s in SYMBOLS:
+        one = DENSE[pd.Index(DENSE.index.get_level_values("symbol")) == s]
+        parts.append(minute_raw_from_bars(factor, one))
+    split = pd.concat(parts).sort_index()
+    whole = minute_raw_from_bars(factor, DENSE).sort_index()
+
+    assert split.index.equals(whole.index), f"{factor_id}: per-symbol split changed the index"
+    sv, wv = split.to_numpy(), whole.to_numpy()
+    same = np.array_equal(np.isnan(sv), np.isnan(wv)) and np.array_equal(
+        sv[~np.isnan(sv)], wv[~np.isnan(wv)]
+    )
+    assert int((~np.isnan(wv)).sum()) > 0, f"{factor_id}: vacuous (whole-universe all NaN)"
+    if is_cross_sectional_minute(factor):
+        assert not same, (
+            f"{factor_id} is declared cross-sectional but survives a per-whole-factor "
+            f"split — either the declaration or the factor is wrong"
+        )
+    else:
+        assert same, (
+            f"{factor_id} is declared per-symbol pure but a per-whole-factor split "
+            f"changes its values — it needs a real combine and a place in "
+            f"CROSS_SECTIONAL_MINUTE_FACTORS"
+        )
+
+
 def test_amp_cut_cross_section_gate_is_not_relaxed_for_streaming():
     """The definition constant stays at 10 and still bites BELOW it (honest NaN).
 
