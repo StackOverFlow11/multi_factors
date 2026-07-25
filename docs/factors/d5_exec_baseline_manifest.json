@@ -1,0 +1,490 @@
+{
+  "schema": "d5-exec-baseline-freeze/1",
+  "frozen_at_utc": "2026-07-25T13:44:24.553842+00:00",
+  "frozen_at_git_head": "45c14aa036c37ddafc490bc16f961ec5212b5025",
+  "source_dir": "artifacts/reports",
+  "frozen_root": "artifacts/refactor_baseline/exec_baseline",
+  "file_count": 77,
+  "factors": [
+    "jump_amount_corr",
+    "minute_ideal_amplitude",
+    "amp_marginal_anomaly_vol",
+    "volume_peak_count",
+    "intraday_amp_cut",
+    "peak_interval_kurtosis",
+    "valley_relative_vwap",
+    "valley_ridge_vwap_ratio",
+    "ridge_minute_return",
+    "valley_price_quantile",
+    "peak_ridge_amount_ratio"
+  ],
+  "books": [
+    "no_book",
+    "with_book"
+  ],
+  "source_note": "PR #79 exec-to-exec rebasis artifacts. OBSERVED: all 77 files share mtime 2026-07-21 15:33:20 UTC-7 (bulk copy; ~2ms spread), 8 minutes after PR #79 merged as b04c966 at 15:25. Content is ATTRIBUTED to the #79 exec-basis run per the PR record; the copy instant is observed, the run is not.",
+  "files": [
+    {
+      "name": "eval_amp_marginal_anomaly_vol_exec_basis_sanity.md",
+      "sha256": "4856188e26740f9cdf3629aae6e12d1932670c4be3ccba9779a54c74bdd63a2f",
+      "size_bytes": 3892,
+      "source_mtime_utc": "2026-07-21T22:33:20.985336+00:00"
+    },
+    {
+      "name": "eval_amp_marginal_anomaly_vol_exec_no_book.json",
+      "sha256": "6755304f05c705f5ef0551bf3e3f20a4deec9b9d45899798c1ea4a00f1ac80c3",
+      "size_bytes": 19487,
+      "source_mtime_utc": "2026-07-21T22:33:20.977414+00:00"
+    },
+    {
+      "name": "eval_amp_marginal_anomaly_vol_exec_no_book.md",
+      "sha256": "2300300c7d26f8b4d8f00d58e7a459e3b4e3664c36f0dbea70e4fa2c35918923",
+      "size_bytes": 16286,
+      "source_mtime_utc": "2026-07-21T22:33:20.978123+00:00"
+    },
+    {
+      "name": "eval_amp_marginal_anomaly_vol_exec_no_book_dashboard.png",
+      "sha256": "d39ba8fb4590c94dc747b82357dd694dd48303076b13a45d20577c0409139669",
+      "size_bytes": 655165,
+      "source_mtime_utc": "2026-07-21T22:33:20.979059+00:00"
+    },
+    {
+      "name": "eval_amp_marginal_anomaly_vol_exec_with_book.json",
+      "sha256": "e80b48c6aeec464791a210e2a89fdf14e064d9ec8fae9daa0711576ece4dd2a5",
+      "size_bytes": 21286,
+      "source_mtime_utc": "2026-07-21T22:33:20.977462+00:00"
+    },
+    {
+      "name": "eval_amp_marginal_anomaly_vol_exec_with_book.md",
+      "sha256": "f1df356c1db62e5730f261d678fd90e67252e8d36f96a451f28b7b0846da9980",
+      "size_bytes": 17717,
+      "source_mtime_utc": "2026-07-21T22:33:20.978161+00:00"
+    },
+    {
+      "name": "eval_amp_marginal_anomaly_vol_exec_with_book_dashboard.png",
+      "sha256": "a585fcc7492c5d0138d5e13bac1764272d2e0fe77dfbe6b29f411db79fad2b2e",
+      "size_bytes": 665637,
+      "source_mtime_utc": "2026-07-21T22:33:20.979250+00:00"
+    },
+    {
+      "name": "eval_intraday_amp_cut_exec_basis_sanity.md",
+      "sha256": "6fd77ccf8f094d862a6c49bece2c5247bdcb120ad9ee9a59c6c722e13e7e8158",
+      "size_bytes": 3900,
+      "source_mtime_utc": "2026-07-21T22:33:20.985399+00:00"
+    },
+    {
+      "name": "eval_intraday_amp_cut_exec_no_book.json",
+      "sha256": "80cf44b25c4be0c9091e3cc43cc56fdcd6d61b5cb3b378e36b842fb2265ffad8",
+      "size_bytes": 21131,
+      "source_mtime_utc": "2026-07-21T22:33:20.977496+00:00"
+    },
+    {
+      "name": "eval_intraday_amp_cut_exec_no_book.md",
+      "sha256": "eb80ca1dc57267f2470c393047b0acf7eea4dcbdb6e8b682545571d955035a1e",
+      "size_bytes": 17771,
+      "source_mtime_utc": "2026-07-21T22:33:20.978218+00:00"
+    },
+    {
+      "name": "eval_intraday_amp_cut_exec_no_book_dashboard.png",
+      "sha256": "a29121a103c87b2d310ca32ffe18aa603c3b0316b2a5bc09da9488e1c8329ad0",
+      "size_bytes": 668176,
+      "source_mtime_utc": "2026-07-21T22:33:20.979444+00:00"
+    },
+    {
+      "name": "eval_intraday_amp_cut_exec_with_book.json",
+      "sha256": "dc63b7e620d80b37482cc5b280c482de2f70e7c1b31da0b64f1047e431f7fe56",
+      "size_bytes": 22715,
+      "source_mtime_utc": "2026-07-21T22:33:20.977527+00:00"
+    },
+    {
+      "name": "eval_intraday_amp_cut_exec_with_book.md",
+      "sha256": "61ad89dac238e11b0e5e74c24b20c15cb9b033e1d590be0080eec2865dff9936",
+      "size_bytes": 18994,
+      "source_mtime_utc": "2026-07-21T22:33:20.978252+00:00"
+    },
+    {
+      "name": "eval_intraday_amp_cut_exec_with_book_dashboard.png",
+      "sha256": "987f7c14b86401823e747fd0c32ee6bb02ecd36973db4d23c0920e6b4a042bc5",
+      "size_bytes": 678388,
+      "source_mtime_utc": "2026-07-21T22:33:20.979649+00:00"
+    },
+    {
+      "name": "eval_jump_amount_corr_exec_basis_sanity.md",
+      "sha256": "a67c1e297293ae3a08904005bbd7ab18155394e9d977b7b3a290251116189db4",
+      "size_bytes": 3885,
+      "source_mtime_utc": "2026-07-21T22:33:20.985427+00:00"
+    },
+    {
+      "name": "eval_jump_amount_corr_exec_no_book.json",
+      "sha256": "126bdc8febb82dbf8e43c2e162e88044f2135924013518b4f03d1a89c3147b0f",
+      "size_bytes": 20546,
+      "source_mtime_utc": "2026-07-21T22:33:20.977555+00:00"
+    },
+    {
+      "name": "eval_jump_amount_corr_exec_no_book.md",
+      "sha256": "7fce0749339a4753c7fd508c0f86ecd4330b0cb523a93088f98425b18396bb35",
+      "size_bytes": 16625,
+      "source_mtime_utc": "2026-07-21T22:33:20.978304+00:00"
+    },
+    {
+      "name": "eval_jump_amount_corr_exec_no_book_dashboard.png",
+      "sha256": "8a83f2ecd73c40a85027914595bf1ac6deb23fcb9a5d9019bd16d808c24428c4",
+      "size_bytes": 620927,
+      "source_mtime_utc": "2026-07-21T22:33:20.979841+00:00"
+    },
+    {
+      "name": "eval_jump_amount_corr_exec_with_book.json",
+      "sha256": "08d791ad46e6793191662eb185083aa1e2a92f8fce82ad11889b6b39b464cfc6",
+      "size_bytes": 22093,
+      "source_mtime_utc": "2026-07-21T22:33:20.977582+00:00"
+    },
+    {
+      "name": "eval_jump_amount_corr_exec_with_book.md",
+      "sha256": "c9aea4a639c433aa2f6d4691c59025efb20f5c6a4cd79ee35eea104539feb529",
+      "size_bytes": 17811,
+      "source_mtime_utc": "2026-07-21T22:33:20.978333+00:00"
+    },
+    {
+      "name": "eval_jump_amount_corr_exec_with_book_dashboard.png",
+      "sha256": "7a7714627f10305b1d165f68285f38f4c3c4afb1f31495bdd93b93b1cdb68cdc",
+      "size_bytes": 630809,
+      "source_mtime_utc": "2026-07-21T22:33:20.980035+00:00"
+    },
+    {
+      "name": "eval_minute_ideal_amplitude_exec_basis_sanity.md",
+      "sha256": "12fa8a81a07451f960ef56ba9770ed03da00bb1a196a02f1c9a0f600575dd239",
+      "size_bytes": 3894,
+      "source_mtime_utc": "2026-07-21T22:33:20.985453+00:00"
+    },
+    {
+      "name": "eval_minute_ideal_amplitude_exec_no_book.json",
+      "sha256": "495ff3189631c4ee435c3be69db9ad7bf670fa03fdf90d2015e774515f109c3e",
+      "size_bytes": 20409,
+      "source_mtime_utc": "2026-07-21T22:33:20.977612+00:00"
+    },
+    {
+      "name": "eval_minute_ideal_amplitude_exec_no_book.md",
+      "sha256": "482cc7a219628fac2eb11b5b65708ace0880c4b8d4fabbb6cd3e4e61823d3e6d",
+      "size_bytes": 16611,
+      "source_mtime_utc": "2026-07-21T22:33:20.978386+00:00"
+    },
+    {
+      "name": "eval_minute_ideal_amplitude_exec_no_book_dashboard.png",
+      "sha256": "878767ccae74ed0e55315d1fb064dea66e155e07f002134a25fa7acacf16933b",
+      "size_bytes": 572962,
+      "source_mtime_utc": "2026-07-21T22:33:20.980259+00:00"
+    },
+    {
+      "name": "eval_minute_ideal_amplitude_exec_with_book.json",
+      "sha256": "85293e8d63edb08e4ebadcfb3fddc683d08ebb7fd7e3a28e4954d3bf27d7eae8",
+      "size_bytes": 21955,
+      "source_mtime_utc": "2026-07-21T22:33:20.977637+00:00"
+    },
+    {
+      "name": "eval_minute_ideal_amplitude_exec_with_book.md",
+      "sha256": "84176a922ca7d8a83aa58aee1eff81972223ff3d3e60bcf17ea1659fe173f480",
+      "size_bytes": 17796,
+      "source_mtime_utc": "2026-07-21T22:33:20.978414+00:00"
+    },
+    {
+      "name": "eval_minute_ideal_amplitude_exec_with_book_dashboard.png",
+      "sha256": "7241548bb091d481494fb917c9e781763acee4b8ec94c10322f17546e895b59d",
+      "size_bytes": 582827,
+      "source_mtime_utc": "2026-07-21T22:33:20.980434+00:00"
+    },
+    {
+      "name": "eval_peak_interval_kurtosis_exec_basis_sanity.md",
+      "sha256": "1187924fb1550d314f1d1be03745a56084d1b238a007e728ee78dbf0580f6940",
+      "size_bytes": 3888,
+      "source_mtime_utc": "2026-07-21T22:33:20.985477+00:00"
+    },
+    {
+      "name": "eval_peak_interval_kurtosis_exec_no_book.json",
+      "sha256": "db9527bf4ad190e633fb0dbbf0057cdbfaee28160df8c674fdfa09e5b6f8103d",
+      "size_bytes": 20351,
+      "source_mtime_utc": "2026-07-21T22:33:20.977666+00:00"
+    },
+    {
+      "name": "eval_peak_interval_kurtosis_exec_no_book.md",
+      "sha256": "622b6f17e0e83226204242096e43199b6f6592ca2dac4ee9a2ffed7957183203",
+      "size_bytes": 17288,
+      "source_mtime_utc": "2026-07-21T22:33:20.978471+00:00"
+    },
+    {
+      "name": "eval_peak_interval_kurtosis_exec_no_book_dashboard.png",
+      "sha256": "291039b28536bc8084c0b64bc643910bdbb36541c774ba8e99560dd76d276542",
+      "size_bytes": 758107,
+      "source_mtime_utc": "2026-07-21T22:33:20.980605+00:00"
+    },
+    {
+      "name": "eval_peak_interval_kurtosis_exec_with_book.json",
+      "sha256": "af92d2974d1dc69c13f6226cd97eae5454c15f9a240b364d3fc380995222865a",
+      "size_bytes": 22110,
+      "source_mtime_utc": "2026-07-21T22:33:20.977691+00:00"
+    },
+    {
+      "name": "eval_peak_interval_kurtosis_exec_with_book.md",
+      "sha256": "d7346960f74ff95e925c191c1fdf1f506dbae5c574569c5c702fd0872b541e83",
+      "size_bytes": 18679,
+      "source_mtime_utc": "2026-07-21T22:33:20.978499+00:00"
+    },
+    {
+      "name": "eval_peak_interval_kurtosis_exec_with_book_dashboard.png",
+      "sha256": "18b6ace5286822803b38e7630ddaff37680d052fc7f448ef2e7aa7f16c820024",
+      "size_bytes": 768042,
+      "source_mtime_utc": "2026-07-21T22:33:20.980828+00:00"
+    },
+    {
+      "name": "eval_peak_ridge_amount_ratio_exec_basis_sanity.md",
+      "sha256": "1187924fb1550d314f1d1be03745a56084d1b238a007e728ee78dbf0580f6940",
+      "size_bytes": 3888,
+      "source_mtime_utc": "2026-07-21T22:33:20.985501+00:00"
+    },
+    {
+      "name": "eval_peak_ridge_amount_ratio_exec_no_book.json",
+      "sha256": "bc963b3007d363483a25fc10f38b4902cbb796966ee6a5d325c89b6e8a4538df",
+      "size_bytes": 20489,
+      "source_mtime_utc": "2026-07-21T22:33:20.977716+00:00"
+    },
+    {
+      "name": "eval_peak_ridge_amount_ratio_exec_no_book.md",
+      "sha256": "2ba2f0e2dfb7b48ebbacd87d966ec75b57b79e882ef6b93e794c7fb25fb3b84f",
+      "size_bytes": 19109,
+      "source_mtime_utc": "2026-07-21T22:33:20.978554+00:00"
+    },
+    {
+      "name": "eval_peak_ridge_amount_ratio_exec_no_book_dashboard.png",
+      "sha256": "62d8d74166e3d48d2807027aea8dc847d6a6bd36117123bc361dac1243ac7558",
+      "size_bytes": 767069,
+      "source_mtime_utc": "2026-07-21T22:33:20.981082+00:00"
+    },
+    {
+      "name": "eval_peak_ridge_amount_ratio_exec_with_book.json",
+      "sha256": "bdb4795630a71a5097b16a4f9657da8baae61e8e5a3ddf550efb9f3b1e731e8e",
+      "size_bytes": 22023,
+      "source_mtime_utc": "2026-07-21T22:33:20.977742+00:00"
+    },
+    {
+      "name": "eval_peak_ridge_amount_ratio_exec_with_book.md",
+      "sha256": "f0739f5ab6f6c0bb0648a3dcf218a5e0e3142d5aeb5f53a9d4920ece06a4aaf4",
+      "size_bytes": 20282,
+      "source_mtime_utc": "2026-07-21T22:33:20.978582+00:00"
+    },
+    {
+      "name": "eval_peak_ridge_amount_ratio_exec_with_book_dashboard.png",
+      "sha256": "7da1593f9adfaf1499ac39f6948b18916450097e1f956747e473f639f55b8d90",
+      "size_bytes": 777536,
+      "source_mtime_utc": "2026-07-21T22:33:20.981301+00:00"
+    },
+    {
+      "name": "eval_ridge_minute_return_exec_basis_sanity.md",
+      "sha256": "1187924fb1550d314f1d1be03745a56084d1b238a007e728ee78dbf0580f6940",
+      "size_bytes": 3888,
+      "source_mtime_utc": "2026-07-21T22:33:20.985526+00:00"
+    },
+    {
+      "name": "eval_ridge_minute_return_exec_no_book.json",
+      "sha256": "f4e1778cc22e3758d4b5ce0ce792dc61edfb704fc5e4141e830a0376c6c46f9f",
+      "size_bytes": 21107,
+      "source_mtime_utc": "2026-07-21T22:33:20.977768+00:00"
+    },
+    {
+      "name": "eval_ridge_minute_return_exec_no_book.md",
+      "sha256": "ed2fe47c2851f0880360985b66de0be89fe23d61ef4fb7df9352899cd7443b20",
+      "size_bytes": 19551,
+      "source_mtime_utc": "2026-07-21T22:33:20.978633+00:00"
+    },
+    {
+      "name": "eval_ridge_minute_return_exec_no_book_dashboard.png",
+      "sha256": "0be2a1c2a6210c7b47074af7fbd904853d6daeb65b3f7a88301205aa3c0b8d5d",
+      "size_bytes": 845707,
+      "source_mtime_utc": "2026-07-21T22:33:20.981516+00:00"
+    },
+    {
+      "name": "eval_ridge_minute_return_exec_with_book.json",
+      "sha256": "8fd9e6595c6a21f050b671cac0b8ca96b0bb0bd72d71912d7b5688756c41aade",
+      "size_bytes": 22906,
+      "source_mtime_utc": "2026-07-21T22:33:20.977796+00:00"
+    },
+    {
+      "name": "eval_ridge_minute_return_exec_with_book.md",
+      "sha256": "c7fe175a5d162e3a533c164dcc5015b0ebe39ebf260b2ebd73f866126593571c",
+      "size_bytes": 20989,
+      "source_mtime_utc": "2026-07-21T22:33:20.978660+00:00"
+    },
+    {
+      "name": "eval_ridge_minute_return_exec_with_book_dashboard.png",
+      "sha256": "fb527aaf7134910131236dc2d5336efd65b1abcb0496f04172302349dd99e016",
+      "size_bytes": 854968,
+      "source_mtime_utc": "2026-07-21T22:33:20.981749+00:00"
+    },
+    {
+      "name": "eval_valley_price_quantile_exec_basis_sanity.md",
+      "sha256": "9fc709f253b8771a878b08d0035ba638fcc793d8b5d1b804215a710e90aaf05c",
+      "size_bytes": 3887,
+      "source_mtime_utc": "2026-07-21T22:33:20.985550+00:00"
+    },
+    {
+      "name": "eval_valley_price_quantile_exec_no_book.json",
+      "sha256": "8f29016285efb8ebf7119256955ab1e8cb54ab37a94d12b508a2ec8d749376a4",
+      "size_bytes": 20577,
+      "source_mtime_utc": "2026-07-21T22:33:20.977822+00:00"
+    },
+    {
+      "name": "eval_valley_price_quantile_exec_no_book.md",
+      "sha256": "a4ab52edd64c78ab3827dbda71d29a4f68eae475730df12162f9695ef1e0bf5e",
+      "size_bytes": 19922,
+      "source_mtime_utc": "2026-07-21T22:33:20.978712+00:00"
+    },
+    {
+      "name": "eval_valley_price_quantile_exec_no_book_dashboard.png",
+      "sha256": "6d5ac41bb26109fcd0d265bb6655eaf33472d0e196ad2ad6d869c8cabec6ed83",
+      "size_bytes": 777643,
+      "source_mtime_utc": "2026-07-21T22:33:20.982016+00:00"
+    },
+    {
+      "name": "eval_valley_price_quantile_exec_with_book.json",
+      "sha256": "b17311ac1ce7566c441f3d62ab373ddf07b95ad9ca9f08ae57f344197b4ee3ec",
+      "size_bytes": 22113,
+      "source_mtime_utc": "2026-07-21T22:33:20.977850+00:00"
+    },
+    {
+      "name": "eval_valley_price_quantile_exec_with_book.md",
+      "sha256": "c9ea08b66cd0c8ed7fba7e490041f59c8f3c5b437dc44c4a9f36d6ae49240505",
+      "size_bytes": 21097,
+      "source_mtime_utc": "2026-07-21T22:33:20.978740+00:00"
+    },
+    {
+      "name": "eval_valley_price_quantile_exec_with_book_dashboard.png",
+      "sha256": "aa3c34db623f5efc8267aabc78be5903961a49450fe0b909d5f31501cb0be746",
+      "size_bytes": 787357,
+      "source_mtime_utc": "2026-07-21T22:33:20.982236+00:00"
+    },
+    {
+      "name": "eval_valley_relative_vwap_exec_basis_sanity.md",
+      "sha256": "1187924fb1550d314f1d1be03745a56084d1b238a007e728ee78dbf0580f6940",
+      "size_bytes": 3888,
+      "source_mtime_utc": "2026-07-21T22:33:20.985574+00:00"
+    },
+    {
+      "name": "eval_valley_relative_vwap_exec_no_book.json",
+      "sha256": "237af1b8ebce42b795c7d37e0c2491cee53420c2dd86637882a93a41cc85d4ab",
+      "size_bytes": 20492,
+      "source_mtime_utc": "2026-07-21T22:33:20.977883+00:00"
+    },
+    {
+      "name": "eval_valley_relative_vwap_exec_no_book.md",
+      "sha256": "fd4be587f4344cb2b0209a9baa427333968cce280f9ba6763a864f90a5e8a37c",
+      "size_bytes": 17746,
+      "source_mtime_utc": "2026-07-21T22:33:20.978795+00:00"
+    },
+    {
+      "name": "eval_valley_relative_vwap_exec_no_book_dashboard.png",
+      "sha256": "d92867037ebc470e3f1133a91cb93ba965e2c29157482593ed5bb08bec163f9a",
+      "size_bytes": 734803,
+      "source_mtime_utc": "2026-07-21T22:33:20.982455+00:00"
+    },
+    {
+      "name": "eval_valley_relative_vwap_exec_with_book.json",
+      "sha256": "32e74de07d6fbdb953b38c8095589806cbda57b98620df32304a5c57d351517c",
+      "size_bytes": 22027,
+      "source_mtime_utc": "2026-07-21T22:33:20.977919+00:00"
+    },
+    {
+      "name": "eval_valley_relative_vwap_exec_with_book.md",
+      "sha256": "6d63e704cc770d9bc9d462da60271abe02fcaa267a0e0bc85e321ec245dcf821",
+      "size_bytes": 18920,
+      "source_mtime_utc": "2026-07-21T22:33:20.978822+00:00"
+    },
+    {
+      "name": "eval_valley_relative_vwap_exec_with_book_dashboard.png",
+      "sha256": "43d63d2db041d653839ac2c82d67962eedcbe80dede7f8e14cdb5d52dda4e25d",
+      "size_bytes": 745381,
+      "source_mtime_utc": "2026-07-21T22:33:20.982663+00:00"
+    },
+    {
+      "name": "eval_valley_ridge_vwap_ratio_exec_basis_sanity.md",
+      "sha256": "1187924fb1550d314f1d1be03745a56084d1b238a007e728ee78dbf0580f6940",
+      "size_bytes": 3888,
+      "source_mtime_utc": "2026-07-21T22:33:20.986839+00:00"
+    },
+    {
+      "name": "eval_valley_ridge_vwap_ratio_exec_no_book.json",
+      "sha256": "d9e6694f0d0a00eb36fad38131e919c0bc77f17ecd6a72798d93aa269e879eda",
+      "size_bytes": 21109,
+      "source_mtime_utc": "2026-07-21T22:33:20.977958+00:00"
+    },
+    {
+      "name": "eval_valley_ridge_vwap_ratio_exec_no_book.md",
+      "sha256": "6aa5456f2a40773920b8eb54bb5915452380cf012ddc03d9acda9908d07a58fe",
+      "size_bytes": 19026,
+      "source_mtime_utc": "2026-07-21T22:33:20.978875+00:00"
+    },
+    {
+      "name": "eval_valley_ridge_vwap_ratio_exec_no_book_dashboard.png",
+      "sha256": "aa106bd3a08a164aaa9b781d97e4f5592e8c9e015cfb104d771df4703d549a20",
+      "size_bytes": 805954,
+      "source_mtime_utc": "2026-07-21T22:33:20.982870+00:00"
+    },
+    {
+      "name": "eval_valley_ridge_vwap_ratio_exec_with_book.json",
+      "sha256": "f5b752d68097dc2d13577349188c3f2b01d89a23344f9cbd10582d6c62d07f1e",
+      "size_bytes": 22682,
+      "source_mtime_utc": "2026-07-21T22:33:20.977999+00:00"
+    },
+    {
+      "name": "eval_valley_ridge_vwap_ratio_exec_with_book.md",
+      "sha256": "59391763e075461d98bcbb5d5432e7b42a5ebec151da24a03d7df32b003e8335",
+      "size_bytes": 20238,
+      "source_mtime_utc": "2026-07-21T22:33:20.978908+00:00"
+    },
+    {
+      "name": "eval_valley_ridge_vwap_ratio_exec_with_book_dashboard.png",
+      "sha256": "e3157782b76ad035a49cd7b9e301641905463c453aebaf98d1e42914b25becdf",
+      "size_bytes": 816590,
+      "source_mtime_utc": "2026-07-21T22:33:20.983125+00:00"
+    },
+    {
+      "name": "eval_volume_peak_count_exec_basis_sanity.md",
+      "sha256": "1187924fb1550d314f1d1be03745a56084d1b238a007e728ee78dbf0580f6940",
+      "size_bytes": 3888,
+      "source_mtime_utc": "2026-07-21T22:33:20.986876+00:00"
+    },
+    {
+      "name": "eval_volume_peak_count_exec_no_book.json",
+      "sha256": "acb4b510ec4f620115e4b5de1f7cbaaa9a076444a372691acb1ba41ac20b8ecd",
+      "size_bytes": 19773,
+      "source_mtime_utc": "2026-07-21T22:33:20.978030+00:00"
+    },
+    {
+      "name": "eval_volume_peak_count_exec_no_book.md",
+      "sha256": "79c1389d26badf0c5e2dfb25fee367eae394ee454e736052961ce241736b48e5",
+      "size_bytes": 16506,
+      "source_mtime_utc": "2026-07-21T22:33:20.978963+00:00"
+    },
+    {
+      "name": "eval_volume_peak_count_exec_no_book_dashboard.png",
+      "sha256": "5d0a6085e376d8ab5f3b82b78d0f4aa5f61c602012079e67841b14d4274de814",
+      "size_bytes": 666669,
+      "source_mtime_utc": "2026-07-21T22:33:20.983360+00:00"
+    },
+    {
+      "name": "eval_volume_peak_count_exec_with_book.json",
+      "sha256": "f4603792251374f575d25c04dc27632e990cfda44c35fceb9c8527d33cb2383a",
+      "size_bytes": 21535,
+      "source_mtime_utc": "2026-07-21T22:33:20.978060+00:00"
+    },
+    {
+      "name": "eval_volume_peak_count_exec_with_book.md",
+      "sha256": "4d09a3b744b0f8559ba54321e4b852dd65abad1ef487a206f8d2ef839f638e78",
+      "size_bytes": 17900,
+      "source_mtime_utc": "2026-07-21T22:33:20.979005+00:00"
+    },
+    {
+      "name": "eval_volume_peak_count_exec_with_book_dashboard.png",
+      "sha256": "a5993d0637a158d21e1746545a91846100ed102c23af91272862276d2f3b5476",
+      "size_bytes": 676724,
+      "source_mtime_utc": "2026-07-21T22:33:20.983557+00:00"
+    }
+  ]
+}
