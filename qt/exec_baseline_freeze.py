@@ -42,6 +42,17 @@ Usage (needs the gitignored ``artifacts/`` tree; in a worktree without one, pass
 
     python -m qt.exec_baseline_freeze            # freeze; refuses to clobber
     python -m qt.exec_baseline_freeze --verify   # re-verify the frozen tree, copy nothing
+
+A FIRST freeze (no manifest to inherit from) must pass ``--source-note``: the
+committed manifest is asserted to carry a non-empty provenance note, so a
+freeze without one is fail-closed at test time rather than at review time::
+
+    python -m qt.exec_baseline_freeze --source-note "<what these bytes are, and how you know>"
+
+Re-freezing an unchanged tree inherits the existing provenance and writes no
+bytes. Deleting the frozen tree and re-freezing from a DIFFERENT live source
+would carry the old note onto new bytes — the 77 hash lines in the manifest
+diff make that loud, but pass ``--source-note`` when the source really changed.
 """
 
 from __future__ import annotations
