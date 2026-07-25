@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from analytics.eval.verdict import VerdictThresholds
+from data.availability_policy import ReturnBasis, View, require_legal_pairing
 
 # Tolerance for spotting the base (multiplier 1.0) cost scenario among floats.
 _BASE_COST = 1.0
@@ -65,6 +66,30 @@ class EvalConfig:
     n_factors_screened : multiple-testing background (how many factors were
         looked at to find this one).
     data_snapshot_id : data/cache version, for reproducibility.
+    view : (contract v1.0) the INFORMATION-SET view the factor values were taken
+        under — ``"decision"`` (14:50) or ``"close"``. Not decoration: a verdict
+        computed on one view is a different statistical claim from the same
+        verdict on the other, and before v1.0 a report could not say which it was.
+    return_basis : (contract v1.0) the forward-return basis the factor was scored
+        on — ``"exec_to_exec"`` (the 14:51 execution anchor) or
+        ``"close_to_close"``. VALIDATED AS A PAIR with ``view``: the two legal
+        pairings are decision<->exec_to_exec and close<->close_to_close, and
+        anything else raises here rather than being a doc convention (design
+        §1.4 mechanism 1, enforced through ``data.availability_policy``).
+    book_view : (contract v1.0) the view the KNOWN-FACTOR BOOK was taken under,
+        or None when no book was supplied. A with-book run has TWO information
+        sets — the subject factor's and the book's — and ``view`` can only
+        describe one of them, so it describes the subject and this describes the
+        book. Design §1.1 records the current book (value_ep / value_bp /
+        volatility_20) as taking close(d) values while exec holding windows open
+        at 14:51(d): a KNOWN live defect, closed at D7. Until then the honest
+        artifact says ``view=decision, book_view=close`` — one field claiming
+        both would be exactly the "report declares a check it did not do" failure
+        this contract exists to prevent, one level up.
+
+        DELIBERATELY NOT pairing-checked against ``return_basis``. The book being
+        on a different view from the subject IS the disclosure; refusing it would
+        not fix the mixture, it would only stop the artifact from saying so.
     success_criteria : the PRE-REGISTERED verdict bar (design §6, v0.6). A frozen
         :class:`~analytics.eval.verdict.VerdictThresholds` declared HERE, before
         ``evaluate`` runs, IS pre-registered by construction: you cannot tune the
@@ -97,6 +122,22 @@ class EvalConfig:
     tuned: bool = False
     n_factors_screened: int | None = None
     data_snapshot_id: str | None = None
+    # -- contract v1.0 identity (see analytics/eval/contract.py) --------------
+    #
+    # THE DEFAULT IS THE LEGACY PAIRING, ON PURPOSE. A default's only job is to be
+    # TRUE for the callers that do not pass the field, and today those are the
+    # eleven close-basis runners: each builds ONE EvalConfig and hands it to BOTH
+    # its close_to_close reports and (through qt.exec_basis_eval) its exec ones.
+    # Defaulting to decision/exec_to_exec would make every close artifact state a
+    # basis it was not scored on — the describe-the-check drift of #76/#78/#82,
+    # introduced by the very field added to prevent it. The exec path sets the
+    # identity EXPLICITLY, exactly as it already derives the spec's exec twin
+    # (``intraday_spec_variant``), and the unified exec-only runner declares it too.
+    # When the close runners retire (D5 C6) this default becomes a one-line change
+    # with no false statement left behind.
+    view: str = View.CLOSE.value
+    return_basis: str = ReturnBasis.CLOSE_TO_CLOSE.value
+    book_view: str | None = None
     success_criteria: VerdictThresholds | None = None
 
     def __post_init__(self) -> None:
@@ -106,6 +147,7 @@ class EvalConfig:
         self._check_costs()
         self._check_capacity()
         self._check_declared_sequences()
+        self._check_view_basis()
         self._check_success_criteria()
 
     # -- validators (enforcement layer #1) --------------------------------
@@ -246,6 +288,32 @@ class EvalConfig:
                 f"EvalConfig.limit_feasibility must be a bool; got "
                 f"{self.limit_feasibility!r}."
             )
+
+    def _check_view_basis(self) -> None:
+        """Contract v1.0: the view x return-basis pairing, enforced at construction.
+
+        Delegated to :func:`data.availability_policy.require_legal_pairing` — the
+        SINGLE source of the legal pairs (D0). Re-stating the rule here would be
+        the describe-the-check drift the project keeps paying for. The normalized
+        enum VALUES are written back so the exported record carries the canonical
+        spelling whatever the caller passed (enum member or string).
+        """
+        resolved_view, resolved_basis = require_legal_pairing(
+            self.view, self.return_basis
+        )
+        object.__setattr__(self, "view", resolved_view.value)
+        object.__setattr__(self, "return_basis", resolved_basis.value)
+        if self.book_view is not None:
+            try:
+                book = View(self.book_view)
+            except ValueError:
+                allowed = ", ".join(repr(v.value) for v in View)
+                raise ValueError(
+                    f"EvalConfig.book_view must be None (no book supplied) or one "
+                    f"of {allowed}; got {self.book_view!r}. A book whose view is "
+                    f"unstated is exactly the mixture this field exists to expose."
+                ) from None
+            object.__setattr__(self, "book_view", book.value)
 
     def _check_success_criteria(self) -> None:
         """The pre-registered bar, if supplied, must be a real VerdictThresholds.

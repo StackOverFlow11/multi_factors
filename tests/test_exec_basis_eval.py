@@ -8,7 +8,15 @@ return builder alone would not catch:
   * the mandatory disclosure (execution parameters, coverage loss by cause,
     measured live-call count) actually reaches the rendered report;
   * adding that disclosure does NOT move a verdict axis — the Tradable axis stays
-    NOT_ASSESSED, because a return basis is not a fill-feasibility measurement.
+    NOT_ASSESSED, because a return basis is not a fill-feasibility measurement;
+  * the two exec artifacts state their OWN information sets (contract v1.0): the
+    no-book report says it had no book, the with-book report names the book's view.
+
+That last one is here rather than beside the ``exec_identity`` unit tests on
+purpose. Unit-testing the helper says nothing about how the caller WIRES it, and
+that gap is real: passing ``book_view=None`` for the with-book run — a book was
+supplied, the report says there was none — passed 28 tests before this file
+asserted it.
 """
 
 from __future__ import annotations
@@ -166,6 +174,44 @@ def test_exec_basis_eval_writes_its_own_reports_and_leaves_the_control_alone(tmp
     assert out.spec.is_intraday is True
     assert out.spec.return_basis == "exec_to_exec"
     assert out.minute_live_calls == 0
+
+
+def test_the_two_exec_artifacts_state_their_own_information_sets(tmp_path):
+    """no_book says "no book"; with_book NAMES the book's view (contract v1.0).
+
+    One shared config would have to pick one of those and be wrong about the other
+    — and being wrong here is the §1.1 live defect (a close-view book scored against
+    an exec holding window) going unmentioned in the artifact that contains it.
+    """
+    cfg, panel, factor, book, spec, eval_cfg, report_dir = _fixture(tmp_path)
+    out = run_exec_basis_evaluation(
+        factor, spec, eval_cfg, book,
+        cfg=cfg, panel=panel, symbols=list(SYMBOLS), logger=LOGGER,
+        report_dir=report_dir, stem="demo",
+    )
+
+    no_book = json.loads(out.no_book_json.read_text(encoding="utf-8"))["eval_config"]
+    with_book = json.loads(out.with_book_json.read_text(encoding="utf-8"))["eval_config"]
+
+    # Both are exec-basis evaluations of a decision-view subject factor ...
+    for block in (no_book, with_book):
+        assert block["view"] == "decision"
+        assert block["return_basis"] == "exec_to_exec"
+    # ... but only ONE of them had a book, and they must not claim otherwise.
+    assert no_book["book_view"] is None
+    assert with_book["book_view"] == "close"
+
+    # The caller's own config is untouched: the identity travels with the basis,
+    # it does not leak back into the close-basis reports the caller also writes.
+    assert (eval_cfg.view, eval_cfg.return_basis) == ("close", "close_to_close")
+    assert eval_cfg.book_view is None
+
+    # And the rendered Markdown says it too, through the author-once phrase.
+    md = out.with_book_md.read_text(encoding="utf-8")
+    assert "book_view=close" in md
+    assert "book_view=none (no book supplied)" in out.no_book_md.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_exec_basis_eval_discloses_parameters_and_coverage_in_every_report(tmp_path):
