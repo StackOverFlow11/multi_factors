@@ -247,6 +247,105 @@ def stream_scale(
     }
 
 
+# --------------------------------------------------------------------------- #
+# Mode 3 (D4b): cell-by-cell reconciliation against the geometry that was replaced
+# --------------------------------------------------------------------------- #
+#: Reconciliation caliber: small enough that the WHOLE-UNIVERSE SINGLE FRAME —
+#: the geometry D4b replaced — still fits, which is the whole point. The
+#: evaluation plane does not fit and never did; that is what mode 1 measured.
+RECONCILE_SYMBOLS = 40
+RECONCILE_START = pd.Timestamp("2023-01-03")
+RECONCILE_END = pd.Timestamp("2023-06-30")
+#: Reference load depth in CALENDAR DAYS before the emit window. It matters: the
+#: pooled factors' saturation expansion decides how deep the STREAMED side loads,
+#: so a reference shallower than saturation would compare two different histories,
+#: and one deeper changes the float-accumulation prefix. 400 days puts every
+#: factor's trailing window at full depth on both sides.
+RECONCILE_REF_DEPTH_DAYS = 400
+
+
+def reconcile_streaming_vs_single_frame(
+    cache_root: str, universe_panel: str, factor_ids: list[str]
+) -> list[dict]:
+    """Streamed values vs the whole-universe single frame, cell for cell.
+
+    The reference is deliberately the REPLACED geometry (every symbol in ONE
+    frame, one cutoff, one whole-factor call), so agreement is a statement about
+    two load geometries rather than two spellings of one loop.
+    """
+    from factors.materialize import MaterializeSources, materialize_range
+    from factors.view_lag import minute_decision_cutoff
+
+    universe = universe_from_frozen_panel(universe_panel)[:RECONCILE_SYMBOLS]
+    provider = CacheMinuteProvider(cache_root)
+    frame = provider.minute_bars(
+        universe,
+        RECONCILE_START - pd.Timedelta(days=RECONCILE_REF_DEPTH_DAYS),
+        RECONCILE_END + pd.Timedelta(days=1),
+    )
+    print(
+        f"universe {len(universe)} symbols | emit {RECONCILE_START.date()}..{RECONCILE_END.date()}\n"
+        f"single-frame reference: {len(frame):,} rows, "
+        f"{float(frame.memory_usage(deep=True).sum()) / GB:.2f} GB, "
+        f"loaded {RECONCILE_REF_DEPTH_DAYS} calendar days deep\n"
+    )
+    cut = minute_decision_cutoff(frame, decision_time="14:50:00")
+
+    rows = []
+    for factor_id in factor_ids:
+        factor = factor_registry.build(factor_id)
+        streamed = materialize_range(
+            factor, view=View.DECISION, symbols=universe,
+            emit_start=RECONCILE_START, emit_end=RECONCILE_END,
+            sources=MaterializeSources(minute=provider),
+        ).sort_index()
+        full = minute_raw_from_bars(factor, cut)
+        d = full.index.get_level_values("date")
+        ref = full[(d >= RECONCILE_START) & (d <= RECONCILE_END)].sort_index()
+
+        entry: dict = {"factor": factor_id, "index_same": bool(streamed.index.equals(ref.index))}
+        if entry["index_same"]:
+            a, b = streamed.to_numpy(), ref.to_numpy()
+            both = ~pd.isna(a) & ~pd.isna(b)
+            entry["nan_set_diff"] = int((pd.isna(a) != pd.isna(b)).sum())
+            entry["compared_cells"] = int(both.sum())
+            entry["max_abs_diff"] = float(abs(a[both] - b[both]).max()) if both.any() else None
+        else:
+            entry.update(nan_set_diff=-1, compared_cells=0, max_abs_diff=None)
+        rows.append(entry)
+    rows.append({"factor": "__live_calls__", "live_calls": provider.live_calls})
+    return rows
+
+
+def run_reconcile(args) -> int:
+    factor_ids = args.factors or sorted(_MINUTE_STREAM_BINDINGS_IDS())
+    rows = reconcile_streaming_vs_single_frame(args.cache_root, args.universe_panel, factor_ids)
+    hdr = f"{'factor':30s} {'idx==':>6s} {'cells':>8s} {'NaN diff':>9s} {'max|abs|':>12s}"
+    print(hdr)
+    print("-" * len(hdr))
+    problems = []
+    for r in rows:
+        if r["factor"] == "__live_calls__":
+            continue
+        if not r["index_same"] or r["nan_set_diff"]:
+            problems.append(r["factor"])
+        shown = "n/a" if r["max_abs_diff"] is None else f"{r['max_abs_diff']:.3e}"
+        print(
+            f"{r['factor']:30s} {str(r['index_same']):>6s} {r['compared_cells']:>8,} "
+            f"{r['nan_set_diff']:>9d} {shown:>12s}"
+        )
+    print(f"\nlive minute calls: {rows[-1]['live_calls']} (cache-only)")
+    print("PROBLEMS:", problems or "none")
+    return 0 if not problems else 1
+
+
+def _MINUTE_STREAM_BINDINGS_IDS() -> list[str]:
+    """Every bars-only minute factor id, derived from the binding table."""
+    from factors.compute.minute.binding import _MINUTE_STREAM_BINDINGS
+
+    return [cls().name for cls in _MINUTE_STREAM_BINDINGS]
+
+
 def _done_factors(out_path: Path) -> set[str]:
     if not out_path.exists():
         return set()
@@ -290,13 +389,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cache-root", default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--universe-panel", default=DEFAULT_UNIVERSE_PANEL)
     parser.add_argument("--sample-symbols", type=int, default=20)
-    parser.add_argument("--mode", choices=("feasibility", "stream-scale"), default="feasibility")
+    parser.add_argument(
+        "--mode", choices=("feasibility", "stream-scale", "reconcile"), default="feasibility"
+    )
     parser.add_argument("--factors", nargs="*", default=[])
     parser.add_argument("--out", default="stream_scale.jsonl")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv)
     if args.mode == "stream-scale":
         return run_stream_scale(args)
+    if args.mode == "reconcile":
+        return run_reconcile(args)
 
     symbols = universe_from_frozen_panel(args.universe_panel)
     symset = set(symbols)
