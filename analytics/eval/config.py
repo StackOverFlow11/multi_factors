@@ -109,8 +109,20 @@ class EvalConfig:
     n_factors_screened: int | None = None
     data_snapshot_id: str | None = None
     # -- contract v1.0 identity (see analytics/eval/contract.py) --------------
-    view: str = View.DECISION.value
-    return_basis: str = ReturnBasis.EXEC_TO_EXEC.value
+    #
+    # THE DEFAULT IS THE LEGACY PAIRING, ON PURPOSE. A default's only job is to be
+    # TRUE for the callers that do not pass the field, and today those are the
+    # eleven close-basis runners: each builds ONE EvalConfig and hands it to BOTH
+    # its close_to_close reports and (through qt.exec_basis_eval) its exec ones.
+    # Defaulting to decision/exec_to_exec would make every close artifact state a
+    # basis it was not scored on — the describe-the-check drift of #76/#78/#82,
+    # introduced by the very field added to prevent it. The exec path sets the
+    # identity EXPLICITLY, exactly as it already derives the spec's exec twin
+    # (``intraday_spec_variant``), and the unified exec-only runner declares it too.
+    # When the close runners retire (D5 C6) this default becomes a one-line change
+    # with no false statement left behind.
+    view: str = View.CLOSE.value
+    return_basis: str = ReturnBasis.CLOSE_TO_CLOSE.value
     success_criteria: VerdictThresholds | None = None
 
     def __post_init__(self) -> None:

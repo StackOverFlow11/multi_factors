@@ -30,7 +30,7 @@ exactly as it is on the close-to-close runs.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pandas as pd
@@ -41,6 +41,7 @@ from analytics.eval import (
     FactorEvalReport,
     StandardFactorEvaluator,
 )
+from data.availability_policy import ReturnBasis, View
 from analytics.eval.figures import render_factor_dashboard
 from analytics.factor import forward_returns as _close_forward_returns
 from data.clean.schema import DATE_LEVEL
@@ -210,6 +211,14 @@ def run_exec_basis_evaluation(
     started = time.monotonic()
     params = ExecBasisParams.from_config(cfg)
     exec_spec = intraday_spec_variant(spec, params)
+    # Contract v1.0: the EvalConfig's identity travels with the basis, exactly as
+    # the spec's does one line above. The caller hands ONE config to its close
+    # reports and to this function, so stating the exec identity HERE is what keeps
+    # both artifacts truthful about which information set they describe. The
+    # pairing is re-validated by EvalConfig's own construction check.
+    eval_cfg = replace(
+        eval_cfg, view=View.DECISION.value, return_basis=ReturnBasis.EXEC_TO_EXEC.value
+    )
     horizon = spec.forward_return_horizon
 
     prices = build_exec_price_panel(

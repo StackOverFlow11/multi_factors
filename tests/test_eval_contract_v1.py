@@ -45,22 +45,40 @@ def _cfg(**overrides) -> EvalConfig:
 # --------------------------------------------------------------------------- #
 # 1. identity fields
 # --------------------------------------------------------------------------- #
-def test_default_identity_is_the_decision_exec_pairing():
-    """The contract's DEFAULT is the operating pairing, not the legacy one."""
-    cfg = _cfg()
-    assert cfg.view == View.DECISION.value
-    assert cfg.return_basis == ReturnBasis.EXEC_TO_EXEC.value
+def test_the_default_describes_the_callers_that_do_not_pass_it():
+    """The default is the LEGACY pairing, and that is the point.
 
-
-def test_legacy_close_pairing_is_still_constructible():
-    """close<->close_to_close stays legal: the legacy backtest path still uses it.
-
-    Retiring close_to_close is the RUNNER's convergence (exec-only), not a ban at
-    the contract level — banning it here would break the legacy event model's
-    reports for no correctness gain.
+    A default's only job is to be TRUE for the callers that omit the field. Today
+    those are the eleven close-basis runners, each of which builds ONE EvalConfig
+    and hands it to both its close_to_close reports AND (via qt.exec_basis_eval) its
+    exec ones. Defaulting to decision/exec_to_exec would have made every close
+    artifact state a basis it was not scored on — the exact describe-the-check drift
+    the field was added to prevent, introduced by the field itself. The exec path
+    sets the identity explicitly instead (see the test below).
     """
-    cfg = _cfg(view="close", return_basis="close_to_close")
-    assert (cfg.view, cfg.return_basis) == ("close", "close_to_close")
+    cfg = _cfg()
+    assert cfg.view == View.CLOSE.value
+    assert cfg.return_basis == ReturnBasis.CLOSE_TO_CLOSE.value
+
+
+def test_the_exec_pairing_is_constructible_and_is_what_the_exec_path_declares():
+    cfg = _cfg(view="decision", return_basis="exec_to_exec")
+    assert (cfg.view, cfg.return_basis) == ("decision", "exec_to_exec")
+
+
+def test_the_exec_basis_module_restates_the_identity_it_scores_on():
+    """qt.exec_basis_eval must not inherit the caller's close-basis identity.
+
+    Structural rather than descriptive: the module derives the exec twin of the
+    SPEC one line earlier, and the config's identity has to travel the same way or
+    the exec artifact would carry the close label.
+    """
+    import inspect
+
+    from qt import exec_basis_eval
+
+    source = inspect.getsource(exec_basis_eval.run_exec_basis_evaluation)
+    assert "replace(" in source and "EXEC_TO_EXEC" in source and "DECISION" in source
 
 
 @pytest.mark.parametrize(
@@ -87,9 +105,16 @@ def test_enum_members_normalize_to_canonical_strings():
 
 def test_identity_phrase_is_authored_once():
     """The provenance row COMPOSES the phrase rather than spelling it again."""
-    cfg = _cfg()
-    phrase = basis_identity_phrase(cfg.view, cfg.return_basis)
-    assert phrase == "view=decision x return_basis=exec_to_exec"
+    cfg = _cfg(view="decision", return_basis="exec_to_exec")
+    assert (
+        basis_identity_phrase(cfg.view, cfg.return_basis)
+        == "view=decision x return_basis=exec_to_exec"
+    )
+    legacy = _cfg()
+    assert (
+        basis_identity_phrase(legacy.view, legacy.return_basis)
+        == "view=close x return_basis=close_to_close"
+    )
 
 
 # --------------------------------------------------------------------------- #
