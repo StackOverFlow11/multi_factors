@@ -64,6 +64,7 @@ from factors.compute.minute.binding import (
     combine_minute_stats,
     is_minute_bound,
     is_valid_day_pooled,
+    minute_diagnostics_from_bars,
     minute_raw_from_bars,
     minute_stats_from_bars,
     pooled_baseline_days,
@@ -250,6 +251,7 @@ def materialize_range(
     sources: MaterializeSources,
     decision_cutoff: str = DEFAULT_DECISION_TIME,
     warmup: int | None = None,
+    diagnostics: list | None = None,
 ) -> pd.Series:
     """Compute ``factor``'s RAW values for ``view`` over ``[emit_start, emit_end]``.
 
@@ -257,6 +259,13 @@ def materialize_range(
     applies the view lag, trims to ``warmup`` (= ``spec.lookback_depth``) trailing
     trading days before ``emit_start``, computes, and returns the emit-window
     rows. Single-date and batch calls give bit-identical values (design §3.5 P8).
+
+    ``diagnostics``: OPTIONAL list the per-symbol day-level gate-attrition frames
+    are appended to (emit-window rows only), for the factors that publish a
+    scarcity disclosure. Default ``None`` = the D4b-verified value path, byte for
+    byte: nothing extra is computed and nothing is collected. Supplying a sink
+    NEVER changes a returned value — it re-runs the per-symbol math on bars already
+    in memory (no extra I/O) purely to observe the day-level counts.
     """
     resolved_view = View(view)
     symbols = _requested_universe(symbols)  # one engine-level normalization
@@ -270,9 +279,15 @@ def materialize_range(
     if is_minute_factor(factor):
         raw = _materialize_minute(
             factor, resolved_view, symbols, load_start, emit_start, emit_end, w,
-            sources, decision_cutoff,
+            sources, decision_cutoff, diagnostics,
         )
     else:
+        if diagnostics is not None:
+            raise ValueError(
+                f"{factor.name} is a daily factor; per-day minute diagnostics are "
+                f"only published by minute factors. Refusing to return an EMPTY "
+                f"sink, which a caller would read as 'no attrition'."
+            )
         raw = _materialize_daily(
             factor, resolved_view, symbols, load_start, emit_start, emit_end, w, sources,
         )
@@ -300,7 +315,8 @@ def _materialize_daily(
 
 
 def _materialize_minute(
-    factor, view, symbols, load_start, emit_start, emit_end, warmup, sources, decision_cutoff,
+    factor, view, symbols, load_start, emit_start, emit_end, warmup, sources,
+    decision_cutoff, diagnostics=None,
 ) -> pd.Series:
     """STREAMING minute materialization (D4b): one symbol's bars at a time.
 
@@ -347,12 +363,12 @@ def _materialize_minute(
         if pooled:
             stats = _pooled_symbol_stats(
                 factor, view, sym, emit_start, emit_end, warmup, sources,
-                decision_cutoff, **pooled_kw,
+                decision_cutoff, diagnostics=diagnostics, **pooled_kw,
             )
         else:
             stats = _bounded_symbol_stats(
                 factor, view, sym, load_start, emit_start, emit_end, warmup, sources,
-                decision_cutoff,
+                decision_cutoff, diagnostics=diagnostics,
             )
         if stats is None or stats.empty:
             continue
@@ -385,8 +401,30 @@ def _symbol_bars(provider, symbol: str, start, end) -> pd.DataFrame:
     return bars if bool(mine.all()) else bars[mine]
 
 
+def _collect_diagnostics(factor, work, emit_start, emit_end, diagnostics) -> None:
+    """Append ``factor``'s emit-window per-day diagnostics for ONE symbol, if asked.
+
+    ``work`` is the SAME cutoff-filtered, trimmed frame the value path used, so the
+    counts describe the days the values were computed from — not a differently
+    loaded window. Restricting to the emit window matches the disclosure's meaning
+    ("the days this run scored"); the warm-up days ahead of it were loaded to make
+    those days computable and were never part of the reported denominator.
+    """
+    if diagnostics is None:
+        return
+    frame = minute_diagnostics_from_bars(factor, work)
+    if frame.empty:
+        return
+    index = pd.DatetimeIndex(frame.index)
+    within = (index >= emit_start) & (index <= emit_end)
+    kept = frame[within]
+    if not kept.empty:
+        diagnostics.append(kept)
+
+
 def _bounded_symbol_stats(
-    factor, view, symbol, load_start, emit_start, emit_end, warmup, sources, decision_cutoff,
+    factor, view, symbol, load_start, emit_start, emit_end, warmup, sources,
+    decision_cutoff, *, diagnostics=None,
 ) -> pd.DataFrame | None:
     """One BOUNDED minute factor's per-symbol intermediate over the fixed window.
 
@@ -403,12 +441,13 @@ def _bounded_symbol_stats(
     if view is View.DECISION:
         bars = minute_decision_cutoff(bars, decision_time=decision_cutoff)
     bars = _trim_minute(bars, emit_start, warmup)
+    _collect_diagnostics(factor, bars, emit_start, emit_end, diagnostics)
     return minute_stats_from_bars(factor, bars)
 
 
 def _pooled_symbol_stats(
     factor, view, symbol, emit_start, emit_end, warmup, sources, decision_cutoff,
-    *, floor, baseline_days, lookback_days,
+    *, floor, baseline_days, lookback_days, diagnostics=None,
 ) -> pd.DataFrame | None:
     """Saturation-expanding load for ONE symbol of a valid-day-pooled factor.
 
@@ -482,6 +521,10 @@ def _pooled_symbol_stats(
             baseline_days=baseline_days, lookback_days=lookback_days,
             symbols=[symbol],
         ):
+            # Only the TERMINAL load is observed: the intermediate expansion steps
+            # are the search, not the computation, and reporting their day counts
+            # would inflate the disclosure with days that were re-derived deeper.
+            _collect_diagnostics(factor, work, emit_start, emit_end, diagnostics)
             return stats
         load_start = load_start - chunk
     # Never silently return an UNSATURATED result (red line #9: no silent
