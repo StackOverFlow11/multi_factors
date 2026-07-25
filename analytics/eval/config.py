@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from analytics.eval.verdict import VerdictThresholds
+from data.availability_policy import ReturnBasis, View, require_legal_pairing
 
 # Tolerance for spotting the base (multiplier 1.0) cost scenario among floats.
 _BASE_COST = 1.0
@@ -65,6 +66,16 @@ class EvalConfig:
     n_factors_screened : multiple-testing background (how many factors were
         looked at to find this one).
     data_snapshot_id : data/cache version, for reproducibility.
+    view : (contract v1.0) the INFORMATION-SET view the factor values were taken
+        under — ``"decision"`` (14:50) or ``"close"``. Not decoration: a verdict
+        computed on one view is a different statistical claim from the same
+        verdict on the other, and before v1.0 a report could not say which it was.
+    return_basis : (contract v1.0) the forward-return basis the factor was scored
+        on — ``"exec_to_exec"`` (the 14:51 execution anchor) or
+        ``"close_to_close"``. VALIDATED AS A PAIR with ``view``: the two legal
+        pairings are decision<->exec_to_exec and close<->close_to_close, and
+        anything else raises here rather than being a doc convention (design
+        §1.4 mechanism 1, enforced through ``data.availability_policy``).
     success_criteria : the PRE-REGISTERED verdict bar (design §6, v0.6). A frozen
         :class:`~analytics.eval.verdict.VerdictThresholds` declared HERE, before
         ``evaluate`` runs, IS pre-registered by construction: you cannot tune the
@@ -97,6 +108,9 @@ class EvalConfig:
     tuned: bool = False
     n_factors_screened: int | None = None
     data_snapshot_id: str | None = None
+    # -- contract v1.0 identity (see analytics/eval/contract.py) --------------
+    view: str = View.DECISION.value
+    return_basis: str = ReturnBasis.EXEC_TO_EXEC.value
     success_criteria: VerdictThresholds | None = None
 
     def __post_init__(self) -> None:
@@ -106,6 +120,7 @@ class EvalConfig:
         self._check_costs()
         self._check_capacity()
         self._check_declared_sequences()
+        self._check_view_basis()
         self._check_success_criteria()
 
     # -- validators (enforcement layer #1) --------------------------------
@@ -246,6 +261,21 @@ class EvalConfig:
                 f"EvalConfig.limit_feasibility must be a bool; got "
                 f"{self.limit_feasibility!r}."
             )
+
+    def _check_view_basis(self) -> None:
+        """Contract v1.0: the view x return-basis pairing, enforced at construction.
+
+        Delegated to :func:`data.availability_policy.require_legal_pairing` — the
+        SINGLE source of the legal pairs (D0). Re-stating the rule here would be
+        the describe-the-check drift the project keeps paying for. The normalized
+        enum VALUES are written back so the exported record carries the canonical
+        spelling whatever the caller passed (enum member or string).
+        """
+        resolved_view, resolved_basis = require_legal_pairing(
+            self.view, self.return_basis
+        )
+        object.__setattr__(self, "view", resolved_view.value)
+        object.__setattr__(self, "return_basis", resolved_basis.value)
 
     def _check_success_criteria(self) -> None:
         """The pre-registered bar, if supplied, must be a real VerdictThresholds.

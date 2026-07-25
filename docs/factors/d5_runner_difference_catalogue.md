@@ -265,3 +265,25 @@ import 的 runner loader，即便统一 runner 已上线）、**要么显式记�
 > 新字段自动带进 JSON，而这四个字段是 PR #86（契约 v1.0）与 PR #91（v1.1 `lookback_depth`）
 > 加的。`requires` 经 `clean_value` 的 `str()` 兜底渲染成 **repr 字符串列表**。
 > **属预期漂移，非回归**——但若不预先登记，会在对账时被当成 D5 引入的差异去追。
+
+### 七之二、C3（评估契约 v1.0）引入的 artifact 漂移 —— 同样预先登记
+
+C3 升级 `analytics/eval` 契约至 v1.0（版本陈述见 `analytics/eval/contract.py` 的模块
+docstring，按 #74 先例）。它改变 artifact 的**三处且仅三处**，全部为**新增**，零删除、
+零数值变化：
+
+| # | 位置 | 变化 | 成因 |
+|---|---|---|---|
+| 1 | JSON `eval_config` 块 | **+2 键** `view` / `return_basis` | `report_to_dict` 的 `sanitize_payload(vars(report.cfg))` 自动带上 `EvalConfig` 的新字段（与 §七 的 `spec` 16→20 完全同一机制） |
+| 2 | JSON 顶层 | **+1 键** `eval_contract_version` | 显式写入：一个 verdict 只有对着产生它的契约版本才可解释（#74 的教训） |
+| 3 | Markdown `## 0. Header & Provenance` | **+4 行** `evaluation contract` / `requires (endpoint inputs)` / `adjustment / overnight boundary` / `lookback depth ...` | R24 的身份字段 + D1 契约 v1.0/v1.1 的三个声明维，从 `vars(spec)` 的 repr 转述升级为具名行 |
+
+**没有变的**（`tests/test_eval_contract_v1.py` 逐值钉住）：`VerdictThresholds` 的**每一个**
+默认门（`min_abs_icir=0.30` / `min_incremental_abs_icir=0.15` /
+`min_monotonicity_spearman=0.0` / 三段样本门），以及三轴判决 / 非对称门 /
+unknown-never-convicts / N_eff CI / exploratory 封顶 Watch 的全部规则。设计 §十 R24 明令
+**禁止**在被评判的 run 上调门；门槛标定要单独预注册 run。
+
+⚠️ 因此 C5 对账在**逐字节**层面对 22 份 md/json 一定不成立，能成立的是 **IC / ICIR /
+分位价差 / verdict 的值级对账**加上「JSON 差异恰为上表三项 + §七 的 spec 四键」这个
+**结构性**断言。把「逐字节相同」当作 C5 的通过条件会让人在这里误判为回归。

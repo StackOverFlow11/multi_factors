@@ -19,6 +19,11 @@ vectorized eval-IR it reduces lives in ``ir.py`` (design §8).
 """
 
 from analytics.eval.config import EvalConfig
+from analytics.eval.contract import (
+    EVAL_CONTRACT_VERSION,
+    IDENTITY_FIELDS,
+    basis_identity_phrase,
+)
 from analytics.eval.evaluator import EvalIR, FactorEvaluator
 from analytics.eval.ir import EvalContext, StandardEvalIR, build_eval_ir
 from analytics.eval.report import (
@@ -27,6 +32,11 @@ from analytics.eval.report import (
     extract_verdict_inputs,
 )
 from analytics.eval.standard import StandardFactorEvaluator
+from analytics.eval.summary import (
+    REQUIRED_SUMMARY_COLUMNS,
+    render_verdict_summary,
+    require_basis_columns,
+)
 from analytics.eval.sections import (
     MANDATORY_SECTIONS,
     VERDICT_KEYS,
@@ -56,6 +66,12 @@ from analytics.eval.verdict import (
 __all__ = [
     "ADOPT",
     "AXIS_FAIL",
+    "EVAL_CONTRACT_VERSION",
+    "IDENTITY_FIELDS",
+    "REQUIRED_SUMMARY_COLUMNS",
+    "basis_identity_phrase",
+    "render_verdict_summary",
+    "require_basis_columns",
     "AXIS_INSUFFICIENT_DATA",
     "AXIS_NAMES",
     "AXIS_NOT_ASSESSED",

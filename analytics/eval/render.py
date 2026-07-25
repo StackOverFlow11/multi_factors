@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from analytics.eval.contract import EVAL_CONTRACT_VERSION, basis_identity_phrase
 from analytics.eval.sections import MANDATORY_SECTIONS, Skipped
 from data.quality.report import clean_value, sanitize_text
 
@@ -150,6 +151,10 @@ def report_to_dict(report: FactorEvalReport) -> dict:
         sections.append(dict(sorted(entry.items())))
     return {
         "criteria_source": report.criteria_source,
+        # Contract v1.0 (analytics/eval/contract.py): stated in the machine-readable
+        # record so a stored verdict can be matched to the contract that produced it
+        # — the #74 lesson that a verdict is only interpretable against its contract.
+        "eval_contract_version": EVAL_CONTRACT_VERSION,
         "eval_config": sanitize_payload(vars(report.cfg)),
         "schema_version": report.SCHEMA_VERSION,
         "sections": sections,
@@ -219,6 +224,21 @@ def render_report(report: FactorEvalReport, mandatory: tuple[str, ...]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _requires_row(spec) -> str:
+    """``spec.requires`` as ``source.field`` pairs, sorted, or an explicit marker.
+
+    The JSON's ``vars(spec)`` dump renders these through ``clean_value``'s ``str()``
+    fallback, i.e. as dataclass REPRs — readable by accident, not by design. The
+    provenance box states them as data (contract v1.0), and an EMPTY declaration is
+    marked rather than rendered as a blank row: "this factor declares no endpoint
+    input" is a fact a reader must not have to infer from whitespace.
+    """
+    fields = tuple(spec.requires or ())
+    if not fields:
+        return "(none declared)"
+    return ", ".join(sorted(f"{f.source}.{f.field}" for f in fields))
+
+
 def _provenance_rows(report: FactorEvalReport) -> list[tuple[str, str]]:
     spec, cfg = report.spec, report.cfg
     rows: list[tuple[str, object]] = [
@@ -227,6 +247,17 @@ def _provenance_rows(report: FactorEvalReport) -> list[tuple[str, str]]:
         ("family", spec.family),
         ("hypothesis (expected IC sign, fixed pre-run)", f"{spec.expected_ic_sign:+d}"),
         ("horizon / return basis", f"h={spec.forward_return_horizon} / {spec.return_basis}"),
+        # -- contract v1.0 identity + factor declarations (D1 contract v1.0/v1.1) --
+        (
+            "evaluation contract",
+            f"v{EVAL_CONTRACT_VERSION}, {basis_identity_phrase(cfg.view, cfg.return_basis)}",
+        ),
+        ("requires (endpoint inputs)", _requires_row(spec)),
+        (
+            "adjustment / overnight boundary",
+            f"{spec.adjustment} / {spec.overnight_boundary}",
+        ),
+        ("lookback depth (trailing trading days)", spec.lookback_depth),
         ("input fields", ", ".join(spec.input_fields)),
         ("price adjust / warm-up bars", f"{spec.price_adjust} / {spec.min_history_bars}"),
         ("universe", f"{cfg.universe} (PIT={cfg.universe_is_pit})"),
