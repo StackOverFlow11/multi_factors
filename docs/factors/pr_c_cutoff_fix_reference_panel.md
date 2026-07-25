@@ -74,17 +74,39 @@ cd <repo root>            # 缓存根 artifacts/cache/tushare/v1 就位
   checkout 重跑」；本参照面板**必须**在含有截断修正的树上跑（这正是它要记录的东西）。
   它的 `producing_git_sha` 记在自己的 manifest header 里。
 
-## 五、实测结果（本次 run 填入）
+## 五、实测结果（bulk artifact gitignored，故权威数字记在这里）
 
-见 `artifacts/refactor_baseline/pr_c_cutoff_fix/manifest.md` / `manifest.json`。要点：
+机器可读版在 `artifacts/refactor_baseline/pr_c_cutoff_fix/manifest.{json,md}`。
 
-- `stk_mins_live_calls = 0`（cache-only，与 D1 冻结同约束）；
-- 写盘**前**先过 `_process_factors` + 与新 eval artifact 的 `data_coverage` 对账
-  （`panel_rows` / `evaluation_periods` / `symbols_evaluated` /
-  `universe_symbols_declared` / `dropped_symbols_count` / `factor_nan_rate`），
-  对不上就 raise、不落盘；
-- 确定性双跑（`jump_amount_corr_20` 是 `DETERMINISM_FACTORS` 成员）跨进程重建一次，
-  canonical hash 必须相等。
+| 项 | 值 |
+|---|---|
+| producing_git_sha | `199a152c93f8f94248227d201d06d635705ae6d9`（含截断修正的本分支 commit） |
+| selected_factors | `jump_amount_corr_20` |
+| universe / 窗口 | `index:000905.SH` / 2021-07-01..2026-06-30（996 成分、1210 交易日、面板 1,158,912 行） |
+| `stk_mins_live_calls` | **0**（cache-only，与 D1 冻结同约束） |
+| determinism_double_run | `jump_amount_corr_20:ok` |
+| artifact_reconciliation | 1/1（对新 eval artifact 的 `data_coverage`） |
+| elapsed | 729.8 s |
+
+| factor_id | rows | n_symbols | n_nan | mean | std | canonical_sha256 |
+|---|---|---|---|---|---|---|
+| jump_amount_corr_20 | 1159263 | 995 | **891** | **0.5929255105118916** | **0.1575466344089912** | `fafda48514d6e99055bd070a420250e388655fe11c519a9905961e71cffb2707` |
+
+对照 D1 原基线同一因子（**未截断**）：`n_nan` 880 / mean 0.5912439770493371 /
+std 0.15727054230823656 / canonical `b6359f12…`。行数、日期范围、symbol 数完全相同 ——
+变的是值本身与 891−880 = **11 个新增 NaU**（截断后某些日的 jump-pair 数掉到 `min_pairs`
+以下，honest missing）。
+
+**免费拿到的确定性证据**：本参照面板被冻结过**两次**——一次在未提交的工作树上、一次在
+提交后的 `199a152` 上，两次跑在不同进程、不同时刻，`canonical_sha256` 与 `file_sha256`
+**逐字节相同**。第一次的 manifest 因此被第二次覆盖（它的 `producing_git_sha` 指向
+`d806e70`，即**不含**修正的分支基点 —— 那是一句会误导人的 provenance，所以重跑而不是
+留着解释）。
+
+写盘**前**先过 `_process_factors` + 与新 eval artifact 的 `data_coverage` 对账
+（`panel_rows` / `evaluation_periods` / `symbols_evaluated` /
+`universe_symbols_declared` / `dropped_symbols_count` / `factor_nan_rate`），
+对不上就 raise、不落盘。
 
 ## 六、重述后的评估结果（CSI500 2021-07-01..2026-06-30，cache-only，`stk_mins_live_calls=0`）
 
