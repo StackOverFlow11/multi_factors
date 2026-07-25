@@ -28,6 +28,10 @@ mutation was first asserted to actually change its target.
 
 from __future__ import annotations
 
+import importlib
+import inspect
+import pathlib
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -35,7 +39,10 @@ import pytest
 from data.availability_policy import View
 from data.clean.intraday_schema import normalize_intraday_bars
 from factors import registry as factor_registry
+from factors.base import Factor
+from factors.compute.minute import binding as binding_module
 from factors.compute.minute.binding import (
+    _DEFERRED,
     _MINUTE_BINDINGS,
     _MINUTE_STREAM_BINDINGS,
     CROSS_SECTIONAL_MINUTE_FACTORS,
@@ -246,6 +253,54 @@ def test_stream_bindings_cover_exactly_the_bound_minute_factors():
     assert CROSS_SECTIONAL_MINUTE_FACTORS <= set(_MINUTE_STREAM_BINDINGS)
     assert is_cross_sectional_minute(IntradayAmpCutFactor())
     assert not is_cross_sectional_minute(factor_registry.build("volume_peak_count_20"))
+
+
+def test_every_minute_factor_class_is_classified_by_a_binding_table():
+    """A minute factor missing from BOTH tables must fail here, not go untested.
+
+    Deriving the parametrize lists from the binding tables (above) fixed one
+    direction only: a factor ADDED to a table is automatically reconciled. The
+    other direction stayed open — a factor that is in NEITHER table simply
+    disappears from every parametrized reconciliation, and the suite goes green
+    with fewer tests. Review measured exactly that: dropping one factor from
+    both tables left this file at 53 passed and the full suite at 2169 passed,
+    with nothing red.
+
+    So the source of truth here is NOT a table: it is the set of ``Factor``
+    subclasses DEFINED under ``factors/compute/minute`` (one factor per file,
+    §3.2). Adding a factor file without classifying it fails this assertion.
+    Values are never silently wrong either way — an unbound factor raises via
+    ``_raise_unbound`` — but the coverage loss is silent, which is what this
+    closes (§六.8: nothing may depend on a person remembering).
+    """
+    package = pathlib.Path(binding_module.__file__).parent
+    defined: dict[type, str] = {}
+    for path in sorted(package.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        module = importlib.import_module(f"factors.compute.minute.{path.stem}")
+        for obj in vars(module).values():
+            if (
+                inspect.isclass(obj)
+                and issubclass(obj, Factor)
+                and obj is not Factor
+                and obj.__module__ == module.__name__
+            ):
+                defined[obj] = path.name
+
+    classified = set(_MINUTE_STREAM_BINDINGS) | set(_DEFERRED)
+    assert defined, "found no minute factor classes — the walk itself is broken"
+    unclassified = {cls.__name__: defined[cls] for cls in defined if cls not in classified}
+    assert not unclassified, (
+        f"minute factor(s) in neither _MINUTE_STREAM_BINDINGS nor _DEFERRED: "
+        f"{unclassified} — they would vanish from every parametrized "
+        f"reconciliation without a single test going red"
+    )
+    stale = {cls.__name__ for cls in classified if cls not in defined}
+    assert not stale, (
+        f"binding table(s) classify {stale}, which no longer live under "
+        f"factors/compute/minute — the tables outlived the code"
+    )
 
 
 def test_deferred_factor_still_raises_readably_through_the_split_stages():
