@@ -58,6 +58,7 @@ import logging
 import os
 import subprocess
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -435,6 +436,45 @@ def minute_recipes() -> list[MinuteRecipe]:
     return recipes
 
 
+def freezable_factor_ids() -> frozenset[str]:
+    """Every factor id this freeze can produce (3 book + 11 minute).
+
+    Derived from the recipes and the runners' own book builder, so it cannot
+    drift from what the freeze actually writes.
+    """
+    from qt.eval_jump_amount_corr import _build_book_factors
+
+    return frozenset(
+        {f.name for f in _build_book_factors()}
+        | {r.factor_id for r in minute_recipes()}
+    )
+
+
+def resolve_selection(only: Sequence[str] | None) -> tuple[str, ...] | None:
+    """Validate a ``--only`` selection against the ids the freeze can produce.
+
+    ``None`` (freeze everything) passes straight through — the default path is
+    untouched. A named id that this freeze does not produce is a readable error
+    rather than a silently empty output root: "froze 0 panels" reported as
+    success is how a correctness rerun quietly produces nothing.
+    """
+    if only is None:
+        return None
+    selected = tuple(only)
+    if not selected:
+        raise ValueError(
+            "--only was given an empty selection; omit it to freeze all factors."
+        )
+    known = freezable_factor_ids()
+    unknown = [fid for fid in selected if fid not in known]
+    if unknown:
+        raise ValueError(
+            f"--only names factor id(s) this freeze does not produce: {unknown}; "
+            f"known ids are {sorted(known)}."
+        )
+    return selected
+
+
 # --------------------------------------------------------------------------- #
 # Artifact reconciliation (against the shipped eval JSONs)
 # --------------------------------------------------------------------------- #
@@ -533,8 +573,17 @@ def run_panel_freeze(
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
     *,
     resume: bool = False,
+    only: Sequence[str] | None = None,
 ) -> FreezeResult:
     """Freeze all 14 RAW factor panels + verify determinism + reconcile artifacts.
+
+    ``only`` restricts the freeze to the named factor ids (default ``None`` =
+    all 14, byte-identical to before). It exists so a SINGLE factor whose
+    definition was corrected can be re-frozen into its OWN output root as a
+    reference panel, without a second freeze implementation and without
+    re-reading the 279M-row minute cache for the thirteen that did not change.
+    The shared data plane is built from the FULL book either way, so the daily
+    panel a filtered run computes on is identical to the full run's.
 
     ``resume=True`` completes an interrupted freeze: a minute factor whose panel
     file already exists is NOT rebuilt from the minute cache — its RAW series is
@@ -561,6 +610,9 @@ def run_panel_freeze(
     )
 
     started = time.monotonic()
+    # Validate the selection BEFORE the expensive data plane: a typo must cost a
+    # readable error, not an hour of cache reads followed by an empty freeze.
+    selected = resolve_selection(only)
     cfg = load_config(config_path)
     _check_preconditions(cfg)  # tushare + cache-only + PIT index + neutralize, as the runners
     # Freeze-specific PanelStore name: identical content, never clobbers an
@@ -592,11 +644,19 @@ def run_panel_freeze(
     canonical_by_id: dict[str, str] = {}
     live_calls_total = 0
 
+    def _keep(factor_id: str) -> bool:
+        return selected is None or factor_id in selected
+
     # -- book factors (raw, pre-processing) --------------------------------- #
-    book_raw = pd.concat(
-        [factor.compute(panel).rename(factor.name) for factor in book_factors], axis=1
+    kept_book = [factor for factor in book_factors if _keep(factor.name)]
+    book_raw = (
+        pd.concat(
+            [factor.compute(panel).rename(factor.name) for factor in kept_book], axis=1
+        )
+        if kept_book
+        else pd.DataFrame()
     )
-    for factor in book_factors:
+    for factor in kept_book:
         raw = book_raw[factor.name].rename(factor.name)
         canonical = canonical_content_hash(raw)
         target = panels_dir / f"{factor.name}.parquet"
@@ -607,7 +667,8 @@ def run_panel_freeze(
 
     # -- minute factors (raw, the runners' own loader chains) ---------------- #
     resumed: list[str] = []
-    for recipe in minute_recipes():
+    kept_recipes = [r for r in minute_recipes() if _keep(r.factor_id)]
+    for recipe in kept_recipes:
         target = panels_dir / f"{recipe.factor_id}.parquet"
         if resume and target.exists():
             raw = read_frozen_panel(target, recipe.factor_id)
@@ -650,7 +711,8 @@ def run_panel_freeze(
 
     # -- determinism double-run (2 minute + 1 book) -------------------------- #
     determinism: dict[str, dict] = {}
-    for factor_id in DETERMINISM_FACTORS:
+    determinism_subjects = tuple(fid for fid in DETERMINISM_FACTORS if _keep(fid))
+    for factor_id in determinism_subjects:
         rebuilt = _rebuild_for_determinism(
             factor_id, cfg, symbols, panel, panel_dates, logger
         )
@@ -675,17 +737,19 @@ def run_panel_freeze(
         "universe_symbols": int(len(symbols)),
         "stk_mins_live_calls": int(live_calls_total),
         "resumed_factors": ",".join(resumed) if resumed else "none",
+        "selected_factors": "all" if selected is None else ",".join(selected),
         "elapsed_seconds": round(time.monotonic() - started, 1),
         "generated_utc": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M:%S"),
         "canonical_hash_version": CANONICAL_HASH_VERSION,
         "determinism_double_run": "; ".join(
             f"{fid}:{'ok' if determinism[fid]['ok'] else 'FAIL'}"
-            for fid in DETERMINISM_FACTORS
-        ),
+            for fid in determinism_subjects
+        )
+        or "none (no determinism subject selected)",
         "artifact_reconciliation": (
-            f"{len(reconciliations)}/11 minute factors reconciled against "
-            "eval_*_no_book.json data_coverage (book factors carry no coverage "
-            "fields in the eval artifacts — disclosed, not skipped silently)"
+            f"{len(reconciliations)}/{len(kept_recipes)} minute factors reconciled "
+            "against eval_*_no_book.json data_coverage (book factors carry no "
+            "coverage fields in the eval artifacts — disclosed, not skipped silently)"
         ),
     }
 
@@ -757,8 +821,20 @@ def main(argv: list[str] | None = None) -> int:
             "reconciliation) instead of being rebuilt from the minute cache"
         ),
     )
+    parser.add_argument(
+        "--only",
+        default=None,
+        help=(
+            "comma-separated factor ids to freeze (default: all 14). Used to "
+            "re-freeze a SINGLE corrected factor into its own --output-root; an "
+            "unknown id is a readable error, never a silently empty freeze"
+        ),
+    )
     args = parser.parse_args(argv)
-    result = run_panel_freeze(args.config, args.output_root, resume=args.resume)
+    only = None if args.only is None else tuple(x for x in args.only.split(",") if x)
+    result = run_panel_freeze(
+        args.config, args.output_root, resume=args.resume, only=only
+    )
     print(f"panels frozen: {len(result.rows)} -> {result.output_root / 'panels'}")
     print(f"manifest: {result.manifest_json}")
     print(f"stk_mins_live_calls: {result.header['stk_mins_live_calls']}")

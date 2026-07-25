@@ -93,6 +93,13 @@ hash（哈希与首段实时监控记录逐一一致），3 个双跑对象另�
 
 （mean/std 为 float64 全精度 `Series.mean()` / `std(ddof=1)`，NaN 跳过；canonical hash 为权威。）
 
+> ⚠️ **`jump_amount_corr_20` 一行的取值口径此后被判定为缺陷**（该因子缺 14:50 日内截断，
+> 在 14:51 VWAP exec-to-exec 基准下构成前视）。本表**一个字节未改**——它是已发布内容的
+> 忠实记录，D2 逐位对账的历史参照仍然是它。**D5 面板腿对该因子请改用**截断后的参照面板
+> `artifacts/refactor_baseline/pr_c_cutoff_fix/`，provenance 与「为什么两份并存」见
+> [`pr_c_cutoff_fix_reference_panel.md`](pr_c_cutoff_fix_reference_panel.md)。
+> 其余 13 行不受影响。
+
 | factor_id | kind | rows | date_min | date_max | n_symbols | n_nan | mean | std | canonical_sha256 | file_sha256 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | value_ep | book | 1158912 | 2021-07-01 | 2026-06-30 | 996 | 141362 | 0.04807913635037822 | 0.050405247296850246 | 1404a68fc88778e78d47da1ed6375c39abec36244a29961c3316a74f0c042e76 | 3b3a8970fcfe51d9b221da79a8f001a03d622d37592fdd76d19275a5159164d4 |
