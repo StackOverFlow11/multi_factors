@@ -485,10 +485,70 @@ def test_zero_output_symbol_veto_mutation(monkeypatch):
         sa, sb = _store_series(a, fid), _store_series(b, fid)
         syms_a = set(map(str, sa.index.get_level_values("symbol"))) if sa is not None else set()
         syms_b = set(map(str, sb.index.get_level_values("symbol"))) if sb is not None else set()
+        # NON-VACUITY GUARD: the disjunction below is trivially true when BOTH
+        # stores are empty (nothing filled at all), which would make this mutation
+        # test pass without exercising the mutation. Require real content first.
+        assert syms_a, "single-fill store is empty — the mutation test would be vacuous"
+        assert syms_b, "batch-fill store is empty — the mutation test would be vacuous"
+        assert _ZO_B in syms_b, (
+            "the batch fill must still carry the thin symbol; otherwise the "
+            "single-vs-batch contrast below proves nothing"
+        )
         assert syms_a != syms_b or _ZO_B not in syms_a, (
             "the output-symbols-only criterion should drop the thin symbol from "
             "the single-date fill"
         )
+
+
+class DistantFloorMinuteProv(ZeroOutputMinuteProv):
+    """Same bars, but a DECLARED floor far in the past — so the saturation loop
+    cannot terminate by reaching the floor within a bounded number of chunks."""
+
+    def earliest_available(self, symbols):
+        return pd.Timestamp("1990-01-01")
+
+
+def test_saturation_exhaustion_raises_loudly(monkeypatch):
+    """Exhausting the chunk budget must RAISE, never return an unsaturated value.
+
+    Red line #9 (no silent degradation): the branch is unreachable in practice
+    (500 chunks is >160 years), which is exactly why it needs a test — a raise
+    that never executes is the next AttributeError's host. Recipe: cap the budget
+    at 2 chunks, use a symbol that never accumulates ``lookback_days`` valid days,
+    and declare a floor too distant to reach — so neither termination condition
+    fires and the loop must fall through to the raise.
+    """
+    import factors.materialize as mat
+
+    monkeypatch.setattr(mat, "_MAX_SATURATION_CHUNKS", 2)
+    factor = factor_registry.build("volume_peak_count_20")
+    emit = _ZO_DATES[128]
+    with pytest.raises(RuntimeError, match="pooled saturation did not converge"):
+        mat.materialize_range(
+            factor, view=View.DECISION, symbols=_ZO_SYMS,
+            emit_start=emit, emit_end=emit,
+            sources=MaterializeSources(minute=DistantFloorMinuteProv()),
+        )
+
+
+def test_saturation_exhaustion_message_is_actionable(monkeypatch):
+    """The raise names the factor and the declared floor (an operator must be able
+    to tell WHICH factor stalled and how deep the search went)."""
+    import factors.materialize as mat
+
+    monkeypatch.setattr(mat, "_MAX_SATURATION_CHUNKS", 2)
+    factor = factor_registry.build("volume_peak_count_20")
+    emit = _ZO_DATES[128]
+    with pytest.raises(RuntimeError) as excinfo:
+        mat.materialize_range(
+            factor, view=View.DECISION, symbols=_ZO_SYMS,
+            emit_start=emit, emit_end=emit,
+            sources=MaterializeSources(minute=DistantFloorMinuteProv()),
+        )
+    message = str(excinfo.value)
+    assert factor.name in message           # which factor stalled
+    assert "1990-01-01" in message          # the declared floor
+    assert "expansion chunks" in message    # how far the search went
 
 
 #: Locking-offset isolation fixture (review task 3(b), adopted verbatim in shape).
