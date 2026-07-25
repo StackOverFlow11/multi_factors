@@ -461,19 +461,44 @@ def test_zero_output_symbol_is_not_silently_dropped():
 
 
 def test_zero_output_symbol_veto_mutation(monkeypatch):
-    """MUTATION for the HIGH: restricting the criterion to OUTPUT symbols (the
+    """MUTATION for the HIGH: letting a ZERO-OUTPUT symbol count as saturated (the
     pre-fix behaviour) reintroduces the silent drop -> this test's assertion of
-    the drop proves the requested-symbol iteration is load-bearing."""
+    the drop proves the zero-output veto is load-bearing.
+
+    THE MUTATION'S EXPRESSION CHANGED WITH D4b; THE DEFECT IT ENCODES DID NOT.
+    It used to be written as "restrict the criterion's symbol list to the symbols
+    present in the output", which was the faithful shape while ONE criterion call
+    decided the load depth for the WHOLE universe: the thin name was absent from
+    that shared output, so filtering the list removed its veto. D4b decides depth
+    PER SYMBOL, so the list holds exactly one name and the filtered-list form
+    became INERT — measured on this fixture: 72 criterion calls (70 from the
+    per-date fill, 2 from the batch fill), the real and filtered forms answer
+    identically in 72 of 72, because all 20 calls with zero output also have
+    ``loaded_days <= baseline_days`` and are already vetoed by the guard above the
+    symbol loop.
+
+    STATED PRECISELY, because the distinction matters: an inert mutation makes the
+    assertion below — which asserts that the drop HAPPENS — impossible to satisfy.
+    So the old expression did not become a test that cannot fail; it became a test
+    that CANNOT PASS, and it went red on the D4b engine. It was not deleted or
+    weakened to get green (§六.16): the property it protects still holds and is
+    still asserted, with the same fixture, the same factor and the same
+    assertions; only the mutation's wording moved to a form that still bites under
+    per-symbol saturation ("no output -> no veto"). It reproduces the original
+    divergence exactly: single-fill carries only 600000.SH (40 rows) while the
+    batch fill carries both (50 rows).
+    """
     import factors.materialize as mat
 
     real = mat._pooled_pool_saturated
 
-    def output_only(full, bars, emit_start, *, baseline_days, lookback_days, symbols):
-        present = [s for s in symbols if str(s) in set(map(str, full.index.get_level_values("symbol")))]
+    def zero_output_is_saturated(full, bars, emit_start, *, baseline_days, lookback_days, symbols):
+        if full.empty:  # the defect: a symbol that produced nothing gets no veto
+            return True
         return real(full, bars, emit_start, baseline_days=baseline_days,
-                    lookback_days=lookback_days, symbols=present)
+                    lookback_days=lookback_days, symbols=symbols)
 
-    monkeypatch.setattr(mat, "_pooled_pool_saturated", output_only)
+    monkeypatch.setattr(mat, "_pooled_pool_saturated", zero_output_is_saturated)
     dates = list(_ZO_DATES[90:130])  # the review's emit window (indices 90..129)
     fid = "volume_peak_count_20"
     with tempfile.TemporaryDirectory() as ta, tempfile.TemporaryDirectory() as tb:
@@ -495,7 +520,7 @@ def test_zero_output_symbol_veto_mutation(monkeypatch):
             "single-vs-batch contrast below proves nothing"
         )
         assert syms_a != syms_b or _ZO_B not in syms_a, (
-            "the output-symbols-only criterion should drop the thin symbol from "
+            "the zero-output-is-saturated criterion should drop the thin symbol from "
             "the single-date fill"
         )
 

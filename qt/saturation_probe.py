@@ -1,5 +1,12 @@
 """D5 feasibility probe: can the D4 materializer run the real evaluation universe?
 
+MODE 1 (``--mode feasibility``, the default) MEASURES THE PRE-D4b ENGINE. Its
+answer was no, and D4b acted on it: the materializer now streams per symbol, so
+item 3 below describes a load geometry the engine NO LONGER USES. The mode is
+kept because its four measurements are the "before" half of the comparison and
+items 1, 2 and 4 are facts about the DATA, not about the engine — but read item 3
+as history, and use ``--mode stream-scale`` (below) to measure what runs today.
+
 D4's materializer was accepted against a 40-symbol hot-path smoke. D5 needs it on
 the eleven-factor evaluation plane (CSI500, 995 symbols, 2021-07-01..2026-06-30),
 so before committing to a multi-hour run this probe MEASURES, on the real cache,
@@ -12,8 +19,10 @@ the four quantities that decide whether that run is possible at all:
    to the declared floor;
 2. **on-disk volume** at the evaluation window vs at the floor;
 3. **in-memory cost** of a whole-universe single-frame load, measured on a sample
-   and extrapolated linearly (the materializer loads every symbol into ONE frame:
-   ``sources.minute.minute_bars(list(symbols), ...)``);
+   and extrapolated linearly. HISTORICAL as of D4b: the materializer used to load
+   every symbol into ONE frame (``sources.minute.minute_bars(list(symbols), ...)``)
+   and now loads one symbol at a time. This measurement is what that geometry
+   would have cost, i.e. the reason it was replaced — not what runs today;
 4. **per-symbol equivalence** — whether materializing symbol-by-symbol and
    concatenating reproduces the whole-universe values exactly. This is the
    decisive question for the fix, and it is answered per factor rather than
@@ -21,21 +30,39 @@ the four quantities that decide whether that run is possible at all:
    z-scores across the loaded cross-section, ``AMP_CUT_MIN_CROSS_SECTION=10``).
 
 Run: ``python -m qt.saturation_probe`` (cache-only; zero live calls).
+
+SECOND MODE — ``--mode stream-scale`` (D4b): the same instrument, now pointed at
+the FIXED engine. It materializes ONE factor over the whole evaluation plane
+through ``factors.materialize`` (which streams per symbol since D4b) and reports
+the two numbers that must not be conflated:
+
+* NOMINAL — the largest single bar frame the engine ever held (``memory_usage``),
+  i.e. what the old single-frame load would have had to hold for ALL symbols; and
+* PEAK RSS — the process high-water mark, which is what actually has to fit. The
+  feasibility mode measured frame:peakRSS at 2.2-2.45x, so reporting only the
+  nominal number would understate the requirement by about half.
+
+One factor per process (so ``ru_maxrss`` is that factor's own peak) and results
+appended to ``--out`` as JSON lines, so a long sweep is resumable: re-running skips
+factors already present unless ``--force``.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import resource
 import time
 from pathlib import Path
 
 import pandas as pd
 
+from data.availability_policy import View
 from data.cache.intraday_cache import ENDPOINT as INTRADAY_ENDPOINT
 from data.clean.intraday_schema import RAW_INTRADAY_FREQ
 from factors import registry as factor_registry
 from factors.compute.minute.binding import minute_raw_from_bars
+from factors.materialize import MaterializeSources, materialize_range
 from qt.factor_hotpath_smoke import CACHE_MINUTE_DATA_START, CacheMinuteProvider
 
 DEFAULT_CACHE_ROOT = "artifacts/cache/tushare/v1"
@@ -152,12 +179,227 @@ def per_symbol_equivalence(
     return rows
 
 
+# --------------------------------------------------------------------------- #
+# Mode 2 (D4b): does the FIXED engine run the whole evaluation plane?
+# --------------------------------------------------------------------------- #
+class MeasuringMinuteProvider(CacheMinuteProvider):
+    """Cache-only provider that records what the engine actually asked it for.
+
+    The engine's memory profile is decided by the biggest frame it ever holds, so
+    that is measured here rather than inferred: ``max_symbols_per_call`` shows the
+    load is per-symbol at all, and ``max_frame_gb`` is the largest frame handed
+    back. Neither is the number that must fit — see ``peak_rss_gb``.
+    """
+
+    def __init__(self, root: str) -> None:
+        super().__init__(root)
+        self.max_symbols_per_call = 0
+        self.max_frame_rows = 0
+        self.max_frame_gb = 0.0
+
+    def minute_bars(self, symbols, start, end):
+        self.max_symbols_per_call = max(self.max_symbols_per_call, len(list(symbols)))
+        bars = super().minute_bars(symbols, start, end)
+        if len(bars):
+            self.max_frame_rows = max(self.max_frame_rows, len(bars))
+            self.max_frame_gb = max(
+                self.max_frame_gb, float(bars.memory_usage(deep=True).sum()) / GB
+            )
+        return bars
+
+
+def stream_scale(
+    factor_id: str, symbols: list[str], cache_root: str, *, view: View = View.DECISION
+) -> dict:
+    """Materialize ``factor_id`` over the whole evaluation plane; measure the cost."""
+    factor = factor_registry.build(factor_id)
+    provider = MeasuringMinuteProvider(cache_root)
+    rss_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2)
+    t0 = time.monotonic()
+    values = materialize_range(
+        factor,
+        view=view,
+        symbols=symbols,
+        emit_start=EVAL_START,
+        emit_end=EVAL_END,
+        sources=MaterializeSources(minute=provider),
+    )
+    wall = time.monotonic() - t0
+    finite = int(values.notna().sum())
+    return {
+        "factor": factor_id,
+        "view": str(view.value),
+        "n_symbols": len(symbols),
+        "emit": f"{EVAL_START.date()}..{EVAL_END.date()}",
+        "rows": int(len(values)),
+        "finite": finite,
+        "symbols_with_rows": int(
+            pd.Index(values.index.get_level_values("symbol")).nunique()
+        ) if len(values) else 0,
+        "provider_calls": provider.calls,
+        "live_calls": provider.live_calls,
+        "max_symbols_per_call": provider.max_symbols_per_call,
+        "nominal_max_frame_gb": round(provider.max_frame_gb, 4),
+        "nominal_max_frame_rows": provider.max_frame_rows,
+        "peak_rss_gb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2), 3),
+        "rss_before_gb": round(rss_before, 3),
+        "wall_seconds": round(wall, 1),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Mode 3 (D4b): cell-by-cell reconciliation against the geometry that was replaced
+# --------------------------------------------------------------------------- #
+#: Reconciliation caliber: small enough that the WHOLE-UNIVERSE SINGLE FRAME —
+#: the geometry D4b replaced — still fits, which is the whole point. The
+#: evaluation plane does not fit and never did; that is what mode 1 measured.
+RECONCILE_SYMBOLS = 40
+RECONCILE_START = pd.Timestamp("2023-01-03")
+RECONCILE_END = pd.Timestamp("2023-06-30")
+#: Reference load depth in CALENDAR DAYS before the emit window. It matters: the
+#: pooled factors' saturation expansion decides how deep the STREAMED side loads,
+#: so a reference shallower than saturation would compare two different histories,
+#: and one deeper changes the float-accumulation prefix. 400 days puts every
+#: factor's trailing window at full depth on both sides.
+RECONCILE_REF_DEPTH_DAYS = 400
+
+
+def reconcile_streaming_vs_single_frame(
+    cache_root: str, universe_panel: str, factor_ids: list[str]
+) -> list[dict]:
+    """Streamed values vs the whole-universe single frame, cell for cell.
+
+    The reference is deliberately the REPLACED geometry (every symbol in ONE
+    frame, one cutoff, one whole-factor call), so agreement is a statement about
+    two load geometries rather than two spellings of one loop.
+    """
+    from factors.materialize import MaterializeSources, materialize_range
+    from factors.view_lag import minute_decision_cutoff
+
+    universe = universe_from_frozen_panel(universe_panel)[:RECONCILE_SYMBOLS]
+    provider = CacheMinuteProvider(cache_root)
+    frame = provider.minute_bars(
+        universe,
+        RECONCILE_START - pd.Timedelta(days=RECONCILE_REF_DEPTH_DAYS),
+        RECONCILE_END + pd.Timedelta(days=1),
+    )
+    print(
+        f"universe {len(universe)} symbols | emit {RECONCILE_START.date()}..{RECONCILE_END.date()}\n"
+        f"single-frame reference: {len(frame):,} rows, "
+        f"{float(frame.memory_usage(deep=True).sum()) / GB:.2f} GB, "
+        f"loaded {RECONCILE_REF_DEPTH_DAYS} calendar days deep\n"
+    )
+    cut = minute_decision_cutoff(frame, decision_time="14:50:00")
+
+    rows = []
+    for factor_id in factor_ids:
+        factor = factor_registry.build(factor_id)
+        streamed = materialize_range(
+            factor, view=View.DECISION, symbols=universe,
+            emit_start=RECONCILE_START, emit_end=RECONCILE_END,
+            sources=MaterializeSources(minute=provider),
+        ).sort_index()
+        full = minute_raw_from_bars(factor, cut)
+        d = full.index.get_level_values("date")
+        ref = full[(d >= RECONCILE_START) & (d <= RECONCILE_END)].sort_index()
+
+        entry: dict = {"factor": factor_id, "index_same": bool(streamed.index.equals(ref.index))}
+        if entry["index_same"]:
+            a, b = streamed.to_numpy(), ref.to_numpy()
+            both = ~pd.isna(a) & ~pd.isna(b)
+            entry["nan_set_diff"] = int((pd.isna(a) != pd.isna(b)).sum())
+            entry["compared_cells"] = int(both.sum())
+            entry["max_abs_diff"] = float(abs(a[both] - b[both]).max()) if both.any() else None
+        else:
+            entry.update(nan_set_diff=-1, compared_cells=0, max_abs_diff=None)
+        rows.append(entry)
+    rows.append({"factor": "__live_calls__", "live_calls": provider.live_calls})
+    return rows
+
+
+def run_reconcile(args) -> int:
+    factor_ids = args.factors or sorted(_MINUTE_STREAM_BINDINGS_IDS())
+    rows = reconcile_streaming_vs_single_frame(args.cache_root, args.universe_panel, factor_ids)
+    hdr = f"{'factor':30s} {'idx==':>6s} {'cells':>8s} {'NaN diff':>9s} {'max|abs|':>12s}"
+    print(hdr)
+    print("-" * len(hdr))
+    problems = []
+    for r in rows:
+        if r["factor"] == "__live_calls__":
+            continue
+        if not r["index_same"] or r["nan_set_diff"]:
+            problems.append(r["factor"])
+        shown = "n/a" if r["max_abs_diff"] is None else f"{r['max_abs_diff']:.3e}"
+        print(
+            f"{r['factor']:30s} {str(r['index_same']):>6s} {r['compared_cells']:>8,} "
+            f"{r['nan_set_diff']:>9d} {shown:>12s}"
+        )
+    print(f"\nlive minute calls: {rows[-1]['live_calls']} (cache-only)")
+    print("PROBLEMS:", problems or "none")
+    return 0 if not problems else 1
+
+
+def _MINUTE_STREAM_BINDINGS_IDS() -> list[str]:
+    """Every bars-only minute factor id, derived from the binding table."""
+    from factors.compute.minute.binding import _MINUTE_STREAM_BINDINGS
+
+    return [cls().name for cls in _MINUTE_STREAM_BINDINGS]
+
+
+def _done_factors(out_path: Path) -> set[str]:
+    if not out_path.exists():
+        return set()
+    done = set()
+    for line in out_path.read_text().splitlines():
+        line = line.strip()
+        if line:
+            done.add(json.loads(line)["factor"])
+    return done
+
+
+def run_stream_scale(args) -> int:
+    symbols = universe_from_frozen_panel(args.universe_panel)
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    done = set() if args.force else _done_factors(out_path)
+    print(f"universe: {len(symbols)} symbols | emit {EVAL_START.date()}..{EVAL_END.date()}")
+    print(f"already recorded: {sorted(done) or 'none'}")
+    for factor_id in args.factors:
+        if factor_id in done:
+            print(f"{factor_id}: SKIP (already in {out_path})")
+            continue
+        print(f"{factor_id}: running...", flush=True)
+        record = stream_scale(factor_id, symbols, args.cache_root)
+        with out_path.open("a") as fh:
+            fh.write(json.dumps(record) + "\n")
+        print(
+            f"{factor_id}: rows={record['rows']:,} finite={record['finite']:,} "
+            f"symbols={record['symbols_with_rows']} "
+            f"max_symbols_per_call={record['max_symbols_per_call']} "
+            f"NOMINAL max frame={record['nominal_max_frame_gb']:.4f} GB "
+            f"PEAK RSS={record['peak_rss_gb']:.3f} GB "
+            f"wall={record['wall_seconds']:.1f}s live_calls={record['live_calls']}",
+            flush=True,
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--cache-root", default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--universe-panel", default=DEFAULT_UNIVERSE_PANEL)
     parser.add_argument("--sample-symbols", type=int, default=20)
+    parser.add_argument(
+        "--mode", choices=("feasibility", "stream-scale", "reconcile"), default="feasibility"
+    )
+    parser.add_argument("--factors", nargs="*", default=[])
+    parser.add_argument("--out", default="stream_scale.jsonl")
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv)
+    if args.mode == "stream-scale":
+        return run_stream_scale(args)
+    if args.mode == "reconcile":
+        return run_reconcile(args)
 
     symbols = universe_from_frozen_panel(args.universe_panel)
     symset = set(symbols)

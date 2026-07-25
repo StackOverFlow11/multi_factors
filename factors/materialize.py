@@ -22,6 +22,30 @@ The daily factor path calls ``factor.compute`` on the lagged panel; the minute
 path calls the ``factors.compute.minute.binding`` for the factor and the
 cutoff-filtered bars. The forward-return boundary is elsewhere: a factor value
 never sees a future return (invariant #1) — the materializer only reads history.
+
+MINUTE LOADING IS PER-SYMBOL STREAMING (D4b). One symbol's bars are read,
+reduced to that symbol's daily intermediate, and discarded before the next; the
+intermediates are assembled and the factor's cross-sectional combine runs ONCE.
+The all-symbol minute panel is never materialized — measured on the evaluation
+plane it is 52.7 GB nominal and ~115 GB peak RSS against 56 GB available, so the
+previous single-frame load could not run at all, for POOLED and BOUNDED factors
+alike (``docs/factors/d5_saturation_feasibility.md``). Two consequences are
+deliberate and disclosed:
+
+* PER-SYMBOL TRIM: the trailing-trading-day trim and the pooled saturation
+  criterion now read THIS SYMBOL's trading days instead of the loaded universe's
+  union. Both are strictly more conservative (a symbol's own day list is a subset
+  of the union, so the same "N trailing days" reaches at least as far back), and
+  both remove a cross-symbol coupling — under the union rule another symbol's
+  calendar could decide how much history this symbol was warmed with, which is
+  itself a load-geometry dependence (red line #6). The factor math, its
+  parameters and its thresholds are untouched.
+* The pooled cost D4 recorded ("any requested symbol that cannot accumulate
+  ``lookback_days`` valid days drags the WHOLE universe's load back to the
+  declared floor") is gone: each symbol expands to its own terminal. Measured on
+  the evaluation universe, 84 of 995 symbols list after the emit start and can
+  never satisfy the criterion, so under the old rule the floor load was
+  CONSTRUCTIVE for every pooled factor.
 """
 
 from __future__ import annotations
@@ -37,9 +61,11 @@ from data.clean.intraday_schema import DEFAULT_DECISION_TIME
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from factors.base import Factor
 from factors.compute.minute.binding import (
+    combine_minute_stats,
     is_minute_bound,
     is_valid_day_pooled,
     minute_raw_from_bars,
+    minute_stats_from_bars,
     pooled_baseline_days,
     pooled_lookback_days,
 )
@@ -163,6 +189,39 @@ def is_minute_factor(factor: Factor) -> bool:
 # --------------------------------------------------------------------------- #
 # Trailing-trading-day trim (the P8 correctness floor)
 # --------------------------------------------------------------------------- #
+def _requested_universe(symbols) -> list[str]:
+    """The requested symbols as strings, DE-DUPLICATED, first occurrence order.
+
+    The engine owns this the same way ``_symbol_bars`` owns "the provider honoured
+    its ``symbols`` argument" — a caller-side and a provider-side spelling of one
+    invariant: a (date, symbol) cell must be produced exactly once.
+
+    Duplicates used to be absorbed by the providers, whose ``isin`` filter is
+    idempotent, so the single-frame engine returned one row per name whatever the
+    caller passed. Streaming iterates the list instead, so a repeat would be
+    materialized TWICE: duplicate index rows, and — for a factor with a real
+    cross-sectional combine — the repeated name entering its date's cross-section
+    twice, moving that date's mean and std for EVERY member. Measured on the
+    streaming test fixture with two names repeated: ``volume_peak_count_20`` gained
+    8 duplicate rows with unchanged values, ``intraday_amp_cut_10`` gained 8
+    duplicate rows AND changed all 48 shared cells.
+
+    De-duplicating (rather than raising) is deliberate: it reproduces exactly what
+    the single-frame engine returned for the same call, which keeps D4b a change of
+    memory profile and nothing else. A raise would be a NEW failure mode for input
+    the previous engine accepted — a behaviour change in the opposite direction,
+    and one that belongs to whoever validates a universe, not to the value engine.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in symbols:
+        name = str(s)
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
 def _warmup_start(dates: pd.DatetimeIndex, emit_start: pd.Timestamp, warmup: int):
     """The date ``warmup`` trading days before ``emit_start`` (or the earliest).
 
@@ -200,6 +259,7 @@ def materialize_range(
     rows. Single-date and batch calls give bit-identical values (design §3.5 P8).
     """
     resolved_view = View(view)
+    symbols = _requested_universe(symbols)  # one engine-level normalization
     emit_start = pd.Timestamp(emit_start).normalize()
     emit_end = pd.Timestamp(emit_end).normalize()
     w = int(factor.spec.lookback_depth) if warmup is None else int(warmup)
@@ -242,6 +302,28 @@ def _materialize_daily(
 def _materialize_minute(
     factor, view, symbols, load_start, emit_start, emit_end, warmup, sources, decision_cutoff,
 ) -> pd.Series:
+    """STREAMING minute materialization (D4b): one symbol's bars at a time.
+
+    Loads ONE symbol's minute history, reduces it to that symbol's small daily
+    intermediate, and DISCARDS the bars before the next symbol — the multi-year
+    all-symbol minute panel is never materialized. That is a structural
+    requirement, not an optimization: the evaluation plane's single frame is
+    52.7 GB nominal / ~115 GB peak RSS against 56 GB of memory, so the
+    whole-universe load cannot run at all (``docs/factors/d5_saturation_feasibility.md``).
+
+    THE CUT IS BEFORE THE CROSS-SECTION. The per-symbol intermediates are
+    assembled into the full-universe panel and the factor's combine runs ONCE on
+    it, so ``intraday_amp_cut``'s date-wise z-score still sees the whole covered
+    universe (a per-WHOLE-FACTOR split would hand it a one-symbol cross-section,
+    which its ``AMP_CUT_MIN_CROSS_SECTION`` gate turns entirely into NaN —
+    measured, and never worked around by relaxing that definition constant).
+
+    Two load geometries, unchanged in meaning from the single-frame engine:
+    bounded factors keep the fixed trailing-trading-day trim; valid-day-POOLED
+    factors expand to saturation. Both are now decided PER SYMBOL — see
+    :func:`_pooled_symbol_stats` for why that is the same terminal, not a
+    weakening.
+    """
     if sources.minute is None:
         raise ValueError(
             f"{factor.name} is a minute factor but no MinuteBarProvider was injected."
@@ -249,30 +331,86 @@ def _materialize_minute(
     if not is_minute_bound(factor):
         # Readable error (e.g. valley_price_quantile needs the daily panel too).
         return minute_raw_from_bars(factor, sources.minute.minute_bars([], load_start, emit_end))
-    # Load one extra calendar day past emit_end so bar cutoffs on emit_end resolve.
-    # POOLED (valid-day trailing window): the pool counts VALID days, so its
-    # CALENDAR depth is data-dependent and UNBOUNDED — a fixed trim would make the
-    # value depend on load geometry (review HIGH / red line #6). Load by
-    # SATURATION-EXPANSION instead (below); bounded factors keep the fixed trim.
-    if is_valid_day_pooled(factor):
-        return _materialize_pooled(
-            factor, view, list(symbols), emit_start, emit_end, warmup, sources, decision_cutoff,
-        )
-    bars = sources.minute.minute_bars(
-        list(symbols), load_start, emit_end + pd.Timedelta(days=1)
+
+    pooled = is_valid_day_pooled(factor)
+    pooled_kw = {}
+    if pooled:
+        pooled_kw = {
+            "floor": _provider_earliest(sources.minute, list(symbols), factor),
+            "baseline_days": pooled_baseline_days(factor),
+            "lookback_days": pooled_lookback_days(factor),
+        }
+
+    parts: list[pd.DataFrame] = []
+    for symbol in symbols:
+        sym = str(symbol)
+        if pooled:
+            stats = _pooled_symbol_stats(
+                factor, view, sym, emit_start, emit_end, warmup, sources,
+                decision_cutoff, **pooled_kw,
+            )
+        else:
+            stats = _bounded_symbol_stats(
+                factor, view, sym, load_start, emit_start, emit_end, warmup, sources,
+                decision_cutoff,
+            )
+        if stats is None or stats.empty:
+            continue
+        # Restrict to the emit window BEFORE assembling: the combine is a per-date
+        # reduction (binding CONTRACT), so a kept date's value is unaffected, and
+        # the assembled panel stays daily-sized.
+        parts.append(_restrict_emit_frame(stats, emit_start, emit_end))
+
+    parts = [p for p in parts if not p.empty]
+    if not parts:
+        return _empty_series(factor.name)
+    return combine_minute_stats(factor, pd.concat(parts).sort_index(kind="mergesort"))
+
+
+def _symbol_bars(provider, symbol: str, start, end) -> pd.DataFrame:
+    """One symbol's bars from ``provider``, RE-FILTERED to that symbol.
+
+    The re-filter is not redundant belt-and-braces: streaming makes the engine's
+    correctness depend on the provider honouring its ``symbols`` argument, and a
+    provider that ignores it (returning the whole store) would silently emit every
+    other symbol's rows once PER STREAMED SYMBOL — duplicated index entries, an
+    inflated cross-section, and for a pooled factor a saturation decision taken on
+    the wrong symbol's valid days. The engine owns that invariant rather than
+    trusting an injected object with it.
+    """
+    bars = provider.minute_bars([symbol], start, end)
+    if bars.empty:
+        return bars
+    mine = pd.Index(bars.index.get_level_values(SYMBOL_LEVEL)) == symbol
+    return bars if bool(mine.all()) else bars[mine]
+
+
+def _bounded_symbol_stats(
+    factor, view, symbol, load_start, emit_start, emit_end, warmup, sources, decision_cutoff,
+) -> pd.DataFrame | None:
+    """One BOUNDED minute factor's per-symbol intermediate over the fixed window.
+
+    Load one extra calendar day past ``emit_end`` so bar cutoffs on ``emit_end``
+    resolve, then apply the same trailing-trading-day trim as the single-frame
+    engine. The trim's day list is now THIS SYMBOL's trading days rather than the
+    loaded universe's union — see the module docstring's PER-SYMBOL TRIM note.
+    """
+    bars = _symbol_bars(
+        sources.minute, symbol, load_start, emit_end + pd.Timedelta(days=1)
     )
     if bars.empty:
-        return _empty_series(factor.name)
+        return None
     if view is View.DECISION:
         bars = minute_decision_cutoff(bars, decision_time=decision_cutoff)
     bars = _trim_minute(bars, emit_start, warmup)
-    return minute_raw_from_bars(factor, bars)
+    return minute_stats_from_bars(factor, bars)
 
 
-def _materialize_pooled(
-    factor, view, symbols, emit_start, emit_end, warmup, sources, decision_cutoff,
-) -> pd.Series:
-    """Saturation-expanding load for a valid-day-pooled factor (design §3.3, review HIGH).
+def _pooled_symbol_stats(
+    factor, view, symbol, emit_start, emit_end, warmup, sources, decision_cutoff,
+    *, floor, baseline_days, lookback_days,
+) -> pd.DataFrame | None:
+    """Saturation-expanding load for ONE symbol of a valid-day-pooled factor.
 
     STRUCTURAL saturation criterion (NOT a value-stability fixed point — that was
     disproved: one expansion chunk landing entirely inside a long no-bar gap
@@ -303,36 +441,48 @@ def _materialize_pooled(
     is read off the engine's own result rather than a re-implementation of each
     factor's validity rule, and a gap simply contributes no output dates (the
     count stalls and the loop keeps expanding, which is the desired behaviour).
+
+    PER SYMBOL, and why that is the SAME terminal (D4b, not a weakening):
+
+    * The criterion's whole content is "further history cannot change any emit
+      value", and it is evaluated on the symbol's own valid days and its own
+      trailing pool. So a symbol that satisfies it at depth D has, BY THE
+      CRITERION, the same values it would have at any deeper load — including the
+      universe-wide floor the single-frame engine used to drag everyone to.
+    * The locked head is now dropped from THIS symbol's loaded days rather than
+      from the loaded UNION. The union is a superset, so its ``baseline_days``-th
+      day is at or before the symbol's — i.e. the per-symbol locked window is at
+      or inside the union one, and the criterion is at least as hard to satisfy.
+      Per-symbol therefore loads at least as deep; it never terminates earlier.
+    * The requested-symbol VETO (below) still applies with this symbol as the
+      requested symbol: a symbol with no output at the current depth counts zero
+      valid days and cannot terminate its own loop. What it can no longer do is
+      drag 994 other symbols to the floor with it, which is the entire cost D4's
+      docstring recorded as "a per-symbol saturation start is the D5 optimization".
     """
     chunk = pd.Timedelta(days=_saturation_chunk_calendar_days(warmup))
     end = emit_end + pd.Timedelta(days=1)
-    floor = _provider_earliest(sources.minute, symbols, factor)
-    baseline_days = pooled_baseline_days(factor)
-    lookback_days = pooled_lookback_days(factor)
-
     load_start = emit_start - chunk
-    last: pd.Series | None = None
     for _ in range(_MAX_SATURATION_CHUNKS):
         at_floor = load_start <= floor
         if at_floor:
             load_start = floor
-        bars = sources.minute.minute_bars(symbols, load_start, end)
+        bars = _symbol_bars(sources.minute, symbol, load_start, end)
         if bars.empty:
             if at_floor:
-                return _empty_series(factor.name)
+                return None
             load_start = load_start - chunk
             continue
         work = bars
         if view is View.DECISION:
             work = minute_decision_cutoff(work, decision_time=decision_cutoff)
-        full = minute_raw_from_bars(factor, work)
-        last = _restrict_emit(full, emit_start, emit_end, factor.name)
+        stats = minute_stats_from_bars(factor, work)
         if at_floor or _pooled_pool_saturated(
-            full, work, emit_start,
+            combine_minute_stats(factor, stats), work, emit_start,
             baseline_days=baseline_days, lookback_days=lookback_days,
-            symbols=symbols,
+            symbols=[symbol],
         ):
-            return last
+            return stats
         load_start = load_start - chunk
     # Never silently return an UNSATURATED result (red line #9: no silent
     # degradation). Unreachable in practice — 500 chunks is >160 years of history
@@ -340,7 +490,7 @@ def _materialize_pooled(
     raise RuntimeError(
         f"{factor.name}: pooled saturation did not converge after "
         f"{_MAX_SATURATION_CHUNKS} expansion chunks (expanded back to "
-        f"{load_start.date()} for {len(symbols)} symbol(s), declared floor "
+        f"{load_start.date()} for symbol {symbol}, declared floor "
         f"{floor.date()}). Refusing to return an unsaturated value, which would "
         f"depend on load geometry."
     )
@@ -389,15 +539,19 @@ def _pooled_pool_saturated(
     days vetoes termination, so the loop expands until it too is saturated or the
     declared floor is reached.
 
-    COST, stated plainly: any requested symbol that cannot accumulate
-    ``lookback_days`` valid days before ``emit_start`` (a recent listing, a long
-    suspension, a coverage hole) drags the WHOLE universe's load back to the
-    declared floor. That cost already existed for symbols with SOME output but too
-    few valid days; this fix only extends the same conservative behaviour to
-    zero-output symbols. A per-symbol saturation start is the D5 optimization —
-    and NOT a pure one: ``intraday_amp_cut`` z-scores across the loaded
-    cross-section, so changing per-symbol load depth changes its cross-section
-    composition.
+    D4b: ``symbols`` is now the ONE symbol whose load depth is being decided (the
+    caller streams). The veto is unchanged in meaning — a symbol with no output at
+    the current depth still counts zero valid days and still cannot terminate ITS
+    OWN expansion — and its blast radius shrinks: it no longer forces the other 994
+    symbols to the floor. The failure mode the veto was added for (a name silently
+    missing from one fill and present in the other) is additionally foreclosed by
+    construction now, because a symbol's own load window always covers the whole
+    emit window, so a symbol that emits on an emit date always has bars there.
+    The COST D4 recorded (any thin symbol dragging the whole universe to the
+    declared floor) is therefore retired; see :func:`_pooled_symbol_stats` for why
+    the per-symbol terminal is the same terminal, and note that the
+    ``intraday_amp_cut`` coupling D4 flagged is handled by cutting BEFORE its
+    cross-sectional combine rather than around the whole factor.
     """
     loaded_days = pd.DatetimeIndex(
         pd.unique(pd.DatetimeIndex(bars.index.get_level_values("time")).normalize())
@@ -457,6 +611,12 @@ def _restrict_emit(raw, emit_start, emit_end, name) -> pd.Series:
     dates = raw.index.get_level_values(DATE_LEVEL)
     within = (dates >= emit_start) & (dates <= emit_end)
     return raw[within].sort_index(kind="mergesort").rename(name)
+
+
+def _restrict_emit_frame(stats: pd.DataFrame, emit_start, emit_end) -> pd.DataFrame:
+    """Emit-window slice of a per-symbol intermediate (safe: per-date combine)."""
+    dates = stats.index.get_level_values(DATE_LEVEL)
+    return stats[(dates >= emit_start) & (dates <= emit_end)]
 
 
 def _empty_series(name: str) -> pd.Series:
