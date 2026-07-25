@@ -225,6 +225,32 @@ aligned_base = sign * gross - base_cost
 ### BUG 7（LOW）—— `eval_ridge_minute_return.py:471` 自称"Beyond the fields PR-C..PR-J surfaced"，
 但 PR-J（valley_ridge_vwap_ratio）属 19 键基础档，它点名的对照集在自己的边界上就是错的。
 
+## 六之二、C6 爆炸半径：谁 import 这 11 个 runner（**删之前必须处置**）
+
+严格说这不是「runner 之间的差异」，但删除动作的影响面必须落在纸面上——与 BUG 6
+（`tests/__init__.py` 收集陷阱）同一接口。**非测试模块共四个**（实测
+`grep -rln "qt\.eval_" --include=*.py | grep -v ^./tests/`）：
+
+| 模块 | 用途 | C6 处置 |
+|---|---|---|
+| `qt/cli.py` | 11 个 `_cmd_run_eval_*` 子命令（§五 C13） | 随统一 runner 收敛为一个子命令 |
+| **`qt/panel_freeze.py`** | **生产 D1 冻结基线的工具**——调各 runner 私有 `_load_*_panel` + `_build_book_factors`，「零公式重抄」正是靠 import 它们实现的 | **删 runner 会打断「重新生成 / 重新验证 D1 基线」的能力** |
+| **`qt/panel_reconcile.py`** | D2 逐格对账工具（同上依赖） | 同上 |
+| **`qt/hand_anchors_engine_values.py`** | D2 手算锚的引擎侧取值 | 同上 |
+
+⚠️ **后三个全是 D1/D2 的验收工具**，而 **D5 面板腿的比较对象正是 `panel_freeze.py` 的产物**。
+按设计 v3.2 §五第 4 腿的 **provenance 规则**，基线只许从钉住的 pre-D2 SHA 重新生成——
+所以严格说 C6 之后从**当前树**重跑它们本来就不合法。但「工具还在、只是不该从这里跑」与
+「工具已被删、想复核也无从下手」是两回事：**这与 C1 存在的理由是同一种不对称损失**
+（复核能力一旦丢失，代价远大于保留一份不再调用的代码）。
+
+**处置要求（C6 执行时逐条落实，不得默认删掉了事）**：① 三个工具**要么保留**（连同它们
+import 的 runner loader，即便统一 runner 已上线）、**要么显式记录**「D1/D2 基线自此不可从
+本仓再生，只能依赖已冻结的 artifact + manifest 哈希」并让 lead 知情裁定；
+② 无论哪种，`docs/factors/d1_panel_freeze_manifest.md` 的「重跑命令」一节都会变成陈旧描述，
+**必须同批更新**——否则就是本项目 #76/#78/#82 那条形态的又一次复发（文档教人跑一条已经
+跑不了的命令）。
+
 ## 七、与 C5 对账的接口
 
 **本表 §二/§三 = 允许出现的差异白名单；§四 = 必须逐值一致的项；§五 = 已判定归一（对账中

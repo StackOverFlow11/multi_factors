@@ -31,9 +31,16 @@ the reason (2) has teeth: an attacker-in-the-form-of-a-tired-engineer who
 overwrites the frozen tree cannot also silently move the hashes, because the
 hashes are under version control and show up in ``git diff``.
 
-Usage::
+Both entry points are BYTE-idempotent on an unchanged tree: re-running them
+writes nothing, including the manifest, so ``git diff`` stays clean. Provenance
+fields (``frozen_at_utc`` / ``frozen_at_git_head`` / ``source_note``) are
+inherited from an existing manifest rather than restamped — a verification run
+must not be able to re-date the history it is verifying.
 
-    python -m qt.exec_baseline_freeze            # freeze (idempotent, refuses to clobber)
+Usage (needs the gitignored ``artifacts/`` tree; in a worktree without one, pass
+``--repo-root`` pointing at a checkout that has it)::
+
+    python -m qt.exec_baseline_freeze            # freeze; refuses to clobber
     python -m qt.exec_baseline_freeze --verify   # re-verify the frozen tree, copy nothing
 """
 
@@ -163,6 +170,17 @@ class FreezeResult:
     already_frozen: tuple[str, ...]
     manifest_path: Path
     frozen_root: Path
+    #: False when an existing manifest was already correct and was left alone.
+    manifest_written: bool = True
+
+
+def _load_manifest_if_present(manifest_path: Path) -> dict | None:
+    if not manifest_path.exists():
+        return None
+    try:
+        return json.loads(manifest_path.read_text())
+    except json.JSONDecodeError:
+        return None
 
 
 def freeze(
@@ -238,10 +256,30 @@ def freeze(
             }
         )
 
+    # PROVENANCE IS INHERITED, NEVER SILENTLY RESTAMPED.
+    #
+    # An earlier version rebuilt these three fields on every invocation, so the
+    # documented "re-run me to check the freeze" command quietly repointed
+    # frozen_at_git_head at whoever re-ran it and blanked source_note — while
+    # reporting `copied: 0` and passing every test. That turned the freeze tool
+    # into a generator of the exact false provenance claim it exists to prevent
+    # (the #76/#78/#82 shape: the behaviour changed, the wording did not).
+    #
+    # So: an existing manifest supplies these unless the caller explicitly
+    # overrides them. Re-freezing verifies bytes; it does not re-date history.
+    # Inherit only what is actually there: a manifest that never carried
+    # provenance has nothing to preserve, and inheriting "" from it would put an
+    # empty field where the always-run manifest assertions expect a real one —
+    # trading a restamp for a silent blank.
+    previous = _load_manifest_if_present(manifest_path) or {}
+    frozen_at_utc = str(previous.get("frozen_at_utc") or datetime.now(timezone.utc).isoformat())
+    frozen_at_head = str(previous.get("frozen_at_git_head") or _git_head(repo_root))
+    note = source_note or str(previous.get("source_note") or "")
+
     manifest = {
         "schema": MANIFEST_SCHEMA,
-        "frozen_at_utc": datetime.now(timezone.utc).isoformat(),
-        "frozen_at_git_head": _git_head(repo_root),
+        "frozen_at_utc": frozen_at_utc,
+        "frozen_at_git_head": frozen_at_head,
         # Logical, repo-relative locations. The on-disk paths resolve through a
         # gitignored symlink on some checkouts; recording the resolved absolute
         # path would make this git-tracked manifest machine-specific.
@@ -250,17 +288,23 @@ def freeze(
         "file_count": len(entries),
         "factors": list(FACTORS),
         "books": list(BOOKS),
-        "source_note": source_note,
+        "source_note": note,
         "files": entries,
     }
-    _atomic_write_bytes(
-        manifest_path, (json.dumps(manifest, indent=2, sort_keys=False) + "\n").encode()
-    )
+    # BYTE-idempotent: an unchanged tree rewrites nothing at all, so re-running
+    # the documented verification command leaves a clean `git diff`.
+    manifest_written = manifest != previous
+    if manifest_written:
+        _atomic_write_bytes(
+            manifest_path,
+            (json.dumps(manifest, indent=2, sort_keys=False) + "\n").encode(),
+        )
     return FreezeResult(
         copied=tuple(copied),
         already_frozen=tuple(already),
         manifest_path=manifest_path,
         frozen_root=frozen_root,
+        manifest_written=manifest_written,
     )
 
 
@@ -387,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"manifest    : {result.manifest_path}")
     print(f"copied      : {len(result.copied)}")
     print(f"already ok  : {len(result.already_frozen)}")
+    print(f"manifest    : {'REWRITTEN' if result.manifest_written else 'unchanged'}")
     return 0
 
 

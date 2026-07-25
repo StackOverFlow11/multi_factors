@@ -129,13 +129,19 @@ def per_symbol_equivalence(
         if whole.index.equals(per.index):
             both = whole.notna() & per.notna()
             entry["index_same"] = True
+            # None, not 0.0, when the two series share NO finite cell: printing a
+            # zero difference next to "NOT SAFE" reads as "the values agree",
+            # when in fact there is nothing to compare (that is exactly the
+            # intraday_amp_cut case, where every per-symbol value is NaN).
             entry["max_abs_diff"] = (
-                float((whole[both] - per[both]).abs().max()) if both.any() else 0.0
+                float((whole[both] - per[both]).abs().max()) if both.any() else None
             )
+            entry["compared_cells"] = int(both.sum())
             entry["nan_set_diff"] = int((whole.isna() != per.isna()).sum())
         else:
             entry["index_same"] = False
-            entry["max_abs_diff"] = float("nan")
+            entry["max_abs_diff"] = None
+            entry["compared_cells"] = 0
             entry["nan_set_diff"] = -1
         entry["per_symbol_safe"] = bool(
             entry["index_same"]
@@ -201,9 +207,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     for r in rows:
         verdict = "SAFE" if r["per_symbol_safe"] else "NOT SAFE"
+        diff = r["max_abs_diff"]
+        shown = f"{diff:.3e}" if diff is not None else "n/a (no comparable cell)"
         print(
             f"{r['factor']:26s} rows={r['rows']:>6,} index_same={r['index_same']!s:5s} "
-            f"max|diff|={r['max_abs_diff']:.3e} nan_set_diff={r['nan_set_diff']:>5d}  {verdict}"
+            f"max|diff|={shown:>22s} compared={r['compared_cells']:>5d} "
+            f"nan_set_diff={r['nan_set_diff']:>5d}  {verdict}"
         )
     print(
         "\nintraday_amp_cut is expected NOT SAFE at whole-factor granularity: its "

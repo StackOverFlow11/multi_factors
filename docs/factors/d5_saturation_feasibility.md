@@ -3,6 +3,11 @@
 > **状态**：D5 第二个交付物，**先于任何长 run**（lead 指令：「宁可报『这条路走不通、原因如下』，
 > 也不要跑一个 2 小时后失败或产出错值的 run」）。
 > 复验：`python -m qt.saturation_probe`（cache-only，实测 `live_calls=0`）。
+> ⚠️ **前置条件**：需要 gitignored 的 `artifacts/`（分钟缓存 + D1 冻结面板）。**在没有它的
+> worktree 里开箱跑不起来**——先对主 checkout 的 `artifacts` 建符号链接，或用
+> `--cache-root` / `--universe-panel` 指向绝对路径（先例：`qt/factor_hotpath_smoke.py`）。
+> 建链接时注意：worktree 里若已存在真实 `artifacts/` 目录，`ln -s` 会嵌套成
+> `artifacts/artifacts`（本步实际踩到过）。
 > 全部数字为**实测**，标注为外推的才是外推。
 
 ---
@@ -70,13 +75,19 @@ universe 里有一只在窗口内上市的票，pooled 加载就一定打到 flo
 
 **实测的决定性证据**（12 票真实数据，整 universe 算 vs 逐 symbol 算再拼）：
 
-| 因子 | index 相同 | max\|diff\| | NaN 集合差异 | 判定 |
-|---|---|---|---|---|
-| `ridge_minute_return_20`（pooled） | True | **0.000e+00** | **0** | **SAFE** |
-| `volume_peak_count_20`（pooled） | True | **0.000e+00** | **0** | **SAFE** |
-| `intraday_amp_cut_10` | True | 0.000e+00 | **1692（全部行）** | **NOT SAFE** |
+| 因子 | index 相同 | 可比 cell 数 | max\|diff\| | NaN 集合差异 | 判定 |
+|---|---|---|---|---|---|
+| `ridge_minute_return_20`（pooled） | True | **728** | **0.000e+00** | **0** | **SAFE** |
+| `volume_peak_count_20`（pooled） | True | **1524** | **0.000e+00** | **0** | **SAFE** |
+| `intraday_amp_cut_10` | True | **0** | **n/a（无可比 cell）** | **1692（全部行）** | **NOT SAFE** |
 
-前两个**逐位相同**——per-symbol 纯性在真实数据上得到确认（不是靠既有 isolation 测试推断）。
+前两个在 728 / 1524 个**真实可比 cell** 上逐位相同——per-symbol 纯性在真实数据上得到确认
+（不是靠既有 isolation 测试推断，也不是在空集合上真空通过）。
+
+⚠️ 第三行的 `max|diff|` **必须显示 `n/a` 而不是 `0.000e+00`**（评审 NIT，已改）：per-symbol
+一侧全是 NaN，两边**没有任何一个 cell 可比**，而"0.000e+00"紧挨着 "NOT SAFE" 会被读成
+「值其实一致、只是 NaN 标记不同」——恰好相反。`compared=0` 这一列就是为了让"没得比"
+无法被误读成"比过了且相等"。
 
 `intraday_amp_cut` **全部 1692 行翻成 NaN**：它的第 4 步是**按日截面 z-score**，要求当日
 finite 对数 ≥ `AMP_CUT_MIN_CROSS_SECTION=10`，而**单票截面 n=1 恒 < 10 → 定义上全 NaN**。

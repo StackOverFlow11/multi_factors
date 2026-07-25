@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -68,7 +70,7 @@ def test_exec_baseline_inventory_is_77_derived_from_the_factor_list() -> None:
     assert sum(n.endswith(".json") for n in names) == 22
     assert sum(n.endswith("_dashboard.png") for n in names) == 22
     assert sum(n.endswith("_basis_sanity.md") for n in names) == 11
-    # 22 report .md = 44 total .md minus the 11 sanity files... 22 + 11 = 33
+    # 22 per-book report .md + 11 basis-sanity .md = 33 .md in total
     assert sum(n.endswith(".md") for n in names) == 33
 
 
@@ -193,16 +195,77 @@ def test_exec_baseline_reader_rejects_unknown_names(tmp_path: Path) -> None:
 
 
 def test_committed_manifest_describes_the_real_frozen_baseline() -> None:
-    """The git-tracked manifest is well-formed and complete."""
+    """The git-tracked manifest is well-formed, complete, and carries provenance.
+
+    Deliberately NOT skipif-guarded: it reads only the committed manifest, so it
+    runs on every machine. That matters because the provenance assertions below
+    are the ones that catch a manifest whose history was silently restamped —
+    a check that skips on the hosts without the gitignored bytes would be a
+    check that never runs where it is needed.
+    """
     payload = json.loads(MANIFEST.read_text())
     assert payload["schema"] == MANIFEST_SCHEMA
     assert payload["file_count"] == EXPECTED_FILE_COUNT
     assert len(payload["files"]) == EXPECTED_FILE_COUNT
     assert {f["name"] for f in payload["files"]} == set(expected_artifact_names())
-    assert all(len(f["sha256"]) == 64 for f in payload["files"])
     # repo-relative, machine-independent
     assert not payload["source_dir"].startswith("/")
     assert not payload["frozen_root"].startswith("/")
+
+    # --- provenance must be present and well-formed, not merely a field ---
+    assert payload["source_note"].strip(), (
+        "source_note is empty: the manifest no longer records WHERE the frozen "
+        "bytes came from. A re-freeze must inherit provenance, never blank it."
+    )
+    assert re.fullmatch(r"[0-9a-f]{40}", payload["frozen_at_git_head"]), (
+        f"frozen_at_git_head {payload['frozen_at_git_head']!r} is not a full "
+        "40-hex commit id"
+    )
+    assert payload["frozen_at_utc"].startswith("20")
+
+    for entry in payload["files"]:
+        assert re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]), (
+            f"{entry['name']}: sha256 is not 64 hex chars"
+        )
+        assert int(entry["size_bytes"]) > 0, f"{entry['name']}: non-positive size"
+
+
+def test_freeze_inherits_provenance_instead_of_restamping_it(tmp_path: Path) -> None:
+    """MUTATION: re-freeze an UNCHANGED tree. Provenance must survive verbatim.
+
+    The regression this locks: freeze() used to rebuild frozen_at_utc /
+    frozen_at_git_head / source_note on every call, so the documented
+    verification command silently repointed the manifest at whoever re-ran it
+    and blanked the provenance narrative, while printing `copied: 0`.
+    """
+    reports, frozen, manifest = _freeze_fake(tmp_path)
+    # give it real provenance, as the committed manifest has
+    original = json.loads(manifest.read_text())
+    original["source_note"] = "PR #79 artifacts; bulk-copied 2026-07-21 15:33:20"
+    original["frozen_at_git_head"] = "a" * 40
+    original["frozen_at_utc"] = "2026-07-25T00:00:00+00:00"
+    manifest.write_text(json.dumps(original, indent=2) + "\n")
+    before = manifest.read_bytes()
+
+    result = freeze(reports, frozen, manifest, repo_root=tmp_path)
+
+    assert result.copied == ()
+    assert result.manifest_written is False, "an unchanged tree must not rewrite"
+    assert manifest.read_bytes() == before, "manifest bytes must be untouched"
+    after = json.loads(manifest.read_text())
+    assert after["source_note"] == original["source_note"]
+    assert after["frozen_at_git_head"] == "a" * 40
+    assert after["frozen_at_utc"] == "2026-07-25T00:00:00+00:00"
+
+
+def test_freeze_lets_an_explicit_source_note_win(tmp_path: Path) -> None:
+    """Inheritance is a default, not a lock: an explicit note is still an act."""
+    reports, frozen, manifest = _freeze_fake(tmp_path)
+    result = freeze(
+        reports, frozen, manifest, repo_root=tmp_path, source_note="corrected note"
+    )
+    assert result.manifest_written is True
+    assert json.loads(manifest.read_text())["source_note"] == "corrected note"
 
 
 @pytest.mark.skipif(
@@ -228,13 +291,49 @@ def test_sha256_file_matches_hashlib(tmp_path: Path) -> None:
     assert sha256_file(path) == hashlib.sha256(payload).hexdigest()
 
 
-def test_frozen_tree_is_not_a_git_tracked_path(tmp_path: Path) -> None:
-    """The bytes stay under gitignored artifacts/; only hashes are committed.
+def _tracked_under(prefix: str) -> list[str]:
+    """Paths git TRACKS under ``prefix``, read from the index.
 
-    That split is what gives the tamper check teeth: hashes move only through
-    a reviewable ``git diff``.
+    Queries the index rather than the filesystem on purpose. ``artifacts/`` is
+    routinely a symlink into another checkout, and every filesystem-walking git
+    command (``add``, ``check-ignore``, ``ls-files --error-unmatch`` on a path)
+    refuses such paths with "beyond a symbolic link" — which would make an
+    assertion about them pass for the wrong reason, and make it impossible to
+    mutate. The index has no such blind spot.
     """
+    proc = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "--", prefix],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return proc.stdout.split()
+
+
+def test_frozen_bytes_are_untracked_while_the_manifest_is_tracked() -> None:
+    """The split that gives the tamper check its teeth, asserted against git.
+
+    Hashes live in version control so they can only move through a reviewable
+    diff; the bytes they describe do not. If both lived in git, one commit could
+    move the bytes and their hashes together and the tamper check would be
+    decorative.
+
+    The previous version of this test claimed exactly this but never consulted
+    git at all — it froze a fake tree under tmp_path, deleted it, and asserted a
+    file it had just written was still readable. Removing ``artifacts/`` from
+    .gitignore left it green.
+    """
+    assert _tracked_under("artifacts") == [], (
+        "no bytes under artifacts/ may be committed; found tracked paths"
+    )
+    manifest_rel = str(MANIFEST.relative_to(REPO_ROOT))
+    assert manifest_rel in _tracked_under("docs/factors"), (
+        "the manifest MUST be committed — it is the tamper reference"
+    )
+
+
+def test_manifest_outlives_the_bytes_it_describes(tmp_path: Path) -> None:
+    """Losing the frozen tree must not lose the record of what it contained."""
     _, frozen, manifest = _freeze_fake(tmp_path)
     shutil.rmtree(frozen)
-    # manifest survives independently of the bytes it describes
     assert json.loads(manifest.read_text())["file_count"] == EXPECTED_FILE_COUNT
