@@ -76,6 +76,20 @@ class EvalConfig:
         pairings are decision<->exec_to_exec and close<->close_to_close, and
         anything else raises here rather than being a doc convention (design
         §1.4 mechanism 1, enforced through ``data.availability_policy``).
+    book_view : (contract v1.0) the view the KNOWN-FACTOR BOOK was taken under,
+        or None when no book was supplied. A with-book run has TWO information
+        sets — the subject factor's and the book's — and ``view`` can only
+        describe one of them, so it describes the subject and this describes the
+        book. Design §1.1 records the current book (value_ep / value_bp /
+        volatility_20) as taking close(d) values while exec holding windows open
+        at 14:51(d): a KNOWN live defect, closed at D7. Until then the honest
+        artifact says ``view=decision, book_view=close`` — one field claiming
+        both would be exactly the "report declares a check it did not do" failure
+        this contract exists to prevent, one level up.
+
+        DELIBERATELY NOT pairing-checked against ``return_basis``. The book being
+        on a different view from the subject IS the disclosure; refusing it would
+        not fix the mixture, it would only stop the artifact from saying so.
     success_criteria : the PRE-REGISTERED verdict bar (design §6, v0.6). A frozen
         :class:`~analytics.eval.verdict.VerdictThresholds` declared HERE, before
         ``evaluate`` runs, IS pre-registered by construction: you cannot tune the
@@ -123,6 +137,7 @@ class EvalConfig:
     # with no false statement left behind.
     view: str = View.CLOSE.value
     return_basis: str = ReturnBasis.CLOSE_TO_CLOSE.value
+    book_view: str | None = None
     success_criteria: VerdictThresholds | None = None
 
     def __post_init__(self) -> None:
@@ -288,6 +303,17 @@ class EvalConfig:
         )
         object.__setattr__(self, "view", resolved_view.value)
         object.__setattr__(self, "return_basis", resolved_basis.value)
+        if self.book_view is not None:
+            try:
+                book = View(self.book_view)
+            except ValueError:
+                allowed = ", ".join(repr(v.value) for v in View)
+                raise ValueError(
+                    f"EvalConfig.book_view must be None (no book supplied) or one "
+                    f"of {allowed}; got {self.book_view!r}. A book whose view is "
+                    f"unstated is exactly the mixture this field exists to expose."
+                ) from None
+            object.__setattr__(self, "book_view", book.value)
 
     def _check_success_criteria(self) -> None:
         """The pre-registered bar, if supplied, must be a real VerdictThresholds.

@@ -21,11 +21,18 @@ applies no decision-time truncation of its own (grep: zero ``decision_time`` /
 ``prepare_visible_minute_bars`` references in its module), so under the old runners
 it saw 09:30-15:00 of day d.
 
-That is recorded here as a KNOWN, NAMED exception rather than fixed. Truncating it
-would change a published factor's values and could move its verdict — a definition
+That is recorded as a KNOWN, NAMED exception rather than fixed. Truncating it would
+change a published factor's values and could move its verdict — a definition
 -affecting research decision, not a refactor's business (design v3.2 §〇). The
 exception is asserted POSITIVELY, so the day someone changes it, this test goes red
 and the change has to be made deliberately instead of noticed later.
+
+THE LIST IS PRODUCTION STATE, NOT TEST STATE. It lives in
+``factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE`` because the exec path
+consults it to decide whether an evaluation may declare ``view=decision``
+(``qt.exec_basis_eval.subject_view``); this file is what MEASURES it. A copy here
+would be a second thing to keep in step, and the failure mode of drifting apart is
+an artifact declaring an information set its values do not have.
 
 WHY THE EXISTING SUITE DID NOT CATCH IT — and why that is not a contradiction.
 ``tests/test_jump_amount_corr_factor.py::test_pit_perturbing_future_bars_does_not_
@@ -48,13 +55,19 @@ import pytest
 
 from data.clean.intraday_schema import normalize_intraday_bars
 from factors import registry as factor_registry
-from factors.compute.minute.binding import _MINUTE_STREAM_BINDINGS, minute_raw_from_bars
+from factors.compute.minute.binding import (
+    _MINUTE_STREAM_BINDINGS,
+    NOT_DECISION_CUTOFF_SAFE,
+    minute_raw_from_bars,
+)
 
 CUTOFF = "14:50:00"
 
-#: The one factor whose value is NOT decision-cutoff-safe on its own. Named, not
-#: inferred — see the module docstring for why it is recorded instead of fixed.
-KNOWN_POST_CUTOFF_DEPENDENT = "jump_amount_corr_20"
+#: DERIVED from the production deny list, not spelled again here. The exec path has
+#: to consult the same fact to decide whether it may declare ``view=decision``
+#: (``qt.exec_basis_eval.subject_view``), so the list lives with the factors and
+#: this file MEASURES it. Two copies would be two things to keep in step.
+KNOWN_POST_CUTOFF_DEPENDENT_IDS = frozenset(c().name for c in NOT_DECISION_CUTOFF_SAFE)
 
 SYMBOLS = [f"6000{i:02d}.SH" for i in range(12)]
 DATES = pd.bdate_range("2021-01-04", periods=40)
@@ -129,7 +142,9 @@ def _moved_cells(factor_id: str) -> tuple[int, int, float]:
 
 
 BOUND_FACTOR_IDS = tuple(sorted(cls().name for cls in _MINUTE_STREAM_BINDINGS))
-CLEAN_FACTOR_IDS = tuple(f for f in BOUND_FACTOR_IDS if f != KNOWN_POST_CUTOFF_DEPENDENT)
+CLEAN_FACTOR_IDS = tuple(
+    f for f in BOUND_FACTOR_IDS if f not in KNOWN_POST_CUTOFF_DEPENDENT_IDS
+)
 
 
 @pytest.mark.parametrize("factor_id", CLEAN_FACTOR_IDS)
@@ -150,15 +165,32 @@ def test_the_known_exception_is_still_exactly_one_factor_and_still_leaks():
     Asserted in the POSITIVE direction on purpose. A test that merely tolerated the
     exception would stay green whether it was fixed, worsened, or spread to a second
     factor. This one goes red on any of those, which is what forces the decision to
-    be taken deliberately.
+    be taken deliberately — and because the exec path DERIVES its right to declare
+    ``view=decision`` from the same list, a stale entry here is not cosmetic.
     """
-    assert KNOWN_POST_CUTOFF_DEPENDENT in BOUND_FACTOR_IDS
-    cells, moved, worst = _moved_cells(KNOWN_POST_CUTOFF_DEPENDENT)
-    assert cells > 0
-    assert moved > 0, (
-        f"{KNOWN_POST_CUTOFF_DEPENDENT} no longer depends on post-{CUTOFF} bars. If "
-        f"that was deliberate, this factor's PUBLISHED values changed: update the "
-        f"exception list here, and re-state its verdict rather than letting the "
-        f"artifacts drift silently."
+    assert KNOWN_POST_CUTOFF_DEPENDENT_IDS == {"jump_amount_corr_20"}
+    for factor_id in sorted(KNOWN_POST_CUTOFF_DEPENDENT_IDS):
+        assert factor_id in BOUND_FACTOR_IDS
+        cells, moved, worst = _moved_cells(factor_id)
+        assert cells > 0
+        assert moved > 0, (
+            f"{factor_id} no longer depends on post-{CUTOFF} bars. If that was "
+            f"deliberate, this factor's PUBLISHED values changed: drop it from "
+            f"factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE, and re-state "
+            f"its verdict rather than letting the artifacts drift silently."
+        )
+        assert worst > 0.0
+
+
+def test_every_clean_factor_is_absent_from_the_production_deny_list():
+    """The measurement and the list the exec path trusts cannot disagree.
+
+    Without this, a factor could be measured clean here while still sitting on the
+    deny list (its exec evaluation blocked for no reason) or, worse, be measured
+    dirty and be missing from the list (its exec artifact declaring view=decision).
+    """
+    for factor_id in CLEAN_FACTOR_IDS:
+        assert factor_id not in KNOWN_POST_CUTOFF_DEPENDENT_IDS
+    assert set(CLEAN_FACTOR_IDS) | KNOWN_POST_CUTOFF_DEPENDENT_IDS == set(
+        BOUND_FACTOR_IDS
     )
-    assert worst > 0.0

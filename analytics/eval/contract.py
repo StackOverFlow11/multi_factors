@@ -56,16 +56,30 @@ EVAL_CONTRACT_VERSION = "1.0"
 #: guard all refer to ONE list instead of three spellings of it.
 IDENTITY_FIELDS: tuple[str, ...] = ("view", "return_basis")
 
+#: How an absent book is rendered. A with-book run whose book view is unknown and a
+#: no-book run must not look alike, so the absence is WORDED, never left blank.
+NO_BOOK = "none (no book supplied)"
 
-def basis_identity_phrase(view: str, return_basis: str) -> str:
-    """The ONE sentence that states a report's information set + return basis.
+
+def basis_identity_phrase(
+    view: str, return_basis: str, book_view: str | None
+) -> str:
+    """The ONE sentence that states a report's information sets + return basis.
 
     Author-once (#76/#78/#82): the provenance row, the cross-basis summary header
     and any prose that needs to say which basis a number belongs to COMPOSE this
     string rather than each writing their own. A regex cannot assert that no other
     sentence says this; "there is no other sentence" can.
+
+    ``book_view`` is part of the sentence rather than an optional addendum: a
+    with-book evaluation carries TWO information sets, and a phrase that mentions
+    only the subject's would be the same one-field-for-two-facts problem the field
+    was added to fix (see ``EvalConfig.book_view``).
     """
-    return f"view={view} x return_basis={return_basis}"
+    return (
+        f"view={view} x return_basis={return_basis}, "
+        f"book_view={book_view or NO_BOOK}"
+    )
 
 
 __all__ = ["EVAL_CONTRACT_VERSION", "IDENTITY_FIELDS", "basis_identity_phrase"]

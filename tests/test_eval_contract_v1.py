@@ -67,18 +67,78 @@ def test_the_exec_pairing_is_constructible_and_is_what_the_exec_path_declares():
 
 
 def test_the_exec_basis_module_restates_the_identity_it_scores_on():
-    """qt.exec_basis_eval must not inherit the caller's close-basis identity.
+    """BEHAVIOURAL: a close-default config in, the exec identity out.
 
-    Structural rather than descriptive: the module derives the exec twin of the
-    SPEC one line earlier, and the config's identity has to travel the same way or
-    the exec artifact would carry the close label.
+    The first version of this test matched SUBSTRINGS in the function's source
+    (``"replace(" in source and "EXEC_TO_EXEC" in source``). Review broke it by
+    hand: gut the assignment, leave the two matched names in a COMMENT, and the exec
+    path silently inherits the caller's close identity while 52 tests stay green.
+    That is #78's rule again — a lexical assertion cannot hold a semantic claim — and
+    it failed in the worst direction, waving through the very defect the commit under
+    test had just fixed. It also had a false-positive direction: refactoring the line
+    into a helper would have deleted those names and reddened a correct build.
+
+    So the claim is now made about BEHAVIOUR, on the extracted helper.
     """
-    import inspect
+    from qt.exec_basis_eval import exec_identity
 
-    from qt import exec_basis_eval
+    legacy = _cfg()
+    assert (legacy.view, legacy.return_basis) == ("close", "close_to_close")
 
-    source = inspect.getsource(exec_basis_eval.run_exec_basis_evaluation)
-    assert "replace(" in source and "EXEC_TO_EXEC" in source and "DECISION" in source
+    out = exec_identity(legacy, factor_id="volume_peak_count_20", book_view="close")
+    assert out.view == "decision"
+    assert out.return_basis == "exec_to_exec"
+    assert out.book_view == "close"
+    # ... and nothing else moved: the identity is all that travels with the basis.
+    ignore = {"view", "return_basis", "book_view"}
+    assert {k: v for k, v in vars(out).items() if k not in ignore} == {
+        k: v for k, v in vars(legacy).items() if k not in ignore
+    }
+
+
+def test_a_factor_that_is_not_cutoff_safe_cannot_get_an_exec_identity():
+    """The derivation refuses rather than declaring a view the values do not have.
+
+    ``jump_amount_corr_20``'s compute applies no 14:50 truncation, so its values are
+    close-view; (close, exec_to_exec) is not a legal pairing, and that refusal is
+    the correct outcome — there is no honest exec artifact of it until it is fixed.
+    """
+    from qt.exec_basis_eval import exec_identity, subject_view
+
+    assert subject_view("jump_amount_corr_20") == "close"
+    assert subject_view("volume_peak_count_20") == "decision"
+    with pytest.raises(ValueError, match="no 14:50 truncation of its own"):
+        exec_identity(_cfg(), factor_id="jump_amount_corr_20", book_view="close")
+
+
+def test_the_no_book_and_with_book_runs_do_not_share_one_book_view():
+    """Two runs, two information sets, two configs — never one shared claim."""
+    from qt.exec_basis_eval import exec_identity
+
+    no_book = exec_identity(_cfg(), factor_id="volume_peak_count_20", book_view=None)
+    with_book = exec_identity(_cfg(), factor_id="volume_peak_count_20", book_view="close")
+    assert no_book.book_view is None
+    assert with_book.book_view == "close"
+    assert no_book.view == with_book.view == "decision"
+
+
+def test_book_view_is_validated_and_an_unknown_value_is_refused():
+    assert _cfg(book_view=None).book_view is None
+    assert _cfg(book_view=View.CLOSE).book_view == "close"
+    with pytest.raises(ValueError, match="book_view must be None"):
+        _cfg(book_view="whatever")
+
+
+def test_book_view_is_not_pairing_checked_against_the_basis():
+    """A close-view book under an exec basis is the DISCLOSURE, not a config error.
+
+    Refusing it would not un-mix the information sets; it would only stop the
+    artifact from saying they are mixed (design §1.1's live defect, open until D7).
+    """
+    cfg = _cfg(view="decision", return_basis="exec_to_exec", book_view="close")
+    assert (cfg.view, cfg.return_basis, cfg.book_view) == (
+        "decision", "exec_to_exec", "close",
+    )
 
 
 @pytest.mark.parametrize(
@@ -103,18 +163,33 @@ def test_enum_members_normalize_to_canonical_strings():
     assert isinstance(cfg.view, str) and type(cfg.view) is str
 
 
-def test_identity_phrase_is_authored_once():
-    """The provenance row COMPOSES the phrase rather than spelling it again."""
-    cfg = _cfg(view="decision", return_basis="exec_to_exec")
+def test_identity_phrase_covers_both_pairings_and_states_the_book():
+    """Renamed (review LOW-1): this pins the phrase's FORMAT, not author-once.
+
+    The old name claimed "authored once", which it never tested — it cannot see
+    whether some other module spells the same sentence itself. That property does
+    hold (one producer in ``analytics/eval/contract.py``, composed at its call
+    sites), but a name must not claim more than its assertions.
+    """
+    cfg = _cfg(view="decision", return_basis="exec_to_exec", book_view="close")
     assert (
-        basis_identity_phrase(cfg.view, cfg.return_basis)
-        == "view=decision x return_basis=exec_to_exec"
+        basis_identity_phrase(cfg.view, cfg.return_basis, cfg.book_view)
+        == "view=decision x return_basis=exec_to_exec, book_view=close"
     )
     legacy = _cfg()
     assert (
-        basis_identity_phrase(legacy.view, legacy.return_basis)
-        == "view=close x return_basis=close_to_close"
+        basis_identity_phrase(legacy.view, legacy.return_basis, legacy.book_view)
+        == "view=close x return_basis=close_to_close, book_view=none (no book supplied)"
     )
+
+
+def test_an_absent_book_is_worded_never_blank():
+    """"No book" is a stated fact, so it can never be read as a missing field."""
+    absent = basis_identity_phrase("close", "close_to_close", None)
+    stated = basis_identity_phrase("close", "close_to_close", "close")
+    assert absent.endswith("book_view=none (no book supplied)")
+    assert absent != stated
+    assert "book_view=\n" not in absent and not absent.endswith("book_view=")
 
 
 # --------------------------------------------------------------------------- #

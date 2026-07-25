@@ -42,6 +42,8 @@ from analytics.eval import (
     StandardFactorEvaluator,
 )
 from data.availability_policy import ReturnBasis, View
+from factors import registry as factor_registry
+from factors.compute.minute.binding import is_decision_cutoff_safe
 from analytics.eval.figures import render_factor_dashboard
 from analytics.factor import forward_returns as _close_forward_returns
 from data.clean.schema import DATE_LEVEL
@@ -152,6 +154,62 @@ def build_disclosure(
     return disclosure
 
 
+def subject_view(factor_id: str) -> str:
+    """The information-set view the factor's OWN values were taken under.
+
+    DERIVED from a measured fact, not written down: a minute factor whose compute
+    applies no 14:50 truncation of its own was handed full-day bars and is therefore
+    on the CLOSE view, whatever the run intends. The deny list lives with the
+    factors (``factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE``) and is
+    pinned by the perturb-the-post-cutoff-bars test; an id the registry does not
+    know (a synthetic spec) is not on that list and is treated as decision-view.
+    """
+    try:
+        factor = factor_registry.build(factor_id)
+    except Exception:  # noqa: BLE001 - an unregistered id has no measured exception
+        return View.DECISION.value
+    return View.DECISION.value if is_decision_cutoff_safe(factor) else View.CLOSE.value
+
+
+def exec_identity(
+    eval_cfg: EvalConfig, *, factor_id: str, book_view: str | None
+) -> EvalConfig:
+    """The exec-basis twin of ``eval_cfg`` — the identity DERIVED, not asserted.
+
+    The caller hands ONE config to its close reports and to this module, so the
+    exec identity has to be restated here or the exec artifact inherits the close
+    label. ``return_basis`` is the one constant (it is this module's entire
+    purpose); ``view`` comes from :func:`subject_view` and ``book_view`` from the
+    caller, who is the only one who knows how the book was built.
+
+    A factor that is not decision-cutoff-safe yields the pairing
+    (close, exec_to_exec), which ``EvalConfig`` refuses — and refusing is correct:
+    such a factor's values use information from after their own 14:51 entry anchor,
+    so no honest exec-basis artifact of it exists until that is fixed. The refusal
+    is re-raised with the specific reason rather than left as the generic pairing
+    message, which would send the reader looking for a config typo.
+    """
+    view = subject_view(factor_id)
+    try:
+        return replace(
+            eval_cfg,
+            view=view,
+            return_basis=ReturnBasis.EXEC_TO_EXEC.value,
+            book_view=book_view,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"cannot build an exec_to_exec evaluation of {factor_id!r}: its values "
+            f"are on the {view!r} view because its compute applies no 14:50 "
+            f"truncation of its own (measured — see "
+            f"factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE and "
+            f"tests/test_decision_cutoff_visibility.py), so the day-d value uses "
+            f"bars from after its own 14:51 entry anchor. Declaring view=decision "
+            f"anyway would be the report stating a check it did not do; the "
+            f"correctness fix is tracked separately."
+        ) from exc
+
+
 def _write_report(report: FactorEvalReport, report_dir: Path, stem: str) -> tuple[Path, Path]:
     md_path = report_dir / f"{stem}.md"
     json_path = report_dir / f"{stem}.json"
@@ -201,23 +259,31 @@ def run_exec_basis_evaluation(
     report_dir: Path,
     stem: str,
     force_rebuild: bool = False,
+    book_view: str = View.CLOSE.value,
 ) -> ExecBasisEvaluation:
     """Build the exec-to-exec returns, sanity-check them, evaluate twice, report.
 
     ``panel`` is the front-adjusted daily panel (it carries the raw ``adj_factor``
     the adjustment identity needs and defines the shared price grid); ``spec`` is
     the factor's DAILY spec, from which the intraday variant is derived.
+
+    ``book_view`` declares which information set ``book`` was built from. It
+    defaults to ``close`` because that is what every current caller does — the
+    confirmed book takes close(d) values and the evening daily_basic(d), the live
+    defect design §1.1 records and D7 closes. The decision-view book path passes
+    ``decision`` explicitly. Only the caller knows this, so it is a parameter
+    rather than something guessed here.
     """
     started = time.monotonic()
     params = ExecBasisParams.from_config(cfg)
     exec_spec = intraday_spec_variant(spec, params)
-    # Contract v1.0: the EvalConfig's identity travels with the basis, exactly as
-    # the spec's does one line above. The caller hands ONE config to its close
-    # reports and to this function, so stating the exec identity HERE is what keeps
-    # both artifacts truthful about which information set they describe. The
-    # pairing is re-validated by EvalConfig's own construction check.
-    eval_cfg = replace(
-        eval_cfg, view=View.DECISION.value, return_basis=ReturnBasis.EXEC_TO_EXEC.value
+    # Contract v1.0: the identity travels with the basis, exactly as the spec's does
+    # one line above — and the two runs below carry DIFFERENT identities, because
+    # the no-book run has no book and the with-book run has a close-view one. One
+    # shared config would have to pick one of those and be wrong about the other.
+    cfg_no_book = exec_identity(eval_cfg, factor_id=spec.factor_id, book_view=None)
+    cfg_with_book = exec_identity(
+        eval_cfg, factor_id=spec.factor_id, book_view=book_view
     )
     horizon = spec.forward_return_horizon
 
@@ -314,7 +380,7 @@ def run_exec_basis_evaluation(
         execution_capacity=disclosure,
     )
     report_no_book, ir_no_book = evaluator.evaluate_with_ir(
-        factor_panel, exec_spec, eval_cfg, ctx_no_book
+        factor_panel, exec_spec, cfg_no_book, ctx_no_book
     )
     ctx_with_book = EvalContext(
         forward_returns=exec_returns,
@@ -324,7 +390,7 @@ def run_exec_basis_evaluation(
         execution_capacity=disclosure,
     )
     report_with_book, ir_with_book = evaluator.evaluate_with_ir(
-        factor_panel, exec_spec, eval_cfg, ctx_with_book
+        factor_panel, exec_spec, cfg_with_book, ctx_with_book
     )
 
     nb_md, nb_json = _write_report(report_no_book, report_dir, f"{stem}_exec_no_book")
@@ -402,6 +468,8 @@ def format_exec_basis_line(result: ExecBasisEvaluation) -> str:
 __all__ = [
     "ExecBasisEvaluation",
     "build_disclosure",
+    "exec_identity",
     "format_exec_basis_line",
     "run_exec_basis_evaluation",
+    "subject_view",
 ]

@@ -388,6 +388,30 @@ def is_valid_day_pooled(factor: Factor) -> bool:
     )
 
 
+#: MEASURED exceptions: minute factors whose DAY-d VALUE depends on bars AFTER the
+#: 14:50 decision cutoff, i.e. whose compute applies no cutoff of its own and must
+#: therefore be handed pre-truncated bars to be decision-view. Under the
+#: ``exec_to_exec`` basis a value like that uses information from after its own
+#: 14:51 entry anchor, so an evaluation of it CANNOT honestly declare
+#: ``view=decision``.
+#:
+#: This is a DENY LIST OF MEASURED FACTS, never a proof of safety: a factor absent
+#: from it has either been measured clean or never measured.
+#: ``tests/test_decision_cutoff_visibility.py`` is what does the measuring (perturb
+#: only the post-cutoff bars, assert the pre-cutoff rows byte-identical, ask whether
+#: the value moves) and it pins this set to exactly its own contents, so a second
+#: offender cannot join silently.
+#:
+#: Declared HERE, next to the other minute-factor partitions, because it is a fact
+#: about a factor's values — not about the evaluation path that has to consult it.
+NOT_DECISION_CUTOFF_SAFE: frozenset[type[Factor]] = frozenset({JumpAmountCorrFactor})
+
+
+def is_decision_cutoff_safe(factor: Factor) -> bool:
+    """True iff ``factor``'s value at d uses no bar after d's 14:50 cutoff."""
+    return type(factor) not in NOT_DECISION_CUTOFF_SAFE
+
+
 def is_minute_bound(factor: Factor) -> bool:
     """True iff ``factor`` has a bars-only raw-compute binding here."""
     return type(factor) in _MINUTE_BINDINGS
@@ -474,6 +498,7 @@ def is_cross_sectional_minute(factor: Factor) -> bool:
 
 __all__ = [
     "CROSS_SECTIONAL_MINUTE_FACTORS",
+    "NOT_DECISION_CUTOFF_SAFE",
     "STATS_VALUE_COL",
     "VALID_DAY_POOLED_FACTORS",
     "BindingFn",
@@ -481,6 +506,7 @@ __all__ = [
     "combine_minute_stats",
     "has_minute_diagnostics",
     "is_cross_sectional_minute",
+    "is_decision_cutoff_safe",
     "is_minute_bound",
     "is_valid_day_pooled",
     "minute_diagnostics_from_bars",

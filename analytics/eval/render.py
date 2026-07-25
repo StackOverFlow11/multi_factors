@@ -250,7 +250,8 @@ def _provenance_rows(report: FactorEvalReport) -> list[tuple[str, str]]:
         # -- contract v1.0 identity + factor declarations (D1 contract v1.0/v1.1) --
         (
             "evaluation contract",
-            f"v{EVAL_CONTRACT_VERSION}, {basis_identity_phrase(cfg.view, cfg.return_basis)}",
+            f"v{EVAL_CONTRACT_VERSION}, "
+            + basis_identity_phrase(cfg.view, cfg.return_basis, cfg.book_view),
         ),
         ("requires (endpoint inputs)", _requires_row(spec)),
         (
