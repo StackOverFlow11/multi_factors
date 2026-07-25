@@ -470,16 +470,23 @@ def test_zero_output_symbol_veto_mutation(monkeypatch):
     present in the output", which was the faithful shape while ONE criterion call
     decided the load depth for the WHOLE universe: the thin name was absent from
     that shared output, so filtering the list removed its veto. D4b decides depth
-    PER SYMBOL, so the list holds exactly one name and the filtered-list form is
-    provably inert here — measured on this fixture: 70 criterion calls, the real
-    and filtered forms answer identically in 70 of 70, because all 20 calls with
-    zero output also have ``loaded_days <= baseline_days`` and are already vetoed
-    by the guard above the symbol loop. Left as-is it would be a mutation test
-    that cannot fail, which is the exact failure mode this project has twice paid
-    for; so it is re-expressed to say the same thing directly ("no output -> no
-    veto") and it reproduces the original divergence on the SAME fixture, the
-    SAME factor and the SAME assertions: single-fill carries only 600000.SH (40
-    rows) while the batch fill carries both (50 rows).
+    PER SYMBOL, so the list holds exactly one name and the filtered-list form
+    became INERT — measured on this fixture: 72 criterion calls (70 from the
+    per-date fill, 2 from the batch fill), the real and filtered forms answer
+    identically in 72 of 72, because all 20 calls with zero output also have
+    ``loaded_days <= baseline_days`` and are already vetoed by the guard above the
+    symbol loop.
+
+    STATED PRECISELY, because the distinction matters: an inert mutation makes the
+    assertion below — which asserts that the drop HAPPENS — impossible to satisfy.
+    So the old expression did not become a test that cannot fail; it became a test
+    that CANNOT PASS, and it went red on the D4b engine. It was not deleted or
+    weakened to get green (§六.16): the property it protects still holds and is
+    still asserted, with the same fixture, the same factor and the same
+    assertions; only the mutation's wording moved to a form that still bites under
+    per-symbol saturation ("no output -> no veto"). It reproduces the original
+    divergence exactly: single-fill carries only 600000.SH (40 rows) while the
+    batch fill carries both (50 rows).
     """
     import factors.materialize as mat
 

@@ -41,6 +41,7 @@ from factors.compute.minute.binding import (
     CROSS_SECTIONAL_MINUTE_FACTORS,
     combine_minute_stats,
     is_cross_sectional_minute,
+    is_valid_day_pooled,
     minute_raw_from_bars,
     minute_stats_from_bars,
 )
@@ -51,19 +52,40 @@ from factors.compute.minute.intraday_amp_cut import (
 from factors.materialize import MaterializeSources, materialize_range
 from factors.view_lag import minute_decision_cutoff
 
-#: The ten minute factors with a bars-only binding (valley_price_quantile is the
-#: deliberately deferred eleventh — it also needs the daily panel).
-STREAMED_FACTOR_IDS = (
-    "jump_amount_corr_20",
-    "minute_ideal_amp_10",
-    "amp_marginal_anomaly_vol_20",
-    "volume_peak_count_20",
-    "intraday_amp_cut_10",
-    "peak_interval_kurtosis_20",
-    "valley_relative_vwap_20",
-    "valley_ridge_vwap_ratio_20",
-    "ridge_minute_return_20",
-    "peak_ridge_amount_ratio_20",
+def _streamed_factor_ids() -> tuple[str, ...]:
+    """Every bars-only minute factor, DERIVED from the binding table.
+
+    Hand-maintaining this list would mean a new minute factor could enter both
+    binding tables — satisfying the coverage test below — and still slip past all
+    the parametrized reconciliations without anything saying so. Nothing here may
+    depend on a person remembering to add a line.
+
+    A default-constructed instance's ``name`` IS its registered factor id (the
+    window is part of the name by construction), so the ids come from the bound
+    classes themselves rather than from a copy of the registry's internals; the
+    round-trip through ``factor_registry.build`` below is what proves it.
+    """
+    ids = []
+    for cls in _MINUTE_STREAM_BINDINGS:
+        factor_id = cls().name
+        rebuilt = factor_registry.build(factor_id)
+        assert type(rebuilt) is cls, (
+            f"{cls.__name__}() is named {factor_id!r} but that id builds a "
+            f"{type(rebuilt).__name__} — the binding table and the registry disagree"
+        )
+        ids.append(factor_id)
+    return tuple(sorted(ids))
+
+
+#: The bars-only minute factors (valley_price_quantile is the deliberately
+#: deferred eleventh — it also needs the daily panel, so it has no bars binding).
+STREAMED_FACTOR_IDS = _streamed_factor_ids()
+
+#: The BOUNDED minute factors (fixed trailing trim, no saturation expansion) —
+#: also derived, so the trim reconciliation cannot silently miss one.
+BOUNDED_FACTOR_IDS = tuple(
+    fid for fid in STREAMED_FACTOR_IDS
+    if not is_valid_day_pooled(factor_registry.build(fid))
 )
 
 #: >= AMP_CUT_MIN_CROSS_SECTION symbols, so intraday_amp_cut's date-wise gate can
@@ -377,6 +399,33 @@ def test_provider_is_never_asked_for_more_than_one_symbol(factor_id):
     assert prov.max_rows_served <= len(DATES) * BARS_PER_DAY
 
 
+@pytest.mark.parametrize("factor_id", ["volume_peak_count_20", "intraday_amp_cut_10"])
+def test_a_repeated_symbol_in_the_request_changes_nothing(factor_id):
+    """The CALLER-SIDE half of the "produced exactly once" invariant.
+
+    ``_symbol_bars`` owns "the provider honoured its ``symbols`` argument"; this
+    owns "the caller did not repeat a name". The single-frame engine was immune
+    because the providers' ``isin`` filter is idempotent, so a repeat cost nothing;
+    streaming iterates the list and would materialize the name twice.
+
+    Measured BEFORE the fix, on this fixture with two names repeated:
+    ``volume_peak_count_20`` 48 -> 56 rows with 8 duplicated (date, symbol) entries
+    and values unchanged; ``intraday_amp_cut_10`` the same 8 duplicates AND ALL 48
+    shared cells changed, because the repeated name entered its date's
+    cross-section twice and moved that date's mean and std for every member.
+
+    MUTATION (run, rc=1): removing the ``_requested_universe`` call in
+    ``materialize_range`` restores both symptoms; restored -> rc=0. The probe that
+    proves the mutation bit is the duplicate row count going 0 -> 8.
+    """
+    factor = factor_registry.build(factor_id)
+    clean = _streamed(factor, symbols=SYMBOLS)
+    repeated = _streamed(factor, symbols=[*SYMBOLS, SYMBOLS[0], SYMBOLS[3]])
+    assert not repeated.index.duplicated().any(), "a repeated request produced duplicate rows"
+    n = _assert_bit_identical(repeated, clean, f"{factor_id} with a repeated symbol")
+    assert n > 0, "vacuous: no finite values"
+
+
 def test_sloppy_provider_is_re_filtered():
     """A provider that ignores ``symbols`` must not corrupt the streamed result.
 
@@ -636,23 +685,35 @@ def _dense_plus_sparse() -> pd.DataFrame:
 DENSE_PLUS_SPARSE = _dense_plus_sparse()
 
 
-def test_per_symbol_trim_uses_the_symbols_own_trading_days():
-    """DISCLOSED REFINEMENT: the trailing trim counts THIS symbol's trading days.
+@pytest.mark.parametrize("factor_id", BOUNDED_FACTOR_IDS)
+def test_per_symbol_trim_uses_the_symbols_own_trading_days(factor_id):
+    """The trailing trim counts THIS symbol's trading days — and that is a FIX.
 
     Under the union rule a densely-traded neighbour's calendar decided how much
-    history a sparse symbol was warmed with — itself a load-geometry dependence
-    (red line #6). This pins BOTH halves so the refinement is a fact, not a
-    side effect:
+    history a sparse symbol was warmed with, which is itself a load-geometry
+    dependence (red line #6). Measured across engines on this fixture, all three
+    bounded factors move exactly one cell — the sparse symbol's — and in all three
+    the per-symbol result is the load-geometry-free truth while the union result is
+    NOT: ``jump_amount_corr_20`` 0.1571 (union) vs 0.0901 (truth = per-symbol), and
+    the other two flip NaN (union) -> finite (per-symbol). So this is not a
+    conservative refinement of a correct rule, it corrects a wrong one.
 
-    1. the two rules really disagree on this fixture (the union's ``warmup``-th
-       day back is LATER than the sparse symbol's own, so the union rule keeps
-       LESS of its history) — if they agreed, half of this test would be vacuous;
-    2. the streamed value equals the load-geometry-free truth (the symbol's whole
-       history in one frame), which is the property the trim exists to deliver.
+    ALL THREE bounded factors are covered, derived from the binding table: two of
+    the three express the disagreement as a coverage FLIP, which is precisely what
+    ``_assert_bit_identical`` singles out as the change this step must not make by
+    accident — testing only the value-moving one would have missed the two that
+    matter most.
+
+    Both halves are pinned so neither can go vacuous:
+
+    1. the two rules really disagree on this fixture (the union's ``warmup``-th day
+       back is LATER than the sparse symbol's own, so the union rule keeps LESS of
+       its history);
+    2. the streamed value equals the load-geometry-free truth.
     """
     from factors.materialize import _warmup_start
 
-    factor = factor_registry.build("jump_amount_corr_20")  # a BOUNDED minute factor
+    factor = factor_registry.build(factor_id)
     warmup = int(factor.spec.lookback_depth)
 
     # (1) the rules disagree — computed from the fixture, not asserted by fiat.
