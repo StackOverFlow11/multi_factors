@@ -10,6 +10,35 @@ the SAME single-source constants the eval runners / ``qt.panel_freeze`` recipes
 pass (they pass them explicitly but equal to these defaults), so a materialized
 minute factor matches the frozen baseline's math.
 
+TWO GRANULARITIES (D4b). ``minute_raw_from_bars`` is the WHOLE-factor call: bars
+in, daily values out. It requires every symbol's bars in ONE frame, which does
+not fit the evaluation plane (995 symbols x 5 years: measured 52.7 GB nominal,
+~115 GB peak RSS vs 56 GB available — ``docs/factors/d5_saturation_feasibility.md``).
+So the streaming materializer uses the SPLIT pair instead:
+
+* :func:`minute_stats_from_bars` — the PER-SYMBOL stage (memory-bounded: one
+  symbol's minute history in, its small daily intermediate out);
+* :func:`combine_minute_stats` — the CROSS-SECTIONAL combine, run ONCE on the
+  assembled full-universe intermediate.
+
+The cut sits BEFORE the cross-section on purpose. Ten of the eleven minute
+factors are per-symbol pure, so their intermediate IS their value and the combine
+is the identity; ``intraday_amp_cut`` is not — its step 4 z-scores each date
+across the covered universe and needs >= ``AMP_CUT_MIN_CROSS_SECTION`` (=10)
+finite pairs, so a ONE-SYMBOL cross-section is all-NaN BY DEFINITION (measured:
+1692/1692 rows NaN). Splitting around the whole factor would destroy it; splitting
+before the combine reproduces it exactly. Its module already organises the math
+that way (``compute_amp_cut_stats`` then ``combine_amp_cut_cross_section``), as do
+the eval runners — this binding surfaces that existing seam rather than inventing
+one.
+
+CONTRACT the streaming caller relies on: ``combine`` is a PER-DATE reduction (a
+date's output depends only on that date's intermediate rows), so restricting the
+intermediate to the emit window before combining cannot change a kept date's
+value. Both combines satisfy it (identity; ``groupby(date)`` z-score).
+``combine(per_symbol(bars)) == minute_raw_from_bars(bars)`` is pinned by test for
+all eleven factors, so the two granularities cannot drift apart.
+
 This lives in ``factors/compute/minute`` (the factor layer) rather than duplicated
 in ``qt`` because it is FACTOR knowledge; ``qt.panel_freeze`` keeps its own
 recipe copy (a frozen D1 tool) and D6 may later fold it onto this binding.
@@ -25,6 +54,8 @@ Layering: factor layer only (never qt / feeds).
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import NoReturn
 
 import pandas as pd
 
@@ -35,6 +66,8 @@ from factors.compute.minute.amp_marginal_anomaly_vol import (
 )
 from factors.compute.minute.intraday_amp_cut import (
     IntradayAmpCutFactor,
+    combine_amp_cut_cross_section,
+    compute_amp_cut_stats,
     compute_intraday_amp_cut,
 )
 from factors.compute.minute.jump_amount_corr import (
@@ -106,6 +139,95 @@ _MINUTE_BINDINGS: dict[type[Factor], BindingFn] = {
     RidgeMinuteReturnFactor: _bind(compute_ridge_minute_return),
     PeakRidgeAmountRatioFactor: _bind(compute_peak_ridge_amount_ratio),
 }
+
+# --------------------------------------------------------------------------- #
+# Two-stage (streaming) binding: per-symbol stage + cross-sectional combine (D4b)
+# --------------------------------------------------------------------------- #
+#: Column name of the per-symbol intermediate for the factors whose per-symbol
+#: stage ALREADY yields the final value (the combine is then the identity).
+STATS_VALUE_COL = "value"
+
+
+@dataclass(frozen=True)
+class MinuteStreamBinding:
+    """The split of a minute factor into per-symbol work + one cross-section pass.
+
+    ``per_symbol(factor, bars)`` -> ``MultiIndex(date, symbol)`` intermediate frame
+    for the ONE symbol carried by ``bars`` (it also accepts many symbols — it is
+    the same math, just not memory-bounded then).
+
+    ``combine(factor, stats)`` -> the factor's daily raw Series from the assembled
+    full-universe intermediate. It MUST be a per-date reduction (see the module
+    docstring's CONTRACT), which is what lets the streaming materializer restrict
+    the intermediate to the emit window before combining.
+    """
+
+    per_symbol: Callable[[Factor, pd.DataFrame], pd.DataFrame]
+    combine: Callable[[Factor, pd.DataFrame], pd.Series]
+
+
+def _pure_stream(compute_fn) -> MinuteStreamBinding:
+    """Stream binding for a PER-SYMBOL PURE factor: intermediate == value.
+
+    Measured, not assumed: whole-universe vs per-symbol-concatenated agree to
+    0.000e+00 on real bars for these (probe leg 4 / the D4b reconciliation).
+    """
+
+    def _per_symbol(factor: Factor, bars: pd.DataFrame) -> pd.DataFrame:
+        series = compute_fn(
+            bars, lookback_days=factor.lookback_days, name=factor.name  # type: ignore[attr-defined]
+        )
+        return series.to_frame(STATS_VALUE_COL)
+
+    def _combine(factor: Factor, stats: pd.DataFrame) -> pd.Series:
+        if STATS_VALUE_COL not in stats.columns:
+            raise ValueError(
+                f"{factor.name}: the per-symbol intermediate must carry the "
+                f"'{STATS_VALUE_COL}' column; got {list(stats.columns)}."
+            )
+        return stats[STATS_VALUE_COL].rename(factor.name).sort_index(kind="mergesort")
+
+    return MinuteStreamBinding(per_symbol=_per_symbol, combine=_combine)
+
+
+def _amp_cut_per_symbol(factor: Factor, bars: pd.DataFrame) -> pd.DataFrame:
+    """Steps 1-3 of ``intraday_amp_cut``: the ``(v_mean, v_std)`` intermediate."""
+    return compute_amp_cut_stats(
+        bars, lookback_days=factor.lookback_days  # type: ignore[attr-defined]
+    )
+
+
+def _amp_cut_combine(factor: Factor, stats: pd.DataFrame) -> pd.Series:
+    """Step 4 of ``intraday_amp_cut``: the per-date cross-sectional z-score.
+
+    Run ONCE on the assembled universe — the ``min_cross_section`` gate (=10) is a
+    factor DEFINITION constant and is never relaxed to accommodate streaming.
+    """
+    return combine_amp_cut_cross_section(stats, name=factor.name)
+
+
+#: factor class -> its two-stage streaming binding. Same coverage as
+#: ``_MINUTE_BINDINGS`` (the ten bars-only factors); a factor bound in one table
+#: and not the other is a readable error, pinned by test.
+_MINUTE_STREAM_BINDINGS: dict[type[Factor], MinuteStreamBinding] = {
+    JumpAmountCorrFactor: _pure_stream(compute_jump_amount_corr),
+    MinuteIdealAmplitudeFactor: _pure_stream(compute_minute_ideal_amplitude),
+    AmpMarginalAnomalyVolFactor: _pure_stream(compute_amp_marginal_anomaly_vol),
+    VolumePeakCountFactor: _pure_stream(compute_volume_peak_count),
+    IntradayAmpCutFactor: MinuteStreamBinding(
+        per_symbol=_amp_cut_per_symbol, combine=_amp_cut_combine
+    ),
+    PeakIntervalKurtosisFactor: _pure_stream(compute_peak_interval_kurtosis),
+    ValleyRelativeVwapFactor: _pure_stream(compute_valley_relative_vwap),
+    ValleyRidgeVwapRatioFactor: _pure_stream(compute_valley_ridge_vwap_ratio),
+    RidgeMinuteReturnFactor: _pure_stream(compute_ridge_minute_return),
+    PeakRidgeAmountRatioFactor: _pure_stream(compute_peak_ridge_amount_ratio),
+}
+
+#: The factors whose cross-sectional combine is NOT the identity — i.e. the ones
+#: for which "split per symbol around the WHOLE factor" would be wrong. Declared
+#: so the property is a checkable fact rather than a comment.
+CROSS_SECTIONAL_MINUTE_FACTORS: frozenset[type[Factor]] = frozenset({IntradayAmpCutFactor})
 
 #: Minute factors deliberately NOT bound (need extra inputs), with the reason.
 _DEFERRED: dict[type[Factor], str] = {
@@ -223,12 +345,28 @@ def is_minute_bound(factor: Factor) -> bool:
 def minute_raw_from_bars(factor: Factor, bars: pd.DataFrame) -> pd.Series:
     """Compute ``factor``'s raw daily Series from (cutoff-filtered) 1min ``bars``.
 
+    The WHOLE-factor granularity: every symbol's bars must be in ``bars``. Prefer
+    :func:`minute_stats_from_bars` + :func:`combine_minute_stats` when the universe
+    does not fit in memory (see the module docstring).
+
     Readable error for a minute factor that is deferred (needs extra inputs) or a
     non-minute-bound factor — never a silent wrong result.
     """
     binding = _MINUTE_BINDINGS.get(type(factor))
     if binding is not None:
         return binding(factor, bars)
+    _raise_unbound(factor)
+
+
+def _stream_binding(factor: Factor) -> MinuteStreamBinding:
+    binding = _MINUTE_STREAM_BINDINGS.get(type(factor))
+    if binding is None:
+        _raise_unbound(factor)
+    return binding
+
+
+def _raise_unbound(factor: Factor) -> NoReturn:
+    """The shared readable error for a deferred / unbound minute factor."""
     deferred = _DEFERRED.get(type(factor))
     if deferred is not None:
         raise NotImplementedError(f"{factor.name}: {deferred}")
@@ -238,12 +376,45 @@ def minute_raw_from_bars(factor: Factor, bars: pd.DataFrame) -> pd.Series:
     )
 
 
+def minute_stats_from_bars(factor: Factor, bars: pd.DataFrame) -> pd.DataFrame:
+    """``factor``'s PER-SYMBOL intermediate from (cutoff-filtered) 1min ``bars``.
+
+    Memory-bounded stage: ``bars`` normally carries ONE symbol, and the returned
+    ``MultiIndex(date, symbol)`` frame is daily-sized, so the caller can discard
+    the minute bars before reading the next symbol. For a per-symbol-pure factor
+    the frame is the value itself (column ``STATS_VALUE_COL``); for
+    ``intraday_amp_cut`` it is the pre-cross-section ``(v_mean, v_std)`` panel.
+    """
+    return _stream_binding(factor).per_symbol(factor, bars)
+
+
+def combine_minute_stats(factor: Factor, stats: pd.DataFrame) -> pd.Series:
+    """``factor``'s daily raw Series from the ASSEMBLED per-symbol intermediates.
+
+    Run ONCE on the full-universe intermediate: this is where a cross-sectional
+    factor's date-wise standardization happens, so its universe is the whole
+    covered set exactly as in the single-frame path.
+    """
+    return _stream_binding(factor).combine(factor, stats)
+
+
+def is_cross_sectional_minute(factor: Factor) -> bool:
+    """True iff ``factor``'s combine is NOT the identity (a real cross-section)."""
+    return type(factor) in CROSS_SECTIONAL_MINUTE_FACTORS
+
+
 __all__ = [
+    "CROSS_SECTIONAL_MINUTE_FACTORS",
+    "STATS_VALUE_COL",
     "VALID_DAY_POOLED_FACTORS",
     "BindingFn",
+    "MinuteStreamBinding",
+    "combine_minute_stats",
+    "is_cross_sectional_minute",
     "is_minute_bound",
     "is_valid_day_pooled",
     "minute_raw_from_bars",
+    "minute_stats_from_bars",
     "pooled_baseline_days",
     "pooled_lookback_days",
 ]
