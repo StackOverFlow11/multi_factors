@@ -80,6 +80,7 @@ def _ensure_coverage(
     sources: MaterializeSources,
     view: View,
     cutoff: str,
+    diagnostics: list | None = None,
 ) -> pd.Series:
     """Read-through: fill any date the store lacks for ``factor``, return the Series.
 
@@ -89,6 +90,15 @@ def _ensure_coverage(
     (possibly empty). The per-date fill (dates = one) and the batch fill (dates =
     many) leave BIT-IDENTICAL stores because the materializer's trailing trim is
     warmup-consistent (design §3.5 P8).
+
+    ``diagnostics``: when a sink is supplied the WHOLE requested range is
+    materialized even on a full store hit. The store persists VALUES, not the
+    day-level gate-attrition counts a scarcity disclosure reduces, so a warm store
+    can serve the values and cannot serve the disclosure. The two honest options
+    were "recompute" and "publish the report without the section"; the second is
+    the silent degradation this project forbids, so the cost is paid and stated.
+    Values are unaffected either way (the engine is deterministic in code + data,
+    which is exactly what the store key asserts).
     """
     stored = store.read_valid(key, expected_fingerprint=fingerprint)
     have = (
@@ -96,7 +106,7 @@ def _ensure_coverage(
         if stored is not None and not stored.empty
         else pd.DatetimeIndex([])
     )
-    missing = dates[~dates.isin(have)]
+    missing = dates if diagnostics is not None else dates[~dates.isin(have)]
     if len(missing):
         fresh = materialize_range(
             factor,
@@ -106,6 +116,7 @@ def _ensure_coverage(
             emit_end=missing.max(),
             sources=sources,
             decision_cutoff=cutoff,
+            diagnostics=diagnostics,
         )
         if not fresh.empty:
             store.upsert(key, fresh, fingerprint=fingerprint)
@@ -166,17 +177,30 @@ def panel(
     view: object = View.DECISION,
     basis: object = ReturnBasis.EXEC_TO_EXEC,
     params_by_id: Mapping[str, Mapping[str, object]] | None = None,
+    diagnostics: list | None = None,
 ) -> pd.DataFrame:
     """Raw factor values for ``factor_ids`` over ``decisions`` x ``universe``.
 
     Read-through: any decision date the store lacks is materialized once (batch)
     and appended. The view x basis pairing is enforced up front.
+
+    ``diagnostics``: optional per-day gate-attrition sink for the ONE factor whose
+    scarcity disclosure needs it — see :func:`_ensure_coverage`. Requesting it for
+    several factors at once is refused rather than served: the frames from two
+    factors would land in one list with nothing to tell them apart, and a
+    summarizer would silently reduce the mixture.
     """
     resolved_view, _ = require_legal_pairing(view, basis)
     factor_ids = list(factor_ids)
     symbols = [str(s) for s in universe]
     if not decisions:
         raise ValueError("panel() needs at least one DecisionPoint.")
+    if diagnostics is not None and len(factor_ids) != 1:
+        raise ValueError(
+            f"panel(diagnostics=...) takes exactly ONE factor_id (got "
+            f"{factor_ids}): the per-day diagnostics frames carry no factor label, "
+            f"so several factors' frames in one sink would be reduced together."
+        )
     cutoff = _uniform_cutoff(decisions)
     dates = pd.DatetimeIndex(sorted({pd.Timestamp(d.date).normalize() for d in decisions}))
 
@@ -188,6 +212,7 @@ def panel(
         series_by_id[fid] = _ensure_coverage(
             factor, key, fp, dates=dates, symbols=symbols, store=store,
             sources=sources, view=resolved_view, cutoff=cutoff,
+            diagnostics=diagnostics,
         )
     return _assemble(factor_ids, series_by_id, dates, symbols)
 

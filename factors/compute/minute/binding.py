@@ -164,6 +164,17 @@ class MinuteStreamBinding:
 
     per_symbol: Callable[[Factor, pd.DataFrame], pd.DataFrame]
     combine: Callable[[Factor, pd.DataFrame], pd.Series]
+    #: OPTIONAL per-symbol DAY-LEVEL diagnostics (D5): the gate-attrition frame a
+    #: factor's scarcity disclosure reduces. Only the factors that HAVE such a
+    #: disclosure set it; ``None`` means "this factor publishes no per-day
+    #: diagnostics", which the caller must state rather than infer.
+    #:
+    #: It is a SEPARATE callable rather than an extra ``per_symbol`` output on
+    #: purpose: ``per_symbol`` is the value path D4b verified cell-for-cell, and a
+    #: diagnostics request must not be able to change it. The cost is that asking
+    #: for diagnostics re-runs the per-symbol math on bars ALREADY in memory (no
+    #: extra I/O, no effect on any value); that cost is disclosed at the call site.
+    per_symbol_diagnostics: Callable[[Factor, pd.DataFrame], pd.DataFrame] | None = None
 
 
 def _pure_stream(compute_fn) -> MinuteStreamBinding:
@@ -188,6 +199,41 @@ def _pure_stream(compute_fn) -> MinuteStreamBinding:
         return stats[STATS_VALUE_COL].rename(factor.name).sort_index(kind="mergesort")
 
     return MinuteStreamBinding(per_symbol=_per_symbol, combine=_combine)
+
+
+def _pure_stream_with_diagnostics(compute_fn) -> MinuteStreamBinding:
+    """:func:`_pure_stream` plus the compute function's day-level diagnostics sink."""
+    base = _pure_stream(compute_fn)
+    return MinuteStreamBinding(
+        per_symbol=base.per_symbol,
+        combine=base.combine,
+        per_symbol_diagnostics=_sink_diagnostics(compute_fn),
+    )
+
+
+def _sink_diagnostics(compute_fn) -> Callable[[Factor, pd.DataFrame], pd.DataFrame]:
+    """Per-symbol diagnostics via the compute function's own ``diagnostics_out`` sink.
+
+    The three ridge/peak-family factors already expose the day-level gate-attrition
+    frame their scarcity disclosure reduces; this only routes it. The frame is
+    returned CONCATENATED and the symbol column is left exactly as the compute
+    function wrote it — the summarizers read it, and re-labelling here would be a
+    second place for the schema to drift.
+    """
+
+    def _call(factor: Factor, bars: pd.DataFrame) -> pd.DataFrame:
+        sink: list[pd.DataFrame] = []
+        compute_fn(
+            bars,
+            lookback_days=factor.lookback_days,  # type: ignore[attr-defined]
+            name=factor.name,
+            diagnostics_out=sink,
+        )
+        if not sink:
+            return pd.DataFrame()
+        return pd.concat(sink, ignore_index=False)
+
+    return _call
 
 
 def _amp_cut_per_symbol(factor: Factor, bars: pd.DataFrame) -> pd.DataFrame:
@@ -219,9 +265,14 @@ _MINUTE_STREAM_BINDINGS: dict[type[Factor], MinuteStreamBinding] = {
     ),
     PeakIntervalKurtosisFactor: _pure_stream(compute_peak_interval_kurtosis),
     ValleyRelativeVwapFactor: _pure_stream(compute_valley_relative_vwap),
-    ValleyRidgeVwapRatioFactor: _pure_stream(compute_valley_ridge_vwap_ratio),
-    RidgeMinuteReturnFactor: _pure_stream(compute_ridge_minute_return),
-    PeakRidgeAmountRatioFactor: _pure_stream(compute_peak_ridge_amount_ratio),
+    # The three factors that publish a per-day gate-attrition disclosure.
+    ValleyRidgeVwapRatioFactor: _pure_stream_with_diagnostics(
+        compute_valley_ridge_vwap_ratio
+    ),
+    RidgeMinuteReturnFactor: _pure_stream_with_diagnostics(compute_ridge_minute_return),
+    PeakRidgeAmountRatioFactor: _pure_stream_with_diagnostics(
+        compute_peak_ridge_amount_ratio
+    ),
 }
 
 #: The factors whose cross-sectional combine is NOT the identity — i.e. the ones
@@ -388,6 +439,24 @@ def minute_stats_from_bars(factor: Factor, bars: pd.DataFrame) -> pd.DataFrame:
     return _stream_binding(factor).per_symbol(factor, bars)
 
 
+def has_minute_diagnostics(factor: Factor) -> bool:
+    """True iff ``factor`` publishes a per-symbol day-level diagnostics frame."""
+    return _stream_binding(factor).per_symbol_diagnostics is not None
+
+
+def minute_diagnostics_from_bars(factor: Factor, bars: pd.DataFrame) -> pd.DataFrame:
+    """``factor``'s per-symbol day-level diagnostics frame (empty when it has none).
+
+    Returns an EMPTY frame — not an error — for a factor without a diagnostics
+    binding, so a caller can ask uniformly; whether the factor HAS one is the
+    separate, explicit :func:`has_minute_diagnostics` question, and a caller that
+    needs the disclosure must check it rather than read an empty frame as "no
+    attrition".
+    """
+    fn = _stream_binding(factor).per_symbol_diagnostics
+    return pd.DataFrame() if fn is None else fn(factor, bars)
+
+
 def combine_minute_stats(factor: Factor, stats: pd.DataFrame) -> pd.Series:
     """``factor``'s daily raw Series from the ASSEMBLED per-symbol intermediates.
 
@@ -410,6 +479,8 @@ __all__ = [
     "BindingFn",
     "MinuteStreamBinding",
     "combine_minute_stats",
+    "has_minute_diagnostics",
+    "minute_diagnostics_from_bars",
     "is_cross_sectional_minute",
     "is_minute_bound",
     "is_valid_day_pooled",
