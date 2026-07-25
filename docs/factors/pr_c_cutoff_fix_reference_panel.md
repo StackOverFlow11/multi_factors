@@ -121,27 +121,51 @@ verdict 同样 **Watch / Watch** 不变。
 - verdict 不变**不追认旧 artifact**：旧值在 exec 基准下是前视产物，无论它当时给出什么标签，
   都不构成一个诚实的结论。现在这一版才是。
 
-## 七、落地清单（合并顺序敏感）
+## 七、deny list 的解除（本 PR 内完成）
 
-并行的 D5 分支新增了一条**有意的响亮阻断**：`analytics/eval` 的 `subject_view(factor_id)`
+D5b（PR #99）新增了一条**有意的响亮阻断**：`qt.exec_basis_eval.subject_view(factor_id)`
 从事实派生信息集视图，事实源是 `factors/compute/minute/binding.py` 的 deny list
 `NOT_DECISION_CUTOFF_SAFE`；`jump_amount_corr_20` 在表里 ⇒ 派生出 (close, exec_to_exec)
-非法配对 ⇒ `EvalConfig` 拒绝 ⇒ 它的 exec 评估 loud raise。在截断修正之前这是对的（不存在
-它的诚实 exec artifact，阻断优于假声明）。
+非法配对 ⇒ `EvalConfig` 拒绝 ⇒ 它的 exec 评估 loud raise。在截断修正之前这是对的：不存在
+它的诚实 exec artifact，阻断优于假声明（红线 #9）。
 
-**本修正正是解除条件**，因此：
+**本修正正是解除条件**，且解除与重述在**同一个 PR** 内完成，不留「因子已修好、评估仍被拦」
+的中间态：本分支切自 `main@d806e70`（deny list 尚不存在，全仓零命中），合入 `main@435a798`
+后删除该条，`NOT_DECISION_CUTOFF_SAFE` 变为空集。
 
-1. **合并顺序上靠后的那个 PR 负责删除 `NOT_DECISION_CUTOFF_SAFE` 里的 `jump_amount_corr`
-   一条。** 本 PR 基于 `main@d806e70`，那时 deny list、`subject_view` 与
-   `tests/test_decision_cutoff_visibility.py` **都还不存在**（已核实：全仓零命中），所以本
-   分支上没有可删的东西；若 D5 先合并，本分支 rebase 后即删。
-2. **不要让它依赖谁记得**：deny list 应当**断言等于**可见性测量出来的不安全集合，而不是
-   手工维护 —— 那样 `jump_amount_corr` 一旦变安全，测试会自己变红逼出删除。否则两边都合并
-   而无人删除时，这个因子会**永远**评不出 exec 结果，而且从不跑该评估的人看不见 ——
-   正是本仓记录在案的「行为变了而措辞没变」家族。
-3. **两处测量应合一**：本 PR 的 `tests/test_minute_decision_cutoff_leakage.py` 对全部 11 个
-   分钟因子 + `mmp_ew` 测的就是同一个性质。两边合并后会存在两处事实源，应由靠后的那个 PR
-   收敛成一处（author-once），而不是并存。
+**独立佐证（比本 PR 自己的断言更有说服力）**：D5b 的
+`tests/test_decision_cutoff_visibility.py` 是**另一个作者、另一套 fixture**（12 名 × 40 日 ×
+240 bar 随机游走）独立写的测量。合入后**先不删 deny list 直接跑**，它给出：
+
+```
+FAILED test_the_known_exception_is_still_exactly_one_factor_and_still_leaks
+AssertionError: jump_amount_corr_20 no longer depends on post-14:50:00 bars.
+  If that was deliberate, this factor's PUBLISHED values changed: drop it from
+  factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE, and re-state its
+  verdict rather than letting the artifacts drift silently.
+```
+
+—— 它测量到截断确实生效，并逐字给出了本 PR 随后执行的两个动作。删除后该因子进入 clean
+参数化（十个 bars-bound 因子全测、全 0 cell 移动）。
+
+配套改动（都不是削弱，是把主张改成仍然为真的那一个）：
+
+- `test_the_known_exception_is_still_exactly_one_factor_and_still_leaks` →
+  `test_the_deny_list_is_empty_and_that_emptiness_is_a_measurement`：断言**两件事**——
+  deny list 为空 **且** 被测量的集合恰等于 bars-bound 集合。「空」与「测过」是不同的主张，
+  只断言前者会让「从没测过」也通过。新 offender 仍被 clean 参数化抓住。
+- `tests/test_eval_contract_v1.py::test_a_factor_that_is_not_cutoff_safe_cannot_get_an_exec_identity`：
+  该拒绝路径不再有真实 offender，于是**注入**一个（monkeypatch 把一个真因子类放进 deny
+  list）而不是删掉测试 —— 删掉会在下一个 offender 出现的那天没有守卫；继续点名一个已经修好
+  的因子则正是本仓反复吃亏的 stale-wording。
+- `docs/factors/d5_runner_difference_catalogue.md` §七之二 的「现在会 loud raise」条目改为
+  「已解除，解除于本 PR」。D5b 评审留的那条 NIT（阻断点在 runner 里偏晚）随之自动消失。
+
+**仍待收敛（留给后续，本 PR 不做）**：现在有**两处**测量同一性质 ——
+D5b 的 `tests/test_decision_cutoff_visibility.py`（10 个 bars-bound 因子，随机游走 fixture）
+与本 PR 的 `tests/test_minute_decision_cutoff_leakage.py`（11 个 Factor 子类 + `mmp_ew`，
+两把刀，带覆盖闭包）。二者互为独立复核，现在**同时为真**是好事；但长期应 author-once
+收敛成一处（本 PR 的覆盖是严格超集）。此处如实记录，不假装已经合并。
 
 ## 八、为什么单独成 PR（不许夹带进 D5）
 

@@ -96,19 +96,38 @@ def test_the_exec_basis_module_restates_the_identity_it_scores_on():
     }
 
 
-def test_a_factor_that_is_not_cutoff_safe_cannot_get_an_exec_identity():
+def test_a_factor_that_is_not_cutoff_safe_cannot_get_an_exec_identity(monkeypatch):
     """The derivation refuses rather than declaring a view the values do not have.
 
-    ``jump_amount_corr_20``'s compute applies no 14:50 truncation, so its values are
-    close-view; (close, exec_to_exec) is not a legal pairing, and that refusal is
-    the correct outcome — there is no honest exec artifact of it until it is fixed.
+    ``jump_amount_corr_20`` used to BE the live example: its compute applied no
+    14:50 truncation, so its values were close-view and (close, exec_to_exec) is
+    not a legal pairing. It was fixed and left ``NOT_DECISION_CUTOFF_SAFE``, so
+    the deny list is now empty and no real factor exercises this path.
+
+    The refusal is still the property under test, so the offender is INJECTED
+    rather than the test deleted: a real factor class is put on the deny list for
+    the duration, and the derivation must refuse it. Keeping a fixed factor named
+    here as though it were still broken would be the stale-wording failure this
+    repo keeps re-learning; deleting the test would drop the guard on the day the
+    next offender appears.
     """
+    from factors.compute.minute import binding as binding_module
+    from factors.compute.minute.volume_peak_count import VolumePeakCountFactor
     from qt.exec_basis_eval import exec_identity, subject_view
 
-    assert subject_view("jump_amount_corr_20") == "close"
+    # Nothing real is on the list any more: every bound factor derives decision-view.
+    assert binding_module.NOT_DECISION_CUTOFF_SAFE == frozenset()
     assert subject_view("volume_peak_count_20") == "decision"
+    assert subject_view("jump_amount_corr_20") == "decision"
+
+    monkeypatch.setattr(
+        binding_module,
+        "NOT_DECISION_CUTOFF_SAFE",
+        frozenset({VolumePeakCountFactor}),
+    )
+    assert subject_view("volume_peak_count_20") == "close"
     with pytest.raises(ValueError, match="no 14:50 truncation of its own"):
-        exec_identity(_cfg(), factor_id="jump_amount_corr_20", book_view="close")
+        exec_identity(_cfg(), factor_id="volume_peak_count_20", book_view="close")
 
 
 def test_the_no_book_and_with_book_runs_do_not_share_one_book_view():

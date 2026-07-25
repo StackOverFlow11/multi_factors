@@ -15,17 +15,21 @@ whether the value moves. This is the "perturb the future -> value unchanged" sha
 the project already uses, aimed at the WITHIN-DAY boundary rather than the
 across-day one.
 
-RESULT, ENCODED RATHER THAN DESCRIBED. Nine of the ten bars-bound minute factors are
-clean. ``jump_amount_corr_20`` is not: its compute is the ONLY one of the eleven that
-applies no decision-time truncation of its own (grep: zero ``decision_time`` /
-``prepare_visible_minute_bars`` references in its module), so under the old runners
-it saw 09:30-15:00 of day d.
+RESULT, ENCODED RATHER THAN DESCRIBED. All ten bars-bound minute factors are now
+clean. ``jump_amount_corr_20`` was NOT when this file was written: its compute was
+the ONLY one of the eleven that applied no decision-time truncation of its own
+(grep: zero ``decision_time`` / ``prepare_visible_minute_bars`` references in its
+module), so under the old runners it saw 09:30-15:00 of day d.
 
-That is recorded as a KNOWN, NAMED exception rather than fixed. Truncating it would
-change a published factor's values and could move its verdict — a definition
--affecting research decision, not a refactor's business (design v3.2 §〇). The
-exception is asserted POSITIVELY, so the day someone changes it, this test goes red
-and the change has to be made deliberately instead of noticed later.
+It was recorded here as a KNOWN, NAMED exception rather than fixed, because
+truncating it changes a published factor's values and could move its verdict — a
+definition-affecting research decision, not a refactor's business (design v3.2 §〇).
+The exception was asserted POSITIVELY, and that is precisely how the fix was forced
+to be deliberate: the separate correctness-fix PR truncated the factor, THIS test
+went red with the instruction to drop the entry and re-state the verdict, and the
+entry was dropped in the same PR that re-stated it. The factor has moved into the
+clean parametrization below, so a regression that re-introduces the leak is red
+again — the positive assertion did its job and is not needed a second time.
 
 THE LIST IS PRODUCTION STATE, NOT TEST STATE. It lives in
 ``factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE`` because the exec path
@@ -45,6 +49,7 @@ property, it only became load-bearing when PR #79 moved the entry anchor from
 Measured on the real cache the same way (12 CSI500 names, 2021-07..2021-12, 361,500
 bars, 4.6% of them post-cutoff): nine factors moved 0 cells; ``jump_amount_corr_20``
 moved 1,477 of 1,477 with max |diff| = 1.276 on a correlation bounded in [-1, 1].
+After the truncation fix it moves 0 of its cells here, like the other nine.
 """
 
 from __future__ import annotations
@@ -149,7 +154,11 @@ CLEAN_FACTOR_IDS = tuple(
 
 @pytest.mark.parametrize("factor_id", CLEAN_FACTOR_IDS)
 def test_value_does_not_depend_on_bars_after_the_decision_cutoff(factor_id):
-    """The nine that truncate for themselves: perturbing the future moves nothing."""
+    """Every bars-bound minute factor: perturbing the future moves nothing.
+
+    ``jump_amount_corr_20`` joined this parametrization when its truncation was
+    fixed; before the fix it moved 1,477/1,477 cells here.
+    """
     cells, moved, worst = _moved_cells(factor_id)
     assert cells > 0, f"{factor_id}: no comparable cells — the test would be vacuous"
     assert moved == 0, (
@@ -159,27 +168,26 @@ def test_value_does_not_depend_on_bars_after_the_decision_cutoff(factor_id):
     )
 
 
-def test_the_known_exception_is_still_exactly_one_factor_and_still_leaks():
-    """jump_amount_corr_20: recorded as a defect, asserted positively.
+def test_the_deny_list_is_empty_and_that_emptiness_is_a_measurement():
+    """No known exception remains — and the claim is backed, not merely absent.
 
-    Asserted in the POSITIVE direction on purpose. A test that merely tolerated the
-    exception would stay green whether it was fixed, worsened, or spread to a second
-    factor. This one goes red on any of those, which is what forces the decision to
-    be taken deliberately — and because the exec path DERIVES its right to declare
-    ``view=decision`` from the same list, a stale entry here is not cosmetic.
+    "Empty deny list" and "every factor measured clean" are DIFFERENT statements:
+    a list can be empty because nothing was ever measured. So this asserts both,
+    and that the measured set is exactly the bound set — the emptiness is only
+    worth anything while the parametrization above covers every bound factor.
+
+    The old positive assertion (jump_amount_corr_20 is on the list AND still
+    leaks) is gone because its subject is gone, not because it was inconvenient:
+    it fired, red, on the branch that fixed the factor, and its message is what
+    told that branch to drop the entry and re-state the verdict. A new offender
+    is still caught — by the clean parametrization, which is where it belongs.
     """
-    assert KNOWN_POST_CUTOFF_DEPENDENT_IDS == {"jump_amount_corr_20"}
-    for factor_id in sorted(KNOWN_POST_CUTOFF_DEPENDENT_IDS):
-        assert factor_id in BOUND_FACTOR_IDS
-        cells, moved, worst = _moved_cells(factor_id)
-        assert cells > 0
-        assert moved > 0, (
-            f"{factor_id} no longer depends on post-{CUTOFF} bars. If that was "
-            f"deliberate, this factor's PUBLISHED values changed: drop it from "
-            f"factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE, and re-state "
-            f"its verdict rather than letting the artifacts drift silently."
-        )
-        assert worst > 0.0
+    assert KNOWN_POST_CUTOFF_DEPENDENT_IDS == frozenset()
+    assert set(CLEAN_FACTOR_IDS) == set(BOUND_FACTOR_IDS)
+    assert len(BOUND_FACTOR_IDS) == 10, (
+        "the bound minute-factor set changed; the emptiness above only covers "
+        "what this file measures, so re-check the new one before trusting it"
+    )
 
 
 def test_every_clean_factor_is_absent_from_the_production_deny_list():

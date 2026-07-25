@@ -404,7 +404,14 @@ def is_valid_day_pooled(factor: Factor) -> bool:
 #:
 #: Declared HERE, next to the other minute-factor partitions, because it is a fact
 #: about a factor's values — not about the evaluation path that has to consult it.
-NOT_DECISION_CUTOFF_SAFE: frozenset[type[Factor]] = frozenset({JumpAmountCorrFactor})
+#:
+#: CURRENTLY EMPTY, and that emptiness is MEASURED rather than assumed: the sole
+#: entry was ``JumpAmountCorrFactor``, whose compute applied no truncation at all;
+#: it now truncates at 14:50 like its ten siblings, and the measuring test moved it
+#: into the clean parametrization (where a regression makes it red again). An empty
+#: set still means "measured clean OR never measured" for anything outside
+#: ``_MINUTE_STREAM_BINDINGS`` — the measuring test pins the bound ten explicitly.
+NOT_DECISION_CUTOFF_SAFE: frozenset[type[Factor]] = frozenset()
 
 
 def is_decision_cutoff_safe(factor: Factor) -> bool:

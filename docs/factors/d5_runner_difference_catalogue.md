@@ -280,7 +280,13 @@ docstring，按 #74 先例）。它改变 artifact 的**三处且仅三处**，�
 
 ⚠️ **`book_view` 使 exec 侧 no_book 与 with_book 两份 artifact 的 `eval_config` 块首次不同**（`null` vs `"close"`）。这是**有意**的：一次 with-book 评估携带**两个**信息集（候选因子的与因子簿的），一个 `view` 字段表达不了；设计 §1.1 记录的因子簿 close-view 活缺陷要到 D7 才关，在那之前诚实的 artifact 就该写 `view=decision, book_view=close`。对账时**不要**把这一处不同当作 no_book/with_book 之间的回归。
 
-⚠️ **`jump_amount_corr_20` 的 exec 评估现在会 loud raise**（`qt.exec_basis_eval.exec_identity`）：它的值是 close 视图（compute 无 14:50 截断，实测），(close, exec_to_exec) 非法配对。这是**故意的阻断**——在该因子被截断修正之前，它没有诚实的 exec artifact；而写一份声明 `view=decision` 的假 artifact 正是本字段要防的事。修正由**独立的 correctness-fix PR** 处理；它落地时从 `factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE` 移除该条即可解除阻断。
+✅ **已解除（解除于截断修正 PR，本节保留作记录）**：`jump_amount_corr_20` 的 exec 评估曾经 loud raise（`qt.exec_basis_eval.exec_identity`）——它的值是 close 视图（compute 无 14:50 截断，实测），(close, exec_to_exec) 非法配对。那是**故意的阻断**：在该因子被截断修正之前，它没有诚实的 exec artifact，而写一份声明 `view=decision` 的假 artifact 正是本字段要防的事。
+
+独立的 correctness-fix PR 已把该因子截断到 14:50（用与十个兄弟相同的 `visible_minute_frame`），并在**同一个 PR 里**从 `factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE` 移除该条 + 用旧 runner 重跑重述了它的 exec verdict（Watch/Watch 不变，数字见 `docs/factors/pr_c_cutoff_fix_reference_panel.md` §六），所以不存在「因子已修好、评估仍被拦」的中间态。`NOT_DECISION_CUTOFF_SAFE` 现在为空集，且这个空集是**被测量的**：`tests/test_decision_cutoff_visibility.py` 把十个 bars-bound 因子全部纳入 clean 参数化——**它正是逼出这次删除的东西**（截断落地后它红了，并在失败信息里给出「drop it from … and re-state its verdict」）。
+
+⚠️ 连带影响（D5b 评审的 NIT，自动消失）：那个阻断点在 runner 里偏晚（跑完逐票分钟聚合、写完两份 close_to_close 报告之后才 raise）。deny list 条目移除后该路径不再 raise，此 NIT 无需单独处理。
+
+⚠️ **C5 面板腿注意**：该因子的 D1 冻结面板（`artifacts/refactor_baseline/panels/jump_amount_corr_20.parquet`）是用**未截断**定义冻的，仍按原样保留不动；对账请改用 `artifacts/refactor_baseline/pr_c_cutoff_fix/`（同一条旧 runner 取值路径 + 截断输入）。provenance 与「为什么两份并存」见 `docs/factors/pr_c_cutoff_fix_reference_panel.md`。
 
 **没有变的**（`tests/test_eval_contract_v1.py` 逐值钉住）：`VerdictThresholds` 的**每一个**
 默认门（`min_abs_icir=0.30` / `min_incremental_abs_icir=0.15` /
