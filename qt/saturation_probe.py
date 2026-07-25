@@ -1,5 +1,12 @@
 """D5 feasibility probe: can the D4 materializer run the real evaluation universe?
 
+MODE 1 (``--mode feasibility``, the default) MEASURES THE PRE-D4b ENGINE. Its
+answer was no, and D4b acted on it: the materializer now streams per symbol, so
+item 3 below describes a load geometry the engine NO LONGER USES. The mode is
+kept because its four measurements are the "before" half of the comparison and
+items 1, 2 and 4 are facts about the DATA, not about the engine — but read item 3
+as history, and use ``--mode stream-scale`` (below) to measure what runs today.
+
 D4's materializer was accepted against a 40-symbol hot-path smoke. D5 needs it on
 the eleven-factor evaluation plane (CSI500, 995 symbols, 2021-07-01..2026-06-30),
 so before committing to a multi-hour run this probe MEASURES, on the real cache,
@@ -12,8 +19,10 @@ the four quantities that decide whether that run is possible at all:
    to the declared floor;
 2. **on-disk volume** at the evaluation window vs at the floor;
 3. **in-memory cost** of a whole-universe single-frame load, measured on a sample
-   and extrapolated linearly (the materializer loads every symbol into ONE frame:
-   ``sources.minute.minute_bars(list(symbols), ...)``);
+   and extrapolated linearly. HISTORICAL as of D4b: the materializer used to load
+   every symbol into ONE frame (``sources.minute.minute_bars(list(symbols), ...)``)
+   and now loads one symbol at a time. This measurement is what that geometry
+   would have cost, i.e. the reason it was replaced — not what runs today;
 4. **per-symbol equivalence** — whether materializing symbol-by-symbol and
    concatenating reproduces the whole-universe values exactly. This is the
    decisive question for the fix, and it is answered per factor rather than

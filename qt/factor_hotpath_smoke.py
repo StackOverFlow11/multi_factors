@@ -4,8 +4,8 @@ Measures, on the REAL intraday cache (cache-only, ``stk_mins_live_calls=0``), th
 magnitude gap between:
 
 * NAIVE per-factor loading — each factor materialized separately, so the 1min
-  read + normalize is paid ONCE PER FACTOR (what the D4 service does today: each
-  ``materialize_range`` call loads its own bars); and
+  read + normalize is paid ONCE PER FACTOR (each ``materialize_range`` call still
+  loads its own bars); and
 * SHARED loading — the 1min read + normalize + cutoff paid ONCE, then every
   factor computed from the shared bars (the ``factors.compute.minute.primitives``
   amortization the design §3.2 calls the load-bearing hot-path mechanism).
@@ -13,6 +13,13 @@ magnitude gap between:
 The budget is MEASURED, not claimed (§八): the caliber (universe sample, window,
 factor count) and the two wall times are printed as-is, with an explicit caveat
 that the numbers do NOT extrapolate to full-A (~6x the CSI500 read).
+
+CALIBER NOTE (D4b): BOTH arms here load the whole 40-symbol sample into one
+frame, which is no longer the engine's geometry — the materializer streams per
+symbol since D4b. What this smoke measures is unchanged and still the point (how
+much a repeated 1min read + normalize costs relative to paying it once), but do
+not read the NAIVE arm as a picture of the engine's memory profile; for that use
+``qt.saturation_probe --mode stream-scale``, which measures the real path.
 
 Run: ``python -m qt.factor_hotpath_smoke`` (deliberately NOT in qt/cli). It reads
 ``artifacts/cache/tushare/v1`` (symlink the main checkout's artifacts into the
