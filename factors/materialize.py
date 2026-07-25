@@ -189,6 +189,39 @@ def is_minute_factor(factor: Factor) -> bool:
 # --------------------------------------------------------------------------- #
 # Trailing-trading-day trim (the P8 correctness floor)
 # --------------------------------------------------------------------------- #
+def _requested_universe(symbols) -> list[str]:
+    """The requested symbols as strings, DE-DUPLICATED, first occurrence order.
+
+    The engine owns this the same way ``_symbol_bars`` owns "the provider honoured
+    its ``symbols`` argument" — a caller-side and a provider-side spelling of one
+    invariant: a (date, symbol) cell must be produced exactly once.
+
+    Duplicates used to be absorbed by the providers, whose ``isin`` filter is
+    idempotent, so the single-frame engine returned one row per name whatever the
+    caller passed. Streaming iterates the list instead, so a repeat would be
+    materialized TWICE: duplicate index rows, and — for a factor with a real
+    cross-sectional combine — the repeated name entering its date's cross-section
+    twice, moving that date's mean and std for EVERY member. Measured on the
+    streaming test fixture with two names repeated: ``volume_peak_count_20`` gained
+    8 duplicate rows with unchanged values, ``intraday_amp_cut_10`` gained 8
+    duplicate rows AND changed all 48 shared cells.
+
+    De-duplicating (rather than raising) is deliberate: it reproduces exactly what
+    the single-frame engine returned for the same call, which keeps D4b a change of
+    memory profile and nothing else. A raise would be a NEW failure mode for input
+    the previous engine accepted — a behaviour change in the opposite direction,
+    and one that belongs to whoever validates a universe, not to the value engine.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in symbols:
+        name = str(s)
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
 def _warmup_start(dates: pd.DatetimeIndex, emit_start: pd.Timestamp, warmup: int):
     """The date ``warmup`` trading days before ``emit_start`` (or the earliest).
 
@@ -226,6 +259,7 @@ def materialize_range(
     rows. Single-date and batch calls give bit-identical values (design §3.5 P8).
     """
     resolved_view = View(view)
+    symbols = _requested_universe(symbols)  # one engine-level normalization
     emit_start = pd.Timestamp(emit_start).normalize()
     emit_end = pd.Timestamp(emit_end).normalize()
     w = int(factor.spec.lookback_depth) if warmup is None else int(warmup)
