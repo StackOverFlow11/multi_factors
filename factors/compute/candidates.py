@@ -98,6 +98,10 @@ class ReversalFactor(Factor):
             overnight_boundary=base.overnight_boundary,
             family="reversal",
             min_history_bars=base.min_history_bars,
+            # D4 pre-registration: reversal IS -momentum, same inputs, so the
+            # transitive lookback depth is inherited verbatim from the base spec
+            # (close[t] and close[t-window] -> window + 1 trailing trading days).
+            lookback_depth=base.lookback_depth,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
@@ -162,6 +166,11 @@ class VolatilityFactor(Factor):
             # pct_change loses row 0 and the rolling std needs ``window`` returns
             # -> the leading ``window`` rows are NaN.
             min_history_bars=self._window,
+            # D4 pre-registration: the value at t is std of returns[t-window+1..t],
+            # and returns[s]=close[s]/close[s-1]-1, so the earliest input close is
+            # close[t-window] -> transitive depth = window + 1 trailing trading days
+            # (the pct_change adds one day beyond the headline window; §六.18).
+            lookback_depth=self._window + 1,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
@@ -233,6 +242,9 @@ class LiquidityFactor(Factor):
             # rolling mean over ``window`` amounts -> first valid row is
             # ``window-1`` (no pct_change involved, unlike volatility).
             min_history_bars=self._window - 1,
+            # D4 pre-registration: the rolling mean at t reads amount[t-window+1..t]
+            # -> transitive depth = window trailing trading days (no return diff).
+            lookback_depth=self._window,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
@@ -324,6 +336,10 @@ class OvernightMomentumFactor(Factor):
             # row 0 has no prior close and the rolling sum needs ``window`` full
             # overnight returns -> the leading ``window`` rows are NaN.
             min_history_bars=self._window,
+            # D4 pre-registration: term t reads open[t] and close[t-1]; summed over
+            # t-window+1..t the earliest input is close[t-window] -> transitive
+            # depth = window + 1 trailing trading days (§六.18).
+            lookback_depth=self._window + 1,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
@@ -395,6 +411,9 @@ class ValueFactor(Factor):
             overnight_boundary="none",
             family="value",
             min_history_bars=0,
+            # D4 pre-registration: a bare same-day column select (1/pe or 1/pb);
+            # the value at d reads only d's published ratio -> depth = 1.
+            lookback_depth=1,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:

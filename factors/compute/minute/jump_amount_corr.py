@@ -260,6 +260,10 @@ class JumpAmountCorrFactor(Factor):
             overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
+            # D4 pre-registration (§六.18): the value at d is a trailing-window
+            # correlation over ``lookback_days`` trading days with NO nested
+            # baseline -> transitive depth = lookback_days trailing trading days.
+            lookback_depth=self._lookback_days,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:

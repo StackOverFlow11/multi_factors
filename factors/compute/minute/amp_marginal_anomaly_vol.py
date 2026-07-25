@@ -326,6 +326,10 @@ class AmpMarginalAnomalyVolFactor(Factor):
             overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
+            # D4 pre-registration (§六.18): a trailing ``lookback_days`` trading-day
+            # pool of (|Δamp|, r) pairs with NO nested baseline (the 5min bars are
+            # derived within-day) -> depth = lookback_days trading days.
+            lookback_depth=self._lookback_days,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:

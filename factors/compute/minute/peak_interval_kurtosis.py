@@ -400,6 +400,11 @@ class PeakIntervalKurtosisFactor(Factor):
             overnight_boundary="none",
             family="microstructure",
             min_history_bars=0,
+            # D4 pre-registration (§六.18, NESTED lookback): trailing
+            # ``lookback_days`` valid days, each bar classified against a
+            # strictly-prior ``VOLUME_PRV_BASELINE_DAYS``-day same-slot baseline ->
+            # transitive depth = lookback_days + baseline_days trailing trading days.
+            lookback_depth=self._lookback_days + VOLUME_PRV_BASELINE_DAYS,
         )
 
     def compute(self, panel: pd.DataFrame) -> pd.Series:
