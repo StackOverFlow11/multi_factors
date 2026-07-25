@@ -30,7 +30,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-import numpy as np
 import pandas as pd
 
 from data.availability_policy import STK_MINS_1MIN, OvernightBoundary, View
@@ -41,6 +40,8 @@ from factors.compute.minute.binding import (
     is_minute_bound,
     is_valid_day_pooled,
     minute_raw_from_bars,
+    pooled_baseline_days,
+    pooled_lookback_days,
 )
 from factors.store.incremental import CacheHorizonConfig
 from factors.view_lag import (
@@ -57,10 +58,11 @@ def _load_buffer_calendar_days(warmup: int) -> int:
     return int(warmup) * 2 + 25
 
 
-#: One backward-expansion chunk (calendar days) for the valid-day-pooled
-#: saturation loop. Generous vs the baseline depth so a single no-change across a
-#: chunk implies saturation (the boundary days gained far more than baseline_days
-#: of prior history, so their classification is stable). See ``_materialize_pooled``.
+#: One backward-expansion step (calendar days) of the valid-day-pooled saturation
+#: loop. Only a STEP SIZE (how fast the search walks back), never a correctness
+#: input: termination is decided by the structural criterion in
+#: ``_materialize_pooled`` or by the provider's declared earliest boundary, so a
+#: too-small chunk costs iterations, never correctness.
 def _saturation_chunk_calendar_days(warmup: int) -> int:
     return int(warmup) * 2 + 40
 
@@ -83,12 +85,27 @@ class DailyPanelProvider(Protocol):
 
 
 class MinuteBarProvider(Protocol):
-    """Loads normalized 1min bars (cache-only) for the symbols over the window."""
+    """Loads normalized 1min bars (cache-only) for the symbols over the window.
+
+    Providers feeding a VALID-DAY-POOLED factor must also implement
+    :meth:`earliest_available` — the saturation loop needs a RELIABLE data-start
+    signal. Inferring "no more history" from an unchanged row count is WRONG: a
+    long mid-history gap (a suspension) yields an unchanged count while real
+    earlier history still exists (the review's counterexample #2).
+    """
 
     def minute_bars(
         self, symbols: list[str], start: pd.Timestamp, end: pd.Timestamp
     ) -> pd.DataFrame:
         """MultiIndex(time, symbol) bars (:mod:`data.clean.intraday_schema`)."""
+
+    def earliest_available(self, symbols: list[str]) -> pd.Timestamp:
+        """The earliest date for which ANY of ``symbols`` could have bars.
+
+        The declared lower bound of the provider's data (a cache-coverage floor
+        or a documented constant). Loading from it means "all history that
+        exists is loaded"; a mid-history gap must NEVER be mistaken for it.
+        """
 
 
 class AdjFactorProvider(Protocol):
@@ -257,59 +274,117 @@ def _materialize_pooled(
 ) -> pd.Series:
     """Saturation-expanding load for a valid-day-pooled factor (design §3.3, review HIGH).
 
-    Expands the load backward in chunks and recomputes the EMIT-range values until
-    they stop changing (saturated: adding more history no longer alters the pool
-    composition or the boundary classifications) OR the provider returns no more
-    earlier bars (the real data start — the structural terminal). The chunk is
-    generous vs ``baseline_days`` so one no-change implies saturation. The returned
-    values are load-geometry-free: the finite<->NaN divergence between a single-date
-    fill and a batch fill is eliminated (the residual across the two fills is only
-    the pandas-accumulation float-reorder, JC1 <= 1e-12, because the two fills may
-    terminate at different — but each individually saturated — load starts).
+    STRUCTURAL saturation criterion (NOT a value-stability fixed point — that was
+    disproved: one expansion chunk landing entirely inside a long no-bar gap
+    leaves the emit values unchanged and would falsely terminate).
+
+    The locking argument (why the criterion is SUFFICIENT):
+
+    * Expanding the load backward can only change the classification of days
+      within ``baseline_days`` trading days of the loaded window's start — the
+      rolling baseline takes the ``baseline_days`` most recent STRICTLY-PRIOR
+      same-slot observations, and once at full depth no earlier history can move
+      it. Locking is therefore POSITION-MONOTONE: **drop the first
+      ``baseline_days`` trading days of the loaded window and every later day's
+      classification is FINAL.**
+    * The trailing pool takes only the most recent ``lookback_days`` VALID days.
+      So if the LOCKED sub-window already contains >= ``lookback_days`` final
+      valid days at or before the earliest emit date, the pool for every emit
+      date is drawn entirely from final days and can never reach back into the
+      unlocked head — further history cannot change any emit value.
+
+    Termination: the criterion above, OR the load start reaching the provider's
+    DECLARED earliest boundary (then all existing history is loaded and the value
+    is well-defined). A mid-history gap is never mistaken for the data start
+    (that is exactly the row-count inference this replaced).
+
+    Valid days are counted as the factor's own OUTPUT dates: a pooled factor
+    emits one row per valid day, so output dates ARE the valid days — the count
+    is read off the engine's own result rather than a re-implementation of each
+    factor's validity rule, and a gap simply contributes no output dates (the
+    count stalls and the loop keeps expanding, which is the desired behaviour).
     """
     chunk = pd.Timedelta(days=_saturation_chunk_calendar_days(warmup))
     end = emit_end + pd.Timedelta(days=1)
+    floor = _provider_earliest(sources.minute, symbols, factor)
+    baseline_days = pooled_baseline_days(factor)
+    lookback_days = pooled_lookback_days(factor)
+
     load_start = emit_start - chunk
-    prev_emit: pd.Series | None = None
-    prev_nbars = -1
+    last: pd.Series | None = None
     for _ in range(_MAX_SATURATION_CHUNKS):
+        at_floor = load_start <= floor
+        if at_floor:
+            load_start = floor
         bars = sources.minute.minute_bars(symbols, load_start, end)
-        nbars = len(bars)
-        if nbars == 0:
-            return _empty_series(factor.name)
+        if bars.empty:
+            if at_floor:
+                return _empty_series(factor.name)
+            load_start = load_start - chunk
+            continue
         work = bars
         if view is View.DECISION:
             work = minute_decision_cutoff(work, decision_time=decision_cutoff)
-        emit = _restrict_emit(
-            minute_raw_from_bars(factor, work), emit_start, emit_end, factor.name
-        )
-        if prev_emit is not None and _pooled_emit_saturated(prev_emit, emit):
-            return emit
-        if nbars == prev_nbars:  # provider exhausted -> real data start reached
-            return emit
-        prev_emit, prev_nbars = emit, nbars
+        full = minute_raw_from_bars(factor, work)
+        last = _restrict_emit(full, emit_start, emit_end, factor.name)
+        if at_floor or _pooled_pool_saturated(
+            full, work, emit_start,
+            baseline_days=baseline_days, lookback_days=lookback_days,
+        ):
+            return last
         load_start = load_start - chunk
-    return prev_emit if prev_emit is not None else _empty_series(factor.name)
+    return last if last is not None else _empty_series(factor.name)
 
 
-def _pooled_emit_saturated(prev: pd.Series, cur: pd.Series, tol: float = 1e-12) -> bool:
-    """True iff the emit-range values stopped changing across a chunk expansion.
+def _provider_earliest(provider, symbols, factor) -> pd.Timestamp:
+    """The provider's DECLARED earliest-available date (never inferred)."""
+    getter = getattr(provider, "earliest_available", None)
+    if getter is None:
+        raise ValueError(
+            f"{factor.name} is a valid-day-pooled factor, so its saturation load "
+            f"needs a RELIABLE data-start signal, but the minute provider "
+            f"({type(provider).__name__}) does not implement earliest_available(). "
+            f"Inferring the data start from an unchanged row count is unsound — a "
+            f"long mid-history no-bar gap (a suspension) looks identical to it. "
+            f"Declare the provider's earliest available date."
+        )
+    return pd.Timestamp(getter(list(symbols))).normalize()
 
-    Compares on the union index (NaN where absent): the NaN mask must match
-    EXACTLY (a finite<->NaN flip is a real pool change, not saturation) and the
-    finite values must agree within ``tol`` (a chunk changes the array length, so
-    the pandas rolling-sum accumulation reorders finite values at ~1e-15 even when
-    the pool composition is stable — that float-reorder is not a pool change).
+
+def _pooled_pool_saturated(
+    full: pd.Series,
+    bars: pd.DataFrame,
+    emit_start: pd.Timestamp,
+    *,
+    baseline_days: int,
+    lookback_days: int,
+) -> bool:
+    """The structural criterion (see :func:`_materialize_pooled` for the argument).
+
+    True iff, for EVERY symbol present, the LOCKED sub-window (the loaded trading
+    days after dropping the first ``baseline_days``) holds at least
+    ``lookback_days`` valid days at or before ``emit_start`` — valid days being
+    the factor's own output dates. A symbol whose whole history is loaded shorter
+    than that is honestly under-warmed and is handled by the floor terminal, not
+    here.
     """
-    index = prev.index.union(cur.index)
-    a = prev.reindex(index).to_numpy(dtype=float)
-    b = cur.reindex(index).to_numpy(dtype=float)
-    if not np.array_equal(np.isnan(a), np.isnan(b)):
+    if full.empty:
         return False
-    finite = ~np.isnan(a)
-    if not finite.any():
-        return True
-    return bool(np.allclose(a[finite], b[finite], rtol=0.0, atol=tol))
+    loaded_days = pd.DatetimeIndex(
+        pd.unique(pd.DatetimeIndex(bars.index.get_level_values("time")).normalize())
+    ).sort_values()
+    if len(loaded_days) <= baseline_days:
+        return False
+    locked_from = loaded_days[baseline_days]  # first day with a FINAL classification
+
+    out_dates = full.index.get_level_values(DATE_LEVEL)
+    out_symbols = full.index.get_level_values(SYMBOL_LEVEL)
+    for symbol in pd.unique(out_symbols):
+        mine = out_dates[(out_symbols == symbol)]
+        final_valid = mine[(mine >= locked_from) & (mine <= emit_start)]
+        if len(final_valid) < lookback_days:
+            return False
+    return True
 
 
 def _trim_daily(panel: pd.DataFrame, emit_start: pd.Timestamp, warmup: int) -> pd.DataFrame:

@@ -41,6 +41,10 @@ from factors.compute.minute.binding import minute_raw_from_bars
 from factors.view_lag import minute_decision_cutoff
 
 DEFAULT_CACHE_ROOT = "artifacts/cache/tushare/v1"
+#: The intraday cache's DECLARED earliest bar date (measured on the real cache:
+#: several CSI500 names carry 1min bars from 2015-01-05). The pooled saturation
+#: loop needs a declared floor; it must never infer one from row counts.
+CACHE_MINUTE_DATA_START = "2015-01-05"
 DEFAULT_FACTORS = (
     "jump_amount_corr_20",
     "minute_ideal_amp_10",
@@ -61,6 +65,15 @@ class CacheMinuteProvider:
         self._store = IntradayParquetStore(root)
         self.calls = 0
         self.live_calls = 0  # provably 0 — read_range has no fetch closure
+
+    def earliest_available(self, symbols):
+        """The cache's DECLARED minute-data floor (measured: bars from 2015-01-05).
+
+        Declared, never inferred from row counts — a long mid-history no-bar gap
+        (a suspension) is indistinguishable from exhaustion by row count, which
+        is exactly the unsound signal the pooled saturation loop refuses.
+        """
+        return pd.Timestamp(CACHE_MINUTE_DATA_START)
 
     def minute_bars(self, symbols, start, end):
         self.calls += 1

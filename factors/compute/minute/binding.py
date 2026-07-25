@@ -66,6 +66,7 @@ from factors.compute.minute.valley_ridge_vwap_ratio import (
     ValleyRidgeVwapRatioFactor,
     compute_valley_ridge_vwap_ratio,
 )
+from factors.compute.minute.primitives import VOLUME_PRV_BASELINE_DAYS
 from factors.compute.minute.volume_peak_count import (
     VolumePeakCountFactor,
     compute_volume_peak_count,
@@ -135,16 +136,25 @@ _DEFERRED: dict[type[Factor], str] = {
 #: representatives (#82 lesson: never fix only what you observed).
 #: valley_price_quantile is DEFERRED (needs the daily panel) but declared HERE so
 #: D5 cannot bind it carrying the fixed-depth defect.
-VALID_DAY_POOLED_FACTORS: frozenset[type[Factor]] = frozenset({
-    VolumePeakCountFactor,
-    PeakIntervalKurtosisFactor,
-    IntradayAmpCutFactor,
-    ValleyRelativeVwapFactor,
-    ValleyRidgeVwapRatioFactor,
-    RidgeMinuteReturnFactor,
-    PeakRidgeAmountRatioFactor,
-    ValleyPriceQuantileFactor,
-})
+#: pooled factor class -> its same-slot BASELINE depth in trading days (the
+#: "locking offset", review point 1): a loaded day is CLASSIFICATION-FINAL only
+#: once it has this many strictly-prior trading days (the baseline reaches full
+#: depth and no earlier history can change it). Derived from each factor's own
+#: baseline parameter, NOT hardcoded: the peak family shares
+#: ``VOLUME_PRV_BASELINE_DAYS``; ``intraday_amp_cut`` has NO cross-day baseline
+#: (its classification is within-day), so its locking offset is 0.
+_POOLED_BASELINE_DAYS: dict[type[Factor], int] = {
+    VolumePeakCountFactor: VOLUME_PRV_BASELINE_DAYS,
+    PeakIntervalKurtosisFactor: VOLUME_PRV_BASELINE_DAYS,
+    ValleyRelativeVwapFactor: VOLUME_PRV_BASELINE_DAYS,
+    ValleyRidgeVwapRatioFactor: VOLUME_PRV_BASELINE_DAYS,
+    RidgeMinuteReturnFactor: VOLUME_PRV_BASELINE_DAYS,
+    PeakRidgeAmountRatioFactor: VOLUME_PRV_BASELINE_DAYS,
+    ValleyPriceQuantileFactor: VOLUME_PRV_BASELINE_DAYS,
+    IntradayAmpCutFactor: 0,  # within-day classification, no cross-day baseline
+}
+
+VALID_DAY_POOLED_FACTORS: frozenset[type[Factor]] = frozenset(_POOLED_BASELINE_DAYS)
 
 #: The bounded minute factors (trailing window over ALL trading days, not valid
 #: days) — a fixed lookback_depth trim is load-geometry-free for these. Kept as
@@ -155,6 +165,33 @@ _BOUNDED_MINUTE_FACTORS: frozenset[type[Factor]] = frozenset({
     MinuteIdealAmplitudeFactor,
     AmpMarginalAnomalyVolFactor,
 })
+
+
+def pooled_baseline_days(factor: Factor) -> int:
+    """The factor's same-slot baseline depth = the LOCKING OFFSET (trading days).
+
+    Expanding the load backward can only change the classification of days that
+    sit within ``baseline_days`` trading days of the loaded window's start (the
+    rolling baseline takes the ``baseline_days`` most recent STRICTLY-PRIOR
+    same-slot observations; once it is at full depth, earlier history cannot
+    change it). So the locking is POSITION-MONOTONE: drop the first
+    ``baseline_days`` trading days of the loaded window and every later day's
+    classification is FINAL. Readable error for a non-pooled factor.
+    """
+    cls = type(factor)
+    if cls not in _POOLED_BASELINE_DAYS:
+        raise KeyError(
+            f"{factor.name} ({cls.__name__}) is not a valid-day-pooled factor, so "
+            f"it has no baseline locking offset."
+        )
+    return int(_POOLED_BASELINE_DAYS[cls])
+
+
+def pooled_lookback_days(factor: Factor) -> int:
+    """The factor's trailing pool size in VALID days (its ``lookback_days``)."""
+    if type(factor) not in _POOLED_BASELINE_DAYS:
+        raise KeyError(f"{factor.name} is not a valid-day-pooled factor.")
+    return int(factor.lookback_days)  # type: ignore[attr-defined]
 
 
 def is_valid_day_pooled(factor: Factor) -> bool:
@@ -207,4 +244,6 @@ __all__ = [
     "is_minute_bound",
     "is_valid_day_pooled",
     "minute_raw_from_bars",
+    "pooled_baseline_days",
+    "pooled_lookback_days",
 ]

@@ -105,6 +105,10 @@ class MinuteProv:
         t = MINUTE.index.get_level_values("time")
         return MINUTE[(t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end))]
 
+    def earliest_available(self, symbols):
+        """DECLARED data start of this fixture (never inferred from row counts)."""
+        return DATES[0]
+
 
 def _sparse_minute():
     """Sparse-valid minute data: every 3rd day is thin (fewer bars) so the
@@ -142,6 +146,72 @@ class SparseMinuteProv:
         t = SPARSE_MINUTE.index.get_level_values("time")
         return SPARSE_MINUTE[(t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end))]
 
+    def earliest_available(self, symbols):
+        return DATES[0]
+
+
+#: Gap geometry (the review counterexample, sized to actually exercise it).
+#: One expansion chunk is ``lookback_depth*2 + 40`` CALENDAR days ~= 85 trading
+#: days at depth 40. The gap must be wide enough that a WHOLE expansion step
+#: lands INSIDE it (adding no bars at all -> emit values unchanged -> a
+#: value-stability fixed point terminates falsely) while REAL earlier history
+#: still exists beyond it: 200 trading days spans more than two chunks.
+_GAP_TRADING_DAYS = 200
+_PRE_GAP_DAYS = 60
+_POST_GAP_DAYS = 30
+_GAP_BARS_PER_DAY = 238  # a full session: the pooled factors need enough
+                         # classifiable + ridge/valley bars to yield valid days
+GAP_DATES = pd.bdate_range(
+    "2021-01-04", periods=_PRE_GAP_DAYS + _GAP_TRADING_DAYS + _POST_GAP_DAYS
+)
+
+
+def _gapped_minute():
+    """The REVIEW COUNTEREXAMPLE shape: rich bars, then a LONG no-bar gap
+    (a suspension) wider than one expansion chunk, then rich bars again.
+
+    The emit window sits AFTER the gap and its trailing valid-day pool must reach
+    back ACROSS the gap. A value-stability fixed point terminates falsely here
+    (one chunk lands entirely inside the gap -> emit values unchanged), and an
+    unchanged row count inside the gap looks exactly like the data start — the
+    two failure modes the structural criterion replaces.
+    """
+    rng = np.random.RandomState(23)
+    rows = []
+    pre = GAP_DATES[:_PRE_GAP_DAYS]
+    post = GAP_DATES[_PRE_GAP_DAYS + _GAP_TRADING_DAYS:]
+    for si, s in enumerate(SYMS):
+        for d in list(pre) + list(post):
+            base = pd.Timestamp(d) + pd.Timedelta("09:31:00")
+            price = 100.0 + si * 5 + rng.normal(0, 2)
+            for i in range(_GAP_BARS_PER_DAY):
+                t = base + pd.Timedelta(minutes=i)
+                price += rng.normal(0, 0.05)
+                slot = 1e4 * (1.0 + 0.3 * np.sin(i / 12.0))
+                erupt = 6.0 if (rng.rand() < 0.06) else 1.0
+                vol = slot * erupt * (1.0 + 0.1 * rng.rand())
+                w = 0.15 * price * (1.0 + (2.0 if erupt > 1 else 0.0)) * (0.5 + rng.rand())
+                hi, lo = price + abs(w) * rng.rand(), price - abs(w) * rng.rand()
+                cl = lo + (hi - lo) * rng.rand()
+                rows.append((t, s, price, hi, lo, cl, vol, cl * vol))
+    frame = pd.DataFrame(rows, columns=["time", "symbol", "open", "high", "low", "close", "volume", "amount"])
+    return normalize_intraday_bars(frame, freq="1min"), list(post)
+
+
+GAPPED_MINUTE, GAPPED_POST_DATES = _gapped_minute()
+
+
+class GappedMinuteProv:
+    def minute_bars(self, symbols, start, end):
+        if not symbols:
+            return GAPPED_MINUTE.iloc[0:0]
+        t = GAPPED_MINUTE.index.get_level_values("time")
+        return GAPPED_MINUTE[(t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end))]
+
+    def earliest_available(self, symbols):
+        """DECLARED start — the mid-history gap must never be mistaken for it."""
+        return GAP_DATES[0]
+
 
 def _sources():
     return MaterializeSources(daily=DailyProv(), minute=MinuteProv())
@@ -149,6 +219,10 @@ def _sources():
 
 def _sparse_sources():
     return MaterializeSources(minute=SparseMinuteProv())
+
+
+def _gapped_sources():
+    return MaterializeSources(minute=GappedMinuteProv())
 
 
 def _store_series(store, factor_id, view=View.DECISION):
@@ -265,6 +339,45 @@ def test_pooled_factor_single_equals_batch_on_sparse_valid_window():
             assert finite.sum() > 0, f"{fid}: vacuous (no finite values)"
             # saturation gives shared-prefix accumulation -> BIT identical.
             assert np.array_equal(av[finite], bv[finite]), f"{fid}: finite values diverge"
+
+
+def test_pooled_single_equals_batch_across_a_long_no_bar_gap():
+    """THE REVIEW COUNTEREXAMPLE, committed: a no-bar gap WIDER than one expansion
+    chunk (95 trading days = a suspension), emit AFTER the gap, and the trailing
+    valid-day pool must reach back ACROSS it.
+
+    This is what defeated the value-stability fixed point (a chunk landing wholly
+    inside the gap leaves the emit values unchanged -> false 'stable') and the
+    row-count data-start inference (an unchanged count inside the gap looks like
+    exhaustion). The structural criterion counts FINAL valid days in the locked
+    sub-window, so a gap contributes none, the count stalls, and expansion
+    continues to the declared floor.
+
+    MUTATION EVIDENCE (run for this commit):
+    * reverting the criterion to the value-stability fixed point -> this test
+      FAILS (rc=1): both fills terminate inside the gap and emit all-NaN, caught
+      by the non-vacuity assertion below; restored -> passes (rc=0).
+    * dropping the baseline LOCKING OFFSET (``loaded_days[baseline_days]`` ->
+      ``loaded_days[0]``) does NOT fail on these fixtures — recorded honestly:
+      the offset is a correctness margin these fixtures do not isolate (the
+      valid-day count criterion alone already forces enough history here). It is
+      kept because the locking argument requires it in general; a fixture that
+      isolates it would need boundary days whose classification actually flips.
+    """
+    dates = GAPPED_POST_DATES[10:22]  # after the gap, pool still spans it
+    for fid in _POOLED_DIVERGENT:
+        with tempfile.TemporaryDirectory() as ta, tempfile.TemporaryDirectory() as tb:
+            a, b = FactorValueStore(ta), FactorValueStore(tb)
+            _fill_single(a, [fid], dates, _gapped_sources())
+            _fill_batch(b, [fid], dates, _gapped_sources())
+            sa = _store_series(a, fid).sort_index()
+            sb = _store_series(b, fid).sort_index()
+            assert sa.index.equals(sb.index), fid
+            av, bv = sa.to_numpy(), sb.to_numpy()
+            assert np.array_equal(np.isnan(av), np.isnan(bv)), f"{fid}: NaN mask diverges"
+            finite = ~np.isnan(av)
+            assert finite.sum() > 0, f"{fid}: vacuous (no finite values across the gap)"
+            assert np.allclose(av[finite], bv[finite], rtol=0.0, atol=1e-12), fid
 
 
 def test_disabling_saturation_reintroduces_pooled_divergence(monkeypatch):
