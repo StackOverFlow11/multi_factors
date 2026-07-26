@@ -426,6 +426,14 @@ class ZeroOutputMinuteProv:
         return _ZO_DATES[0]
 
 
+def _thin_symbol_values(stored) -> np.ndarray:
+    """The thin symbol's stored values (an empty array when it has no rows)."""
+    if stored is None or stored.empty:
+        return np.array([])
+    mine = stored.index.get_level_values("symbol") == _ZO_B
+    return stored[mine].to_numpy()
+
+
 def test_zero_output_symbol_is_not_silently_dropped():
     """REVIEW HIGH: a symbol producing ZERO rows in the current load window must
     still VETO saturation — otherwise a single-date fill drops it from the
@@ -487,6 +495,17 @@ def test_zero_output_symbol_veto_mutation(monkeypatch):
     per-symbol saturation ("no output -> no veto"). It reproduces the original
     divergence exactly: single-fill carries only 600000.SH (40 rows) while the
     batch fill carries both (50 rows).
+
+    D4c MOVED THE OBSERVABLE, AGAIN FOR A REASON, AND AGAIN NOT THE PROPERTY. A
+    fill now writes an explicit NaN row for every cell it covered and produced
+    nothing for (``service._record_fill_footprint``), so the thin symbol is no
+    longer ABSENT from the single-date store — it is present and empty. Measured
+    on this fixture: unmutated, single and batch both give the thin symbol 40 rows
+    / 6 finite; mutated, the single fill gives it 40 rows / **0 finite** while the
+    batch still gives 6. The divergence the veto exists to prevent is therefore
+    fully observable and now more precise — a NaN-vs-finite disagreement on named
+    cells rather than a name silently missing — so the assertion reads the values,
+    not the name set.
     """
     import factors.materialize as mat
 
@@ -508,20 +527,18 @@ def test_zero_output_symbol_veto_mutation(monkeypatch):
         _fill_batch(b, [fid], dates, MaterializeSources(minute=ZeroOutputMinuteProv()),
                     universe=_ZO_SYMS)
         sa, sb = _store_series(a, fid), _store_series(b, fid)
-        syms_a = set(map(str, sa.index.get_level_values("symbol"))) if sa is not None else set()
-        syms_b = set(map(str, sb.index.get_level_values("symbol"))) if sb is not None else set()
-        # NON-VACUITY GUARD: the disjunction below is trivially true when BOTH
-        # stores are empty (nothing filled at all), which would make this mutation
-        # test pass without exercising the mutation. Require real content first.
-        assert syms_a, "single-fill store is empty — the mutation test would be vacuous"
-        assert syms_b, "batch-fill store is empty — the mutation test would be vacuous"
-        assert _ZO_B in syms_b, (
-            "the batch fill must still carry the thin symbol; otherwise the "
-            "single-vs-batch contrast below proves nothing"
+        thin_a = _thin_symbol_values(sa)
+        thin_b = _thin_symbol_values(sb)
+        # NON-VACUITY GUARD: the comparison below is trivially satisfiable when the
+        # batch fill produced nothing either, which would make this mutation test
+        # pass without exercising the mutation. Require real content first.
+        assert np.isfinite(thin_b).sum() > 0, (
+            "the batch fill must still produce finite values for the thin symbol; "
+            "otherwise the single-vs-batch contrast below proves nothing"
         )
-        assert syms_a != syms_b or _ZO_B not in syms_a, (
-            "the zero-output-is-saturated criterion should drop the thin symbol from "
-            "the single-date fill"
+        assert not np.array_equal(np.isnan(thin_a), np.isnan(thin_b)), (
+            "the zero-output-is-saturated criterion should leave the thin symbol "
+            "unresolved in the single-date fill while the batch fill resolves it"
         )
 
 

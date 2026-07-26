@@ -7,6 +7,26 @@ gap and append, then re-reads. There is no second implementation path, which is
 what makes ``panel[d] ≡ cross_section(d)`` a trivial read-layer smoke and the
 real guarantee ``single-point fill ≡ batch fill`` (design §3.5 P8).
 
+THE GAP IS A (DATE, SYMBOL) QUESTION (D4c). It used to be a date-only question,
+which silently assumed every fill had covered the same universe; see
+:func:`_missing_request` for what that cost. Two consequences of asking it
+properly, both deliberate:
+
+* a fill RECORDS THE CELLS IT COVERED (:func:`_record_fill_footprint`), so
+  "no stored row" means "never computed" rather than doubling as "computed, no
+  value" — otherwise a factor that emits nothing for 45% of the cells it is asked
+  about would be re-materialized on every request;
+* consequently a served panel carries an explicit NaN row where a factor has no
+  value, instead of no row at all. Nothing that reads a factor value is affected
+  (NaN already meant "missing"), but a consumer that counts ROWS is looking at a
+  different denominator than before: the cells asked about, not the cells the
+  factor emitted.
+
+A factor whose VALUE depends on the loaded universe cannot have that value stored
+under a key that does not name the universe. It stores its per-symbol intermediate
+and its cross-sectional combine runs HERE, at read-assembly, over the universe the
+caller asked for (:func:`_assemble`; ``materialize.stores_intermediate``).
+
 Contract (all structural, not comments):
 * only data with ``available_time <= decision`` is computed — the materializer
   applies the (source, view) availability lag; the service never relaxes it;
@@ -34,7 +54,14 @@ from data.clean.intraday_schema import DEFAULT_DECISION_TIME
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from factors import registry as factor_registry
 from factors.base import Factor
-from factors.materialize import MaterializeSources, materialize_range
+from factors.compute.minute.binding import combine_minute_stats
+from factors.materialize import (
+    MaterializeSources,
+    materialize_intermediate_range,
+    materialize_range,
+    payload_columns,
+    stores_intermediate,
+)
 from factors.store.fingerprint import data_fingerprint
 from factors.store.keys import store_key
 from factors.store.values import FactorValueStore
@@ -69,6 +96,127 @@ def _fingerprint(factor: Factor) -> dict:
     return data_fingerprint(adjustment=factor.spec.adjustment)
 
 
+def _empty_index() -> pd.MultiIndex:
+    return pd.MultiIndex.from_arrays(
+        [pd.DatetimeIndex([]), pd.Index([], dtype=object)],
+        names=[DATE_LEVEL, SYMBOL_LEVEL],
+    )
+
+
+def _missing_request(
+    stored: pd.DataFrame | None,
+    dates: pd.DatetimeIndex,
+    symbols: list[str],
+    *,
+    force_all: bool,
+) -> tuple[pd.DatetimeIndex, list[str]]:
+    """The requested (date, SYMBOL) cells the store does not carry (D4c).
+
+    THE SYMBOL HALF IS THE FIX. The criterion used to ask only "which requested
+    DATES are absent", which silently assumed every fill covered the same universe:
+    fill a store with 12 names, then ask the SAME store for 24, and it answered
+    "no missing dates" and served 12 — the other 12 vanished from the cross-section
+    with no recompute, no error and no disclosure (measured: 24 rows where 48 were
+    asked for, provider calls 0). A missing symbol is a sample-coverage bias and
+    must be loud or filled, never dropped (the I5a red line); the design's own A1
+    revision rejected "batch the callers by symbol" for exactly this reason, while
+    the service was carrying the defect.
+
+    Returns the dates to emit over and the symbols to emit FOR. Restricting the
+    fill to the symbols that need one is safe because a factor value is computed
+    per symbol (red line #3: cross-symbol isolation) — for a cross-sectional factor
+    it is the per-symbol INTERMEDIATE that is stored, which is likewise per-symbol.
+
+    ``force_all`` (diagnostics) re-materializes the whole request; see
+    :func:`_ensure_coverage`.
+    """
+    if force_all or stored is None or stored.empty:
+        return dates, list(symbols)
+    index = stored.index
+    if index.has_duplicates:  # coverage is a set question; duplicates cannot change it
+        index = index[~index.duplicated()]
+    present = (
+        pd.Series(True, index=index)
+        .unstack(level=SYMBOL_LEVEL, fill_value=False)
+        .reindex(index=dates, columns=symbols, fill_value=False)
+        .to_numpy(dtype=bool)
+    )
+    if present.all():
+        return pd.DatetimeIndex([]), []
+    absent = ~present
+    miss_dates = dates[absent.any(axis=1)]
+    miss_symbols = [s for s, need in zip(symbols, absent.any(axis=0)) if need]
+    return miss_dates, miss_symbols
+
+
+def _record_fill_footprint(
+    fresh: pd.DataFrame,
+    dates: pd.DatetimeIndex,
+    symbols: list[str],
+    columns: tuple[str, ...],
+) -> pd.DataFrame:
+    """Give every cell the fill COVERED a row, so absent means NEVER COMPUTED.
+
+    A factor does not emit a row for every (date, symbol) it is asked about — a
+    suspended day, a day its own gates reject, a warm-up day below its minimum
+    valid-day count. Measured on real bars (24 CSI500 names x March 2023): 0% of
+    cells for seven of the minute factors, but 44.2-45.1% for the three whose
+    per-day gates reject days.
+
+    Without this, "no stored row" answers two different questions with one silence
+    — "nobody computed this" and "this was computed and there is nothing" — and the
+    per-(date, symbol) gap criterion, which has to treat silence as the first,
+    would re-materialize those cells on EVERY request. That is not hypothetical:
+    the D5b property "a warm store must not re-read minute bars" goes red for
+    ``ridge_minute_return_20`` without this, and the honest fix is the engine, not
+    the test (§六.16).
+
+    So the fill writes an explicit NaN row for the cells it covered and produced
+    nothing for. This adds no meaning to the store that was not already there — a
+    stored NaN already meant "no finite value here", and both cases are exactly
+    that. What it adds is the ability to tell computed-empty from never-computed,
+    which is the question the criterion asks.
+
+    NOTE (inherited, not introduced): the data fingerprint does not describe how
+    much upstream data the cache held at fill time, so a value computed from a
+    partially warmed cache is reused as-is after the cache grows. That is already
+    true of every partially-computed symbol; recording empty cells extends it to
+    wholly-empty ones. Refilling after a cache warm-up is a ``force`` on the cache
+    side, not something the value store can infer.
+    """
+    grid = pd.MultiIndex.from_product(
+        [pd.DatetimeIndex(dates), list(symbols)], names=[DATE_LEVEL, SYMBOL_LEVEL]
+    )
+    if fresh.empty:
+        return pd.DataFrame(float("nan"), index=grid, columns=list(columns))
+    return fresh.reindex(fresh.index.union(grid))
+
+
+def _materialize_payload(
+    factor: Factor,
+    *,
+    view: View,
+    symbols: list[str],
+    emit_start: pd.Timestamp,
+    emit_end: pd.Timestamp,
+    sources: MaterializeSources,
+    cutoff: str,
+    diagnostics: list | None,
+) -> pd.DataFrame:
+    """What the store persists for ``factor`` over the window: value or intermediate."""
+    if stores_intermediate(factor):
+        return materialize_intermediate_range(
+            factor, view=view, symbols=symbols, emit_start=emit_start,
+            emit_end=emit_end, sources=sources, decision_cutoff=cutoff,
+            diagnostics=diagnostics,
+        )
+    series = materialize_range(
+        factor, view=view, symbols=symbols, emit_start=emit_start, emit_end=emit_end,
+        sources=sources, decision_cutoff=cutoff, diagnostics=diagnostics,
+    )
+    return series.rename(factor.name).to_frame()
+
+
 def _ensure_coverage(
     factor: Factor,
     key,
@@ -81,18 +229,23 @@ def _ensure_coverage(
     view: View,
     cutoff: str,
     diagnostics: list | None = None,
-) -> pd.Series:
-    """Read-through: fill any date the store lacks for ``factor``, return the Series.
+) -> pd.DataFrame:
+    """Read-through: fill any (date, symbol) the store lacks; return the payload.
 
-    A miss over the requested ``dates`` materializes ``[min(missing), max(missing)]``
-    (the single engine) and upserts it; already-present dates in that range are
-    recomputed identically and win the dedup harmlessly. Returns the stored Series
-    (possibly empty). The per-date fill (dates = one) and the batch fill (dates =
-    many) leave BIT-IDENTICAL stores because the materializer's trailing trim is
-    warmup-consistent (design §3.5 P8).
+    A miss materializes ``[min(missing date), max(missing date)]`` for the symbols
+    that need it (the single engine) and upserts it; already-present cells in that
+    range are recomputed identically and win the dedup harmlessly. Returns the
+    stored payload frame (possibly empty). The per-date fill (dates = one) and the
+    batch fill (dates = many) leave BIT-IDENTICAL stores because the materializer's
+    trailing trim is warmup-consistent (design §3.5 P8).
+
+    The payload is the factor's VALUE, except for a factor whose value depends on
+    the loaded universe — that one stores its per-symbol intermediate and the
+    combine happens at assembly (see :func:`_assemble` and
+    ``materialize.stores_intermediate``).
 
     ``diagnostics``: when a sink is supplied the WHOLE requested range is
-    materialized even on a full store hit. The store persists VALUES, not the
+    materialized even on a full store hit. The store persists factor data, not the
     day-level gate-attrition counts a scarcity disclosure reduces, so a warm store
     can serve the values and cannot serve the disclosure. The two honest options
     were "recompute" and "publish the report without the section"; the second is
@@ -100,36 +253,30 @@ def _ensure_coverage(
     Values are unaffected either way (the engine is deterministic in code + data,
     which is exactly what the store key asserts).
     """
-    stored = store.read_valid(key, expected_fingerprint=fingerprint)
-    have = (
-        pd.DatetimeIndex(pd.unique(stored.index.get_level_values(DATE_LEVEL)))
-        if stored is not None and not stored.empty
-        else pd.DatetimeIndex([])
+    columns = payload_columns(factor)
+    stored = store.read_valid_frame(
+        key, expected_fingerprint=fingerprint, columns=columns
     )
-    missing = dates if diagnostics is not None else dates[~dates.isin(have)]
-    if len(missing):
-        fresh = materialize_range(
-            factor,
-            view=view,
-            symbols=list(symbols),
-            emit_start=missing.min(),
-            emit_end=missing.max(),
-            sources=sources,
-            decision_cutoff=cutoff,
+    fill_dates, fill_symbols = _missing_request(
+        stored, dates, symbols, force_all=diagnostics is not None
+    )
+    if fill_symbols:
+        fresh = _materialize_payload(
+            factor, view=view, symbols=fill_symbols, emit_start=fill_dates.min(),
+            emit_end=fill_dates.max(), sources=sources, cutoff=cutoff,
             diagnostics=diagnostics,
         )
-        if not fresh.empty:
-            store.upsert(key, fresh, fingerprint=fingerprint)
-        stored = store.read_valid(key, expected_fingerprint=fingerprint)
+        store.upsert_frame(
+            key,
+            _record_fill_footprint(fresh, fill_dates, fill_symbols, columns),
+            fingerprint=fingerprint,
+        )
+        stored = store.read_valid_frame(
+            key, expected_fingerprint=fingerprint, columns=columns
+        )
     if stored is None:
-        return pd.Series(
-            [],
-            index=pd.MultiIndex.from_arrays(
-                [pd.DatetimeIndex([]), pd.Index([], dtype=object)],
-                names=[DATE_LEVEL, SYMBOL_LEVEL],
-            ),
-            dtype=float,
-            name=factor.name,
+        return pd.DataFrame(
+            {c: pd.Series([], dtype=float) for c in columns}, index=_empty_index()
         )
     return stored
 
@@ -145,23 +292,36 @@ def _uniform_cutoff(decisions: list[DecisionPoint]) -> str:
 
 
 def _assemble(
-    factor_ids: list[str],
-    series_by_id: dict[str, pd.Series],
+    factors: dict[str, Factor],
+    payload_by_id: dict[str, pd.DataFrame],
     dates: pd.DatetimeIndex,
     symbols: list[str],
 ) -> pd.DataFrame:
-    """Slice each factor's stored Series to (dates x universe) and stack to columns."""
+    """Slice each stored payload to (dates x universe) and stack the values.
+
+    THE CROSS-SECTIONAL COMBINE HAPPENS HERE, once per request, on exactly the
+    universe the caller asked for. That is what makes the stored artifact
+    universe-independent: the store holds per-symbol intermediates, and "which
+    universe standardizes them" is a property of the READ, not of the artifact —
+    so the same store serves a 12-name and a 24-name request correctly, and
+    neither can pollute the other (D4c / design revision A2).
+    """
     symbol_set = set(map(str, symbols))
     columns: dict[str, pd.Series] = {}
-    for fid in factor_ids:
-        s = series_by_id[fid]
-        if s.empty:
-            columns[fid] = s
-            continue
-        d = s.index.get_level_values(DATE_LEVEL)
-        sym = s.index.get_level_values(SYMBOL_LEVEL)
-        keep = d.isin(dates) & pd.Index(sym).isin(symbol_set)
-        columns[fid] = s[keep]
+    for fid, factor in factors.items():
+        payload = payload_by_id[fid]
+        if payload.empty:
+            sliced = payload
+        else:
+            d = payload.index.get_level_values(DATE_LEVEL)
+            sym = payload.index.get_level_values(SYMBOL_LEVEL)
+            sliced = payload[d.isin(dates) & pd.Index(sym).isin(symbol_set)]
+        if stores_intermediate(factor):
+            columns[fid] = combine_minute_stats(factor, sliced)
+        elif sliced.empty:
+            columns[fid] = pd.Series([], index=_empty_index(), dtype=float, name=fid)
+        else:
+            columns[fid] = sliced[factor.name]
     frame = pd.concat(columns, axis=1)
     frame.index = frame.index.set_names([DATE_LEVEL, SYMBOL_LEVEL])
     return frame.sort_index(kind="mergesort")
@@ -204,17 +364,19 @@ def panel(
     cutoff = _uniform_cutoff(decisions)
     dates = pd.DatetimeIndex(sorted({pd.Timestamp(d.date).normalize() for d in decisions}))
 
-    series_by_id: dict[str, pd.Series] = {}
+    factors: dict[str, Factor] = {}
+    payload_by_id: dict[str, pd.DataFrame] = {}
     for fid in factor_ids:
         factor = _build_factor(fid, params_by_id)
+        factors[fid] = factor
         fp = _fingerprint(factor)
         key = store_key(factor, view=resolved_view.value, params=(params_by_id or {}).get(fid))
-        series_by_id[fid] = _ensure_coverage(
+        payload_by_id[fid] = _ensure_coverage(
             factor, key, fp, dates=dates, symbols=symbols, store=store,
             sources=sources, view=resolved_view, cutoff=cutoff,
             diagnostics=diagnostics,
         )
-    return _assemble(factor_ids, series_by_id, dates, symbols)
+    return _assemble(factors, payload_by_id, dates, symbols)
 
 
 def cross_section(

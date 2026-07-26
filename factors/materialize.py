@@ -46,6 +46,12 @@ deliberate and disclosed:
   the evaluation universe, 84 of 995 symbols list after the emit start and can
   never satisfy the criterion, so under the old rule the floor load was
   CONSTRUCTIVE for every pooled factor.
+
+That same per-symbol stage is also what the STORE persists for a factor whose
+value is cross-sectional (D4c): :func:`materialize_intermediate_range` stops
+before the combine, and the consumer runs the combine over the universe it asked
+for. See :func:`stores_intermediate` for why the alternative — a universe
+dimension on the store key — was rejected.
 """
 
 from __future__ import annotations
@@ -62,9 +68,11 @@ from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from factors.base import Factor
 from factors.compute.minute.binding import (
     combine_minute_stats,
+    is_cross_sectional_minute,
     is_minute_bound,
     is_valid_day_pooled,
     minute_diagnostics_from_bars,
+    minute_intermediate_columns,
     minute_raw_from_bars,
     minute_stats_from_bars,
     pooled_baseline_days,
@@ -187,6 +195,36 @@ def is_minute_factor(factor: Factor) -> bool:
     return any(r.source == STK_MINS_1MIN for r in (factor.spec.requires or ()))
 
 
+def stores_intermediate(factor: Factor) -> bool:
+    """True iff ``factor``'s VALUE is a function of the loaded universe (D4c).
+
+    Such a factor's value cannot be stored: the store key is (factor, params,
+    code, view) and none of those says which universe produced it, so a value
+    filled under one universe would be served to another. Its universe-INDEPENDENT
+    per-symbol intermediate is stored instead and the cross-sectional combine runs
+    at read-assembly, over the universe the READER asked for.
+
+    Adding "which universe" to the key was considered and rejected (design
+    revision A2): it would over-invalidate the ten factors whose values are
+    universe-independent, and a PIT universe is a time-varying SET, so "the
+    universe" of a date range is not a single value that a key dimension could
+    even hold.
+    """
+    return is_minute_factor(factor) and is_cross_sectional_minute(factor)
+
+
+def payload_columns(factor: Factor) -> tuple[str, ...]:
+    """The columns of what the store persists for ``factor`` (D4c).
+
+    The value column for almost every factor; the per-symbol intermediate's
+    columns for a cross-sectional one. The reader validates the artifact on disk
+    against this, so an artifact written under the other shape is a miss.
+    """
+    if stores_intermediate(factor):
+        return minute_intermediate_columns(factor)
+    return (factor.name,)
+
+
 # --------------------------------------------------------------------------- #
 # Trailing-trading-day trim (the P8 correctness floor)
 # --------------------------------------------------------------------------- #
@@ -298,6 +336,60 @@ def materialize_range(
     return _restrict_emit(raw, emit_start, emit_end, factor.name)
 
 
+def materialize_intermediate_range(
+    factor: Factor,
+    *,
+    view: object,
+    symbols: list[str],
+    emit_start: pd.Timestamp,
+    emit_end: pd.Timestamp,
+    sources: MaterializeSources,
+    decision_cutoff: str = DEFAULT_DECISION_TIME,
+    warmup: int | None = None,
+    diagnostics: list | None = None,
+) -> pd.DataFrame:
+    """``factor``'s UNIVERSE-INDEPENDENT per-symbol intermediate over the window.
+
+    Same engine, same loading geometry and the same trailing trim as
+    :func:`materialize_range` — it simply stops one step earlier, before the
+    cross-sectional combine. Only a factor that :func:`stores_intermediate` has a
+    reason to call this: for every other factor the intermediate IS the value, so
+    asking for it here would create a second name for one thing.
+
+    A ``masked`` factor is refused rather than served: the ex-date mask belongs to
+    the VALUE (it NaNs out a computed value on its ex-date), and the value does not
+    exist yet at this point, so an intermediate could only carry the mask by
+    applying it to the wrong object. No closing factor is masked, so this refuses
+    a case that does not exist rather than guessing at it.
+    """
+    if not stores_intermediate(factor):
+        raise ValueError(
+            f"{factor.name} stores its VALUE, not an intermediate: its value does "
+            f"not depend on the loaded universe, so materialize_range is the one "
+            f"engine entry point for it."
+        )
+    if factor.spec.overnight_boundary is OvernightBoundary.MASKED:
+        raise NotImplementedError(
+            f"{factor.name} is both cross-sectional and overnight_boundary='masked'. "
+            f"The ex-date mask applies to the VALUE, which the intermediate does not "
+            f"carry, so storing the intermediate would silently drop the mask. No "
+            f"closing factor is in this combination; wiring it needs the mask moved "
+            f"to the read-assembly combine, deliberately and with its own test."
+        )
+    resolved_view = View(view)
+    symbols = _requested_universe(symbols)
+    emit_start = pd.Timestamp(emit_start).normalize()
+    emit_end = pd.Timestamp(emit_end).normalize()
+    w = int(factor.spec.lookback_depth) if warmup is None else int(warmup)
+    if w < 1:
+        raise ValueError(f"{factor.name}: warmup must be >= 1; got {w}.")
+    load_start = emit_start - pd.Timedelta(days=_load_buffer_calendar_days(w))
+    return _minute_intermediate(
+        factor, resolved_view, symbols, load_start, emit_start, emit_end, w, sources,
+        decision_cutoff, diagnostics,
+    )
+
+
 def _materialize_daily(
     factor, view, symbols, load_start, emit_start, emit_end, warmup, sources,
 ) -> pd.Series:
@@ -340,14 +432,38 @@ def _materialize_minute(
     :func:`_pooled_symbol_stats` for why that is the same terminal, not a
     weakening.
     """
+    if not is_minute_bound(factor):
+        # Readable error (e.g. valley_price_quantile needs the daily panel too).
+        if sources.minute is None:
+            raise ValueError(
+                f"{factor.name} is a minute factor but no MinuteBarProvider was injected."
+            )
+        return minute_raw_from_bars(factor, sources.minute.minute_bars([], load_start, emit_end))
+    stats = _minute_intermediate(
+        factor, view, symbols, load_start, emit_start, emit_end, warmup, sources,
+        decision_cutoff, diagnostics,
+    )
+    if stats.empty:
+        return _empty_series(factor.name)
+    return combine_minute_stats(factor, stats)
+
+
+def _minute_intermediate(
+    factor, view, symbols, load_start, emit_start, emit_end, warmup, sources,
+    decision_cutoff, diagnostics=None,
+) -> pd.DataFrame:
+    """The assembled PER-SYMBOL intermediate, emit-restricted, BEFORE the combine.
+
+    This is the universe-INDEPENDENT half of a minute factor: each symbol's rows
+    are produced from that symbol's bars alone. The materialized value is
+    ``combine_minute_stats`` of it; the store persists this frame directly for a
+    cross-sectional factor (D4c), so the two callers share one engine rather than
+    a second per-symbol loop.
+    """
     if sources.minute is None:
         raise ValueError(
             f"{factor.name} is a minute factor but no MinuteBarProvider was injected."
         )
-    if not is_minute_bound(factor):
-        # Readable error (e.g. valley_price_quantile needs the daily panel too).
-        return minute_raw_from_bars(factor, sources.minute.minute_bars([], load_start, emit_end))
-
     pooled = is_valid_day_pooled(factor)
     pooled_kw = {}
     if pooled:
@@ -379,8 +495,8 @@ def _materialize_minute(
 
     parts = [p for p in parts if not p.empty]
     if not parts:
-        return _empty_series(factor.name)
-    return combine_minute_stats(factor, pd.concat(parts).sort_index(kind="mergesort"))
+        return pd.DataFrame(columns=list(minute_intermediate_columns(factor)))
+    return pd.concat(parts).sort_index(kind="mergesort")
 
 
 def _symbol_bars(provider, symbol: str, start, end) -> pd.DataFrame:
@@ -712,5 +828,8 @@ __all__ = [
     "build_horizon_config",
     "is_minute_factor",
     "make_recompute_fn",
+    "materialize_intermediate_range",
     "materialize_range",
+    "payload_columns",
+    "stores_intermediate",
 ]
