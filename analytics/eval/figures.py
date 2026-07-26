@@ -218,6 +218,70 @@ def _definition_block_line(spec: FactorSpec) -> str | None:
     )
 
 
+#: Wrap width of the description inside the FACTOR DEFINITION band.
+DEFINITION_WRAP_WIDTH = 150
+
+#: How many wrapped lines the band's description slot can hold before the text
+#: collides with the metadata row below it. NOT a style preference — the slot is
+#: bounded by fixed axes-fraction anchors (description at 0.62 va="top", metadata
+#: at 0.20/0.10 va="bottom"), so a longer description silently DRAWS OVER the
+#: metadata.
+#:
+#: MEASURED, not chosen, on the real dashboard geometry (figsize 15x21.5, the
+#: GridSpec of ``_render``): the gap between the two boxes falls 15 px per line and
+#: goes negative at SIX lines — 1..5 lines give +63.8/+48.8/+33.8/+18.8/+3.8 px,
+#: 6 gives -11.2. Five is therefore the capacity, and it is deliberately not
+#: reduced for comfort: every factor whose description fits today keeps rendering
+#: in full, and only the seven that genuinely overflow get an elision marker.
+#:
+#: The slack at five lines is thin (~4 px, a quarter of a line). That is a fact
+#: about the layout, not a hidden risk: ``tests/test_definition_band_layout.py``
+#: re-measures every shipped spec against the real geometry, so a font or
+#: matplotlib change that eats the slack turns the guard RED instead of silently
+#: overprinting. The number is checked, never trusted.
+DEFINITION_MAX_LINES = 5
+
+
+def definition_description_lines(spec) -> list[str]:
+    """The description lines the band may draw, bounded so it cannot overlap.
+
+    Six of the eleven shipped minute factors have descriptions long enough to
+    collide with the metadata row (measured with the real renderer:
+    ``valley_price_quantile_20`` overlaps by 291 px, and it is 25 wrapped lines
+    against a 4-line slot). The renderer has ONE commit in its history, so those
+    dashboards have always been drawn that way — this is a standing defect, not a
+    regression, and "both texts unreadable" is the worst of the options.
+
+    Bounding it visibly is strictly better than overdrawing: an elided tail is
+    marked and points at the copy that carries the description in full (the
+    Markdown provenance box — the JSON's is capped at
+    ``analytics.eval.render.MAX_VALUE_CHARS``). Nothing is dropped without saying
+    so, which is the whole difference between this and what it replaces.
+    """
+    lines = textwrap.wrap(spec.description, width=DEFINITION_WRAP_WIDTH)
+    if len(lines) <= DEFINITION_MAX_LINES:
+        return lines
+    elided = len(lines) - (DEFINITION_MAX_LINES - 1)
+    return lines[: DEFINITION_MAX_LINES - 1] + [
+        f"... [{elided} more lines elided to fit — FULL definition in the "
+        f"Markdown report's provenance box]"
+    ]
+
+
+def _correction_marker(spec) -> str:
+    """Compact "this version supersedes published values" marker, or ``""``.
+
+    Empty when nothing is declared — an unconditional badge would say something
+    about every factor, and "no correction declared" is not "known correct".
+    """
+    corrections = tuple(getattr(spec, "corrections", ()) or ())
+    if not corrections:
+        return ""
+    first = corrections[0]
+    extra = f" (+{len(corrections) - 1})" if len(corrections) > 1 else ""
+    return f"CORRECTED v{first.from_version} -> v{first.to_version}{extra}"
+
+
 def _definition_band(ax, data: DashboardData) -> None:
     """MANDATORY panel: how the factor is computed, from the FactorSpec.
 
@@ -235,7 +299,16 @@ def _definition_band(ax, data: DashboardData) -> None:
     ax.text(0.185, 0.90, f"{spec.factor_id}  (v{spec.version})", fontsize=9.5,
             fontweight="bold", color="#111111", transform=ax.transAxes, va="top",
             family="DejaVu Sans Mono")
-    ax.text(0.012, 0.62, textwrap.fill(spec.description, width=150), fontsize=9.2,
+    # Corrected factors say so ON the picture. The dashboard is the surface a
+    # reader is most likely to look at alone, and "this version supersedes
+    # published values" is not something they should have to open the JSON for.
+    # Sourced from the SAME structured tuple as the JSON block and the Markdown
+    # row — never re-worded here.
+    marker = _correction_marker(spec)
+    if marker:
+        ax.text(0.60, 0.90, marker, fontsize=9.0, fontweight="bold", color="#A33A00",
+                transform=ax.transAxes, va="top", family="DejaVu Sans Mono")
+    ax.text(0.012, 0.62, "\n".join(definition_description_lines(spec)), fontsize=9.2,
             color="#222222", transform=ax.transAxes, va="top")
     block = _definition_block_line(spec)
     meta_y = 0.20 if block is not None else 0.10

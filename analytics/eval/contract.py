@@ -43,13 +43,47 @@ Two new keys in the exported ``eval_config`` block and one new top-level key
 (``eval_contract_version``) in every report JSON, plus four new provenance rows in
 the Markdown. No metric, no axis input and no threshold moves. The D5 C5
 reconciliation registers this as a named, expected artifact drift.
+
+CONTRACT v1.1 — WHAT CHANGED AND WHY
+------------------------------------
+v1.0 could state which information set a factor's values came from. It could not
+state that those values SUPERSEDE previously published ones — and the obvious
+place to write that, ``FactorSpec.description``, turned out not to work.
+
+``sanitize_payload`` caps every exported string at :data:`MAX_VALUE_CHARS` (200)
+and appends ``...[truncated]``. That cap is correct for arbitrary payload values
+and it is generic, not path-specific: measured across the 44 shipped eval JSONs,
+**44/44** carry a truncated ``spec.description`` (218 ``[truncated]`` markers in
+all, three of them methodological notes in every artifact). So a correction
+written as prose in the description reaches the Markdown and the dashboard and is
+CUT OUT of the JSON — the copy a summary layer reads. A machine consumer would
+see restated numbers with no sign that they replaced a defective run: a report
+failing to say the thing about its own provenance that it must say, which is the
+same shape as the factor defect that produced the correction in the first place.
+
+v1.1 adds ONE top-level key, ``corrections``, built from the new structured
+``FactorSpec.corrections`` (a tuple of ``FactorCorrection``). It is emitted OUTSIDE
+the capped path (``analytics.eval.render.corrections_record``) — redacted, never
+truncated — and over-length RAISES at spec construction instead of trimming, so
+the carrier cannot silently lose the thing it exists to carry. The same tuple
+renders one Markdown provenance row per correction and a marker on the dashboard,
+so the three surfaces cannot disagree.
+
+An empty tuple is the default and means "no correction has been DECLARED" — never
+"this factor is known to be correct".
+
+WHAT DID NOT CHANGE (v1.1)
+--------------------------
+Every decision rule, every threshold, every metric, and the 200-char cap itself
+(it is right for arbitrary payload values; the fix is to stop routing a
+load-bearing disclosure through it).
 """
 
 from __future__ import annotations
 
 #: The evaluation contract version this package implements. Bumped ONLY with a
 #: written statement of what changed (this module's docstring is that statement).
-EVAL_CONTRACT_VERSION = "1.0"
+EVAL_CONTRACT_VERSION = "1.1"
 
 #: The identity fields a v1.0 report must be able to state about itself. Named
 #: here once so the config validator, the renderer and the cross-basis summary

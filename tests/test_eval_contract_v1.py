@@ -25,6 +25,7 @@ from analytics.eval import (
     render_verdict_summary,
     require_basis_columns,
 )
+from analytics.eval import contract as contract_module
 from analytics.eval.render import _requires_row
 from data.availability_policy import ReturnBasis, View
 
@@ -289,7 +290,14 @@ def test_every_verdict_threshold_default_is_the_frozen_close_era_value():
 
 
 def test_contract_version_is_stated():
-    assert EVAL_CONTRACT_VERSION == "1.0"
+    """Pinned so a bump has to be deliberate — and it has to bring its statement.
+
+    v1.0 -> v1.1 added the top-level ``corrections`` key; the module docstring is
+    that statement, and this assertion is what forces the next bump to write one
+    too. The thresholds above are unchanged by that bump (asserted separately).
+    """
+    assert EVAL_CONTRACT_VERSION == "1.1"
+    assert "CONTRACT v1.1" in contract_module.__doc__
 
 
 # --------------------------------------------------------------------------- #

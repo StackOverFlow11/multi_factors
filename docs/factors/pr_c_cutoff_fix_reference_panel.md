@@ -68,8 +68,10 @@ cd <repo root>            # 缓存根 artifacts/cache/tushare/v1 就位
   panels」被当成功报出去，正是本仓记录在案的空对账形态。
 - 共享数据面（universe / 日频面板 / 富化）**照旧用完整因子簿**构建，所以过滤 run 看到的
   日频面板与整跑完全相同；`--only` 只决定**冻什么**，不决定**加载什么**。
-- 该 run 的 manifest 自报 `selected_factors`，与原基线 manifest（`selected_factors: all`）
-  一眼可分。
+- 该 run 的 manifest header 自报 `selected_factors: jump_amount_corr_20`。**原基线
+  manifest 里根本没有这个键**——它产生于 `--only` 存在之前，所以两者的区别是「有该键 vs
+  无该键」，不是「两个不同的值」。（初稿曾写成原基线写着 `selected_factors: all`，评审实测
+  证否；如实更正。）
 - ⚠️ 与原基线的 provenance 规则**刻意不同**：D1 基线要求「只许从钉住的 pre-D2 SHA
   checkout 重跑」；本参照面板**必须**在含有截断修正的树上跑（这正是它要记录的东西）。
   它的 `producing_git_sha` 记在自己的 manifest header 里。
@@ -142,6 +144,73 @@ verdict 同样 **Watch / Watch** 不变。
   推出来的：相关系数高与 verdict 是否存活没有推理关系，所以必须重跑。
 - verdict 不变**不追认旧 artifact**：旧值在 exec 基准下是前视产物，无论它当时给出什么标签，
   都不构成一个诚实的结论。现在这一版才是。
+
+## 六之二、更正声明放在哪里（本 PR 第二次自查纠错）
+
+**第一版把更正写成 `spec.description` 的一段散文，报告称「四份 artifact 各含 1 处、同时进
+JSON 与 dashboard」——三个说法里两个是错的**：
+
+| 承载 | 第一版实况 |
+|---|---|
+| Markdown | ✅ 完整 |
+| JSON（**机器可读的那一份**） | ❌ `spec.description` 被 `sanitize_payload` 封顶 **200 字符**并追加 `...[truncated]`；更正从第 353 字符起，**整段不在里面** |
+| dashboard PNG | ❌ 加长的 description 使 FACTOR DEFINITION 带从 3 行涨到 5 行，**与下面的 metadata 行叠字**，被叠掉的正是更正那几行 |
+
+即：**更正在两条路上都没到达，而恰恰是我报告说已经做到的地方**——与本 PR 正在修的缺陷同形
+（一份文档没有说出关于它自己出处的该说的话）。
+
+**根因是通用的，不是 jump 特有**：实测已发布的 **44/44** 份 eval JSON 的 `spec.description`
+全部被截断（共 218 个 `[truncated]` 标记，其中三处还是每份 artifact 里的方法学说明）。
+
+**改法（评估契约 v1.1）**：更正成为**结构化字段** `FactorSpec.corrections`
+（`FactorCorrection` 元组：`from_version`/`to_version`/`date`/`defect`/`effect`/`superseded`，
+每项非空校验、**超长 raise 而非裁剪**、`to_version` 必须等于 spec 自身 version 以便
+`spec.version` 单独就能判别一份存档在更正的哪一侧）。JSON 顶层新增 `corrections` 键
+（与 `eval_contract_version` 同级），经 `corrections_record` 走**封顶通道之外**导出；Markdown
+provenance 行与 PNG 头行标记**从同一元组派生**（author once）。`description` 恢复为纯定义。
+
+**守卫（`tests/test_factor_correction_carrier.py` 15 项）不做渲染文本子串匹配**（D5b 刚因此
+吃过亏）：把**声明的对象**经真实 `report_to_dict` + `json.dumps/loads` 往返后与原对象**相等
+比对**；并钉住「这些字段确实超过封顶长度」，所以「往返完好」只有在承载真的在封顶通道之外时
+才成立。
+
+## 六之三、dashboard 叠字（既有缺陷，本 PR 顺带修 + 加守卫）
+
+FACTOR DEFINITION 带把描述锚在 `y=0.62`、metadata 锚在 `y=0.20/0.10`，**中间无约束** ⇒ 长
+描述直接画在 metadata 上。真实 dashboard 几何实测：**11 个分钟因子里 7 个重叠**
+（`valley_price_quantile_20` 超 **296 px**，25 行对 4 行槽位）。
+`analytics/eval/figures.py` **在 git 里只有一个 commit** ⇒ **不是本 PR 的回归，而是每一份已
+产出 dashboard 都有的既有缺陷**（含冻结的 22 张）。
+
+修法**不动任何因子的描述文本**（那才是爆炸半径）：`definition_description_lines` 限行到
+`DEFINITION_MAX_LINES=4`，超出部分以**显式省略标记**收尾并指向 Markdown（那一份 description
+是完整的）。省略优于覆盖：覆盖是两段文字同时不可读**且不声明**。
+
+守卫 `tests/test_definition_band_layout.py`（25 项）用**真实 dashboard 的 figsize/GridSpec**
+渲染后取 Text 的 window extent 比 bbox —— **几何断言，不是看图，也不是子串匹配**。
+
+## 六之四、D2 手算锚重跑：让冻结面板的陈旧性显形
+
+`qt/hand_anchors_d2.py::hand_jump_amount_corr` 原本注释明写「引擎无 14:50 截断」并据此读
+整日 bar —— 一个**忠实复现缺陷**的手算参照。改成 `pit=True` 后重跑（`python -m
+qt.hand_anchors_d2`，~7min）：
+
+```
+frozen 14: 70 rows, 5 mismatches   (RC=1)
+FAIL jump_amount_corr_20 warmup_end     2021-07-02 000537.SZ hand=0.4613901757 engine=0.4730559418 rel=2.47e-02
+FAIL jump_amount_corr_20 ex_date_window 2021-07-21 000050.SZ hand=0.7755175868 engine=0.7776570622 rel=2.75e-03
+FAIL jump_amount_corr_20 random         2024-05-30 002690.SZ hand=0.3831735019 engine=0.4011519443 rel=4.48e-02
+FAIL jump_amount_corr_20 random         2023-05-18 600867.SH hand=0.5843712903 engine=0.5831966539 rel=2.01e-03
+FAIL jump_amount_corr_20 random         2026-01-30 002773.SZ hand=0.6210838723 engine=0.6210838723 rel=1.06e-03
+```
+
+**这 5 个 FAIL 是正确结果，不是回归**：手算侧已截断，而 `engine` 读的是**冻结的**
+`artifacts/refactor_baseline/panels_d2/jump_amount_corr_20.parquet`（未截断口径，按约定不动）。
+其余 **63 行全部 OK、无一其他因子移动** —— 差异被精确隔离在这一个因子上。
+
+重跑**前**盘上的状态是 5 行 hand==engine **逐位相同**：两侧都复现同一个缺陷，所以看起来干净。
+这正是「手算参照必须独立于引擎」的意义 —— 它一旦跟着引擎一起错，就不再是参照。
+旧文件已备份到 scratchpad（gitignored，非 git 记录）。
 
 ## 七、deny list 的解除（本 PR 内完成）
 

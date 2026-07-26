@@ -52,12 +52,18 @@ an after-the-fact story.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import ClassVar
 
 from data.availability_policy import Adjustment, OvernightBoundary
 from factors.requires import PanelField
+
+#: ISO date shape for a correction's ``date`` (a real calendar check is not the
+#: point; a free-form date string in a machine record is).
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 # The ONLY basis an intraday factor may declare: the minute tail model's holding
 # period runs execution-anchor to execution-anchor, exec(T) -> exec(T_next), and
@@ -94,6 +100,87 @@ INTRADAY_FIELDS: tuple[str, ...] = (
 # that cancels the anchor without reading OHLC directly) is legitimate: a VWAP
 # built as sum(amount)/sum(volume) is price information with no OHLC field.
 _PRICE_CHANNEL_FIELDS: frozenset[str] = frozenset({"open", "high", "low", "close"})
+
+
+#: Per-field character bound on a :class:`FactorCorrection`. Over-length RAISES at
+#: construction rather than being trimmed: this field exists precisely BECAUSE the
+#: report JSON's generic payload cap (``analytics.eval.render.MAX_VALUE_CHARS``)
+#: silently trims long strings, so a carrier that could itself be trimmed would
+#: rebuild the defect it was created to fix. Loud at authoring time > quiet in the
+#: artifact.
+CORRECTION_FIELD_MAX_CHARS = 2000
+
+
+@dataclass(frozen=True)
+class FactorCorrection:
+    """A STRUCTURED statement that a factor's PUBLISHED values were superseded.
+
+    Why this is a field and not a sentence in ``description``. The machine-readable
+    report record runs every string through ``analytics.eval.render.sanitize_payload``,
+    which caps a value at 200 characters and appends ``...[truncated]``. Measured on
+    the 44 shipped eval JSONs: **44/44** have a truncated ``spec.description`` (plus
+    three truncated methodological notes each, 218 markers in all). So a correction
+    written as prose inside ``description`` reaches the Markdown and the dashboard
+    but is CUT OUT of the JSON — and the JSON is the copy a summary layer reads. A
+    report that silently drops the disclosure of its own provenance is the same
+    shape of defect as a factor that reads bars it should not: a document not saying
+    the thing about itself that it must say.
+
+    Every field is required and non-empty, so a half-declared correction is a
+    construction error rather than a hole in an artifact:
+
+    Attributes:
+        from_version: the ``FactorSpec.version`` whose values are superseded.
+        to_version: the version that supersedes them; MUST equal the spec's own
+            ``version``, so an artifact's ``spec.version`` alone discriminates.
+        date: ISO date the correction landed (``YYYY-MM-DD``).
+        defect: what was wrong with the superseded values.
+        effect: what the defect did to those values (the reader's "so what").
+        superseded: which published artifacts the statement retires, and where the
+            historical copies live.
+    """
+
+    from_version: str
+    to_version: str
+    date: str
+    defect: str
+    effect: str
+    superseded: str
+
+    _FIELDS: ClassVar[tuple[str, ...]] = (
+        "from_version",
+        "to_version",
+        "date",
+        "defect",
+        "effect",
+        "superseded",
+    )
+
+    def __post_init__(self) -> None:
+        for name in self._FIELDS:
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"FactorCorrection.{name} must be a non-empty string: a "
+                    f"half-declared correction would leave a hole in every "
+                    f"artifact that carries it. Got {value!r}."
+                )
+            if len(value) > CORRECTION_FIELD_MAX_CHARS:
+                raise ValueError(
+                    f"FactorCorrection.{name} is {len(value)} chars, over the "
+                    f"{CORRECTION_FIELD_MAX_CHARS} bound. This RAISES instead of "
+                    f"trimming on purpose — a correction that can be silently cut "
+                    f"short is the defect this field exists to fix. Shorten it."
+                )
+        if not _ISO_DATE.fullmatch(self.date):
+            raise ValueError(
+                f"FactorCorrection.date must be an ISO YYYY-MM-DD date; got "
+                f"{self.date!r}."
+            )
+
+    def as_dict(self) -> dict[str, str]:
+        """Ordered plain-dict form for the machine-readable record."""
+        return {name: getattr(self, name) for name in self._FIELDS}
 
 
 def _coerce_taxonomy(
@@ -186,6 +273,12 @@ class FactorSpec:
     # actually consumed — see ``factors.store.incremental.factor_lookback_depth``.
     # Validated to a positive int WHEN present.
     lookback_depth: int | None = None
+    # Contract v1.1 ADDITIVE: structured statements that this factor's PUBLISHED
+    # values were superseded. Default () = "nothing was ever corrected"; it is NOT
+    # a claim that the factor is right, only that no correction has been declared.
+    # See :class:`FactorCorrection` for why this is a field rather than prose in
+    # ``description`` (the JSON caps every payload string at 200 chars).
+    corrections: tuple[FactorCorrection, ...] = ()
     decision_cutoff: str | None = None
     data_lag: str | None = None
     session_open: str | None = None
@@ -198,6 +291,7 @@ class FactorSpec:
         self._check_measurement()
         self._check_inputs()
         self._check_declarations()
+        self._check_corrections()
         self._check_intraday_block()
 
     # -- validators (enforcement layer #1) --------------------------------
@@ -294,6 +388,41 @@ class FactorSpec:
         # Store a tuple even when handed a list, so the frozen spec stays
         # immutable + hashable.
         object.__setattr__(self, "input_fields", normalized)
+
+    def _check_corrections(self) -> None:
+        """Corrections must be a tuple of FactorCorrection landing ON this version.
+
+        ``to_version == self.version`` is enforced so ``spec.version`` alone is a
+        sufficient discriminator in a stored artifact: a reader holding one JSON
+        can tell whether it is the corrected side without having to find the
+        other one. A correction pointing at some other version would be a fact
+        about a document this one is not.
+        """
+        corrections = self.corrections
+        if isinstance(corrections, FactorCorrection) or not isinstance(
+            corrections, Sequence
+        ):
+            raise ValueError(
+                f"FactorSpec.corrections must be a sequence of FactorCorrection "
+                f"(not a bare one); got {corrections!r} for {self.factor_id!r}."
+            )
+        normalized = tuple(corrections)
+        bad = [c for c in normalized if not isinstance(c, FactorCorrection)]
+        if bad:
+            raise ValueError(
+                f"FactorSpec.corrections entries must be FactorCorrection "
+                f"instances (a structured fact, never free text); got {bad!r} "
+                f"for {self.factor_id!r}."
+            )
+        mismatched = [c for c in normalized if c.to_version != self.version]
+        if mismatched:
+            raise ValueError(
+                f"FactorSpec.corrections entries must have to_version == the "
+                f"spec's own version {self.version!r} so spec.version alone "
+                f"discriminates a stored artifact; got "
+                f"{[c.to_version for c in mismatched]!r} for {self.factor_id!r}."
+            )
+        object.__setattr__(self, "corrections", normalized)
 
     def _check_declarations(self) -> None:
         """Contract v1.0: requires / adjustment / overnight_boundary are mandatory."""
@@ -422,6 +551,8 @@ class FactorSpec:
 
 
 __all__ = [
+    "CORRECTION_FIELD_MAX_CHARS",
+    "FactorCorrection",
     "FactorSpec",
     "PanelField",  # re-export: the requires entry type (single class, factors.requires)
     "RETURN_BASES",

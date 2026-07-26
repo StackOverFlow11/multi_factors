@@ -53,7 +53,7 @@ from factors.compute.minute.primitives import (
     empty_factor_series,
     visible_minute_frame,
 )
-from factors.spec import FactorSpec, PanelField
+from factors.spec import FactorCorrection, FactorSpec, PanelField
 
 # Factor DEFINITION constants (reproduced from the report; NOT tuned knobs). The
 # daily value is a trailing-``JUMP_LOOKBACK_DAYS``-trading-day lagged correlation
@@ -63,6 +63,38 @@ from factors.spec import FactorSpec, PanelField
 JUMP_LOOKBACK_DAYS = 20
 JUMP_MIN_PAIRS = 10
 JUMP_Z = 1.0
+
+#: The intraday-cutoff correctness fix, declared as a STRUCTURED fact so every
+#: artifact carries it verbatim (see :class:`factors.spec.FactorCorrection` for why
+#: this cannot live in ``description``). This factor is the only one of the eleven
+#: that shipped without a 14:50 truncation, so it is the only one with an entry.
+_CUTOFF_CORRECTION = FactorCorrection(
+    from_version="1.0",
+    to_version="1.1",
+    date="2026-07-25",
+    defect=(
+        "v1.0 applied NO intraday PIT truncation at all — this factor was built "
+        "before the standing 14:50-truncation authorization and was the one minute "
+        "factor of eleven that never got it, so a value at date d pooled that day's "
+        "full session including the 14:50-15:00 bars."
+    ),
+    effect=(
+        "Under the 14:51-VWAP exec_to_exec basis the entry anchor for d is d's own "
+        "14:51 execution bar, so those values used POST-ENTRY information: the "
+        "execution minute itself and the nine minutes after it. Measured on the "
+        "shipped v1.0 engine, perturbing only the excluded bars moved every emitted "
+        "cell (1,477/1,477 and 1,373/1,373 in two independent samples, max |diff| "
+        "1.28 and 1.05); the other ten minute factors moved zero cells."
+    ),
+    superseded=(
+        "Every jump_amount_corr_20 evaluation artifact produced before this date is "
+        "superseded, on BOTH bases. The close_to_close copies are kept, labelled, "
+        "under artifacts/reports/pr_c_untruncated_close_to_close/; the exec copies "
+        "remain in the frozen exec baseline as the byte record of what was "
+        "published. Aggregate metrics moved little and the Watch verdict survived, "
+        "but that was established by re-running, not inferred from the similarity."
+    ),
+)
 
 
 def _minute_requires(*fields: str) -> tuple[PanelField, ...]:
@@ -273,13 +305,14 @@ class JumpAmountCorrFactor(Factor):
                 f"traded amount at price-JUMP minutes (within-day amplitude z-score "
                 f">1) and the amount at the strictly-next minute. Derived from 1min "
                 f"bars but a DAILY signal; >= {JUMP_MIN_PAIRS} jump-pairs required "
-                f"else NaN. CORRECTION (v1.0 -> v1.1): values published before this "
-                f"fix were computed WITHOUT the 14:50 truncation, so a value at d "
-                f"included that day's 14:50-15:00 bars — i.e. POST-ENTRY information "
-                f"under the 14:51-VWAP exec_to_exec basis (the execution minute "
-                f"itself and the nine after it). Those values are superseded; this "
-                f"run is the truncated recomputation."
+                f"else NaN."
             ),
+            # The correction is a STRUCTURED fact, not a sentence appended here:
+            # the report JSON caps every payload string at 200 chars, so a
+            # correction living in ``description`` reaches the Markdown and the
+            # dashboard and is cut out of the machine-readable copy (measured:
+            # 44/44 shipped eval JSONs have a truncated description).
+            corrections=(_CUTOFF_CORRECTION,),
             expected_ic_sign=-1,
             is_intraday=False,
             forward_return_horizon=1,
