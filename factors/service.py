@@ -16,11 +16,19 @@ properly, both deliberate:
   "no stored row" means "never computed" rather than doubling as "computed, no
   value" — otherwise a factor that emits nothing for 45% of the cells it is asked
   about would be re-materialized on every request;
-* consequently a served panel carries an explicit NaN row where a factor has no
-  value, instead of no row at all. Nothing that reads a factor value is affected
-  (NaN already meant "missing"), but a consumer that counts ROWS is looking at a
-  different denominator than before: the cells asked about, not the cells the
-  factor emitted.
+* the SERVED shape follows, and it follows DIFFERENTLY for the two payloads, so
+  it is stated per payload rather than once and wrongly:
+
+  - VALUE payload (every factor but one): the panel now carries an explicit NaN
+    row where the factor has no value, instead of no row at all. Nothing that
+    reads a value is affected (NaN already meant "missing"), but a consumer that
+    counts ROWS is looking at a different denominator than before — the cells
+    asked about, not the cells the factor emitted.
+  - INTERMEDIATE payload (the cross-sectional factor): unchanged, because the
+    combine decides the served shape and it emits only the finite-pair cells.
+    The NaN footprint rows are in the store and are dropped by the combine, so a
+    requested name with nothing to standardize is ABSENT from the panel, not NaN
+    in it (measured: 24 names + 3 with no bars -> 48 served rows, not 54).
 
 A factor whose VALUE depends on the loaded universe cannot have that value stored
 under a key that does not name the universe. It stores its per-symbol intermediate
@@ -60,6 +68,7 @@ from factors.materialize import (
     materialize_intermediate_range,
     materialize_range,
     payload_columns,
+    requested_universe,
     stores_intermediate,
 )
 from factors.store.fingerprint import data_fingerprint
@@ -352,7 +361,11 @@ def panel(
     """
     resolved_view, _ = require_legal_pairing(view, basis)
     factor_ids = list(factor_ids)
-    symbols = [str(s) for s in universe]
+    # THE caller-list normalization (imported, never re-implemented): everything
+    # below — the gap criterion, the fill footprint, the engine call and the
+    # cross-section — reads this list, so a repeat here would be a repeat in the
+    # store. See ``materialize.requested_universe`` for what a second copy costs.
+    symbols = requested_universe(universe)
     if not decisions:
         raise ValueError("panel() needs at least one DecisionPoint.")
     if diagnostics is not None and len(factor_ids) != 1:

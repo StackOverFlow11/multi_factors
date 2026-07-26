@@ -26,6 +26,7 @@ was first asserted to actually change its target.
 
 from __future__ import annotations
 
+import inspect
 import tempfile
 
 import numpy as np
@@ -35,6 +36,7 @@ import pytest
 
 from data.availability_policy import OvernightBoundary, View
 from data.clean.intraday_schema import normalize_intraday_bars
+from factors import materialize as materialize_mod
 from factors import registry as factor_registry
 from factors import service as service_mod
 from factors.compute.minute.binding import (
@@ -50,12 +52,14 @@ from factors.compute.minute.intraday_amp_cut import (
 )
 from factors.materialize import (
     MaterializeSources,
+    make_recompute_fn,
     materialize_intermediate_range,
     materialize_range,
     payload_columns,
+    requested_universe,
     stores_intermediate,
 )
-from factors.service import DecisionPoint, panel
+from factors.service import DecisionPoint, cross_section, panel
 from factors.store.fingerprint import data_fingerprint
 from factors.store.keys import store_key
 from factors.store.values import FactorValueStore
@@ -330,6 +334,160 @@ def test_a_fill_records_the_cells_it_covered_even_when_empty():
 
 
 # --------------------------------------------------------------------------- #
+# The caller's symbol list is normalized ONCE, at every entry point
+# --------------------------------------------------------------------------- #
+#: 14 unique names with two of them repeated: what a caller passes when a
+#: universe is assembled from overlapping sources. The clean grid is
+#: len(EMIT) x 14; anything larger means a repeat was materialized twice.
+_DUP_CLEAN = SYMBOLS[:14]
+_DUP_REQUEST = _DUP_CLEAN + [_DUP_CLEAN[0], _DUP_CLEAN[5]]
+
+
+def _symbol_entry_points() -> dict[str, list[str]]:
+    """Public callables of the two modules that take a CALLER-SUPPLIED symbol list.
+
+    DERIVED by signature inspection, never hand-listed: a guard that only checks
+    the entry points someone remembered to write down can only confirm what they
+    already knew (#82). The provider Protocols also mention ``symbols``, but they
+    are the OTHER side of the boundary — the engine hands them an already
+    normalized list — and they fall out on their own because a Protocol's call
+    signature is ``(*args, **kwargs)``.
+    """
+    out: dict[str, list[str]] = {}
+    for mod in (service_mod, materialize_mod):
+        for name, obj in vars(mod).items():
+            if name.startswith("_") or not callable(obj):
+                continue
+            if getattr(obj, "__module__", None) != mod.__name__:
+                continue
+            try:
+                params = list(inspect.signature(obj).parameters)
+            except (TypeError, ValueError):
+                continue
+            hits = [p for p in params if p in ("symbols", "universe")]
+            if hits:
+                out[f"{mod.__name__}.{name}"] = hits
+    return out
+
+
+def _probe_panel(universe):
+    with tempfile.TemporaryDirectory() as td:
+        return panel(
+            [PURE_MINUTE_ID], universe, [DecisionPoint(date=d) for d in EMIT],
+            store=FactorValueStore(td), sources=_sources(PURE_MINUTE_ID),
+        )
+
+
+def _probe_cross_section(universe):
+    with tempfile.TemporaryDirectory() as td:
+        return cross_section(
+            [PURE_MINUTE_ID], universe, DecisionPoint(date=EMIT[0]),
+            store=FactorValueStore(td), sources=_sources(PURE_MINUTE_ID),
+        )
+
+
+def _probe_materialize_range(universe):
+    return materialize_range(
+        factor_registry.build(PURE_MINUTE_ID), view=View.DECISION, symbols=universe,
+        emit_start=EMIT[0], emit_end=EMIT[-1],
+        sources=MaterializeSources(minute=MinuteProv()),
+    )
+
+
+def _probe_materialize_intermediate_range(universe):
+    return materialize_intermediate_range(
+        factor_registry.build(CROSS_SECTIONAL_ID), view=View.DECISION, symbols=universe,
+        emit_start=EMIT[0], emit_end=EMIT[-1],
+        sources=MaterializeSources(minute=MinuteProv()),
+    )
+
+
+def _probe_make_recompute_fn(universe):
+    fn = make_recompute_fn(
+        factor_registry.build(PURE_MINUTE_ID), view=View.DECISION, symbols=universe,
+        sources=MaterializeSources(minute=MinuteProv()), data_start=DATES[0],
+    )
+    return fn(EMIT[0], EMIT[-1], 20)
+
+
+def _probe_requested_universe(universe):
+    return pd.Series(0.0, index=pd.Index(requested_universe(universe), name="symbol"))
+
+
+#: entry point -> how to call it with a caller list. A new entry point without a
+#: recipe fails the surface test below; the recipes cannot be derived (each
+#: signature differs), but WHICH ones must exist is.
+_ENTRY_PROBES = {
+    "factors.service.panel": _probe_panel,
+    "factors.service.cross_section": _probe_cross_section,
+    "factors.materialize.materialize_range": _probe_materialize_range,
+    "factors.materialize.materialize_intermediate_range": _probe_materialize_intermediate_range,
+    "factors.materialize.make_recompute_fn": _probe_make_recompute_fn,
+    "factors.materialize.requested_universe": _probe_requested_universe,
+}
+
+
+def test_the_symbol_entry_point_surface_is_fully_probed():
+    """Every entry point taking a caller symbol list has a duplicate probe.
+
+    This is the half that cannot be forgotten: the surface is discovered by
+    inspection, so adding a function that accepts a universe and forgetting to
+    normalize it fails HERE, before anyone has to think of testing it.
+    """
+    found = _symbol_entry_points()
+    assert set(found) == set(_ENTRY_PROBES), (
+        f"unprobed symbol entry points: {sorted(set(found) - set(_ENTRY_PROBES))}; "
+        f"stale probes: {sorted(set(_ENTRY_PROBES) - set(found))}"
+    )
+
+
+@pytest.mark.parametrize("entry", sorted(_ENTRY_PROBES))
+def test_every_symbol_entry_point_normalizes_the_caller_list(entry):
+    """A repeated name must not produce a repeated row, ANYWHERE.
+
+    Measured before the fix, with the service building its fill footprint from
+    the raw caller list: the store held 48 rows instead of 42 with 6 duplicated
+    index entries, and ``intraday_amp_cut_10`` moved all 42 cells (max|delta|
+    1.526e-01) because the repeat entered its date's cross-section twice.
+
+    MUTATION (run): reverting ``service.panel`` to ``[str(s) for s in universe]``
+    -> this test FAILS for both service entries (rc=1); restored -> passes.
+    """
+    probe = _ENTRY_PROBES[entry]
+    duped = probe(_DUP_REQUEST)
+    clean = probe(_DUP_CLEAN)
+    assert not duped.index.duplicated().any(), f"{entry}: duplicated index rows"
+    assert duped.index.equals(clean.index), f"{entry}: index differs from the clean call"
+    a, b = duped.to_numpy(), clean.to_numpy()
+    assert np.array_equal(np.isnan(a), np.isnan(b)), f"{entry}: NaN mask differs"
+    finite = ~np.isnan(a)
+    assert np.array_equal(a[finite], b[finite]), f"{entry}: values differ"
+
+
+@pytest.mark.parametrize("fid", [CROSS_SECTIONAL_ID, PURE_MINUTE_ID])
+def test_a_duplicate_in_one_request_does_not_pollute_the_store(fid):
+    """And the pollution must not be PERSISTENT: the artifact a duplicated request
+    leaves behind is what every later request reads.
+
+    Before the fix the later CLEAN request read 48 rows with 6 duplicated index
+    entries — enough to make a consumer's ``reindex`` raise outright — and for the
+    cross-sectional factor every one of its 42 cells was wrong.
+    """
+    factor = factor_registry.build(fid)
+    key = store_key(factor, view=View.DECISION.value)
+    with tempfile.TemporaryDirectory() as td:
+        reference, _ = _ask(FactorValueStore(td), fid, _DUP_CLEAN)
+    with tempfile.TemporaryDirectory() as td:
+        store = FactorValueStore(td)
+        _ask(store, fid, _DUP_REQUEST)
+        on_disk = store.read_frame(key)
+        later, _ = _ask(store, fid, _DUP_CLEAN)  # a completely clean later request
+    assert not on_disk.index.duplicated().any(), "duplicated rows persisted to disk"
+    assert len(on_disk) == len(EMIT) * len(_DUP_CLEAN)
+    _assert_matches_reference(later, reference, f"{fid} after a duplicated request")
+
+
+# --------------------------------------------------------------------------- #
 # MODE 2 — the cross-sectional value and its universe
 # --------------------------------------------------------------------------- #
 def test_cross_universe_reuse_matches_a_cold_store_both_directions():
@@ -363,6 +521,14 @@ def test_stored_intermediate_is_universe_independent():
     The same symbol's stored intermediate rows are BIT-IDENTICAL whether the store
     was filled with 12 names or 24. If this ever fails, storing the intermediate is
     no better than storing the value and the whole approach is void.
+
+    THE ``finite.sum() > 0`` GUARD IS LOAD-BEARING and was missing at first: two
+    all-NaN frames have equal NaN masks and equal (empty) finite values, so the
+    comparison is satisfied by an intermediate carrying no information at all.
+    MUTATION (run before the guard existed): multiplying ``_amp_cut_per_symbol``'s
+    frame by NaN — same shape, same columns, same index — left this test PASSING
+    (rc=0); with the guard it FAILS. That is the eighth "impossible to fail" test
+    caught in this repo, and it was sitting under the words "THE PREMISE".
     """
     fid = CROSS_SECTIONAL_ID
     factor = factor_registry.build(fid)
@@ -381,10 +547,99 @@ def test_stored_intermediate_is_universe_independent():
     assert set(map(str, shared.get_level_values("symbol"))) == set(HALF)
     a = half.loc[shared].to_numpy()
     b = full.loc[shared].to_numpy()
+    finite = ~np.isnan(a)
+    assert finite.sum() > 0, (
+        "vacuous: the intermediate is all-NaN, so equality here would be satisfied "
+        "by a stage that computed nothing"
+    )
     assert np.array_equal(np.isnan(a), np.isnan(b))
-    assert np.array_equal(a[~np.isnan(a)], b[~np.isnan(b)]), (
+    assert np.array_equal(a[finite], b[~np.isnan(b)]), (
         "the per-symbol intermediate moved with the universe — it is not universe-free"
     )
+
+
+class _StaggeredProv:
+    """Same bars, but each symbol's history starts on its own date, and
+    ``earliest_available`` answers a symbol LIST in one of three ways."""
+
+    #: first 12 names have full history; the rest start 16 trading days in, so a
+    #: min-over-symbols floor and a max-over-symbols floor are far apart.
+    FIRST = {s: (DATES[0] if i < 12 else DATES[16]) for i, s in enumerate(SYMBOLS)}
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        d = pd.DatetimeIndex(MINUTE.index.get_level_values("time")).normalize()
+        s = pd.Index(MINUTE.index.get_level_values("symbol"))
+        keep = np.array([day >= self.FIRST[str(sym)] for day, sym in zip(d, s)])
+        self._bars = MINUTE[keep]
+
+    def minute_bars(self, symbols, start, end):
+        if not symbols:
+            return self._bars.iloc[0:0]
+        t = self._bars.index.get_level_values("time")
+        sym = self._bars.index.get_level_values("symbol")
+        return self._bars[
+            (t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end)) & sym.isin(list(symbols))
+        ]
+
+    def earliest_available(self, symbols):
+        firsts = [self.FIRST[str(s)] for s in symbols if str(s) in self.FIRST]
+        if not firsts:
+            return DATES[0]
+        if self.mode == "min":
+            return min(firsts)  # a LOWER bound over the symbols (the contract)
+        if self.mode == "constant":
+            return DATES[0]  # a documented global constant (also a lower bound)
+        if self.mode == "max":
+            return max(firsts)  # "the floor covering ALL of them" — NOT a lower bound
+        raise ValueError(self.mode)
+
+
+def _stored_intermediate(universe, mode):
+    factor = factor_registry.build(CROSS_SECTIONAL_ID)
+    key = store_key(factor, view=View.DECISION.value)
+    with tempfile.TemporaryDirectory() as td:
+        store = FactorValueStore(td)
+        panel(
+            [CROSS_SECTIONAL_ID], universe, [DecisionPoint(date=d) for d in EMIT],
+            store=store, sources=MaterializeSources(minute=_StaggeredProv(mode)),
+        )
+        return store.read_frame(key)
+
+
+def _intermediate_universe_gap(mode) -> float:
+    half = _stored_intermediate(HALF, mode)
+    full = _stored_intermediate(SYMBOLS, mode)
+    shared = half.index.intersection(full.index)
+    assert len(shared) > 0, "vacuous: no shared rows to compare"
+    a, b = half.loc[shared].to_numpy(), full.loc[shared].to_numpy()
+    both = np.isfinite(a) & np.isfinite(b)
+    assert both.sum() > 0, "vacuous: no finite pairs to compare"
+    return float(np.max(np.abs(a[both] - b[both])))
+
+
+@pytest.mark.parametrize("mode", ["min", "constant"])
+def test_a_lower_bound_floor_keeps_the_intermediate_universe_free(mode):
+    """The premise holds for ANY floor that is a lower bound over the symbols.
+
+    ``earliest_available`` is the only universe-dependent input the per-symbol
+    stage has, so this is where universe-independence is actually decided (see the
+    contract on ``MinuteBarProvider.earliest_available``).
+    """
+    assert _intermediate_universe_gap(mode) == 0.0
+
+
+def test_a_max_form_floor_breaks_the_premise():
+    """MUTATION-SHAPED, and committed because the fix is someone ELSE's future work:
+    a floor answered as "the date from which ALL these symbols have data" is not a
+    lower bound, and the stored intermediate stops being universe-free.
+
+    Asserting the BREAK (measured 9.322e-03 against 0.000e+00 for both lower-bound
+    forms) is what makes the contract a checked fact rather than a comment. The
+    open D5/D6 item "derive the declared floor per symbol from the coverage ledger"
+    is exactly where a max-form implementation would be natural to write.
+    """
+    assert _intermediate_universe_gap("max") > 0.0
 
 
 def test_min_cross_section_gate_still_bites_on_the_read_path():
@@ -552,22 +807,36 @@ def test_a_stale_payload_shape_is_overwritten_not_merged():
     _assert_matches_reference(got, _fresh_reference(CROSS_SECTIONAL_ID, SYMBOLS), "stale")
 
 
+#: Names the fixture has NO bars for. A universe member with nothing to compute is
+#: what makes the two payloads' served shapes differ observably; without one, the
+#: "extra rows are NaN" assertion below is structurally empty for the factors whose
+#: emit grid is already dense (measured: 2 of the 3 parameters had zero extra rows).
+GHOST_SYMBOLS = ["999001.SZ", "999002.SZ", "999003.SZ"]
+
+
 @pytest.mark.parametrize("fid", [CROSS_SECTIONAL_ID, PURE_MINUTE_ID, SPARSE_MINUTE_ID])
 def test_served_panel_matches_the_direct_engine_and_adds_only_nan_rows(fid):
     """Going through the store must not change a value, and may only ADD empty rows.
 
     The direct engine (``materialize_range``, no store at all) is the independent
-    reference. Every cell it emits must come back identical; the rows the served
-    panel has on top of that are the footprint cells, which must ALL be NaN — a
-    finite value appearing where the engine emits nothing would mean the store had
-    invented one. This is the disclosed shape change of D4c: a request for a cell a
-    factor never emits now comes back as an explicit NaN row instead of no row.
+    reference. Every cell it emits must come back identical; anything the served
+    panel has on top of that is a footprint cell and must be NaN — a finite value
+    where the engine emits no row would mean the store invented one.
+
+    HOW MUCH is added differs by payload, and the test asserts the difference
+    rather than a single claim that is only true for one of them: a VALUE payload
+    gains explicit NaN rows (asserted to be non-empty here, so the NaN assertion is
+    not vacuous), while the CROSS-SECTIONAL payload gains none, because its combine
+    emits only finite-pair cells and drops the footprint rows. Measured with the
+    three no-bar names: value payloads serve 54 of 54 requested cells, the
+    cross-sectional one serves 48 and omits the ghosts entirely.
     """
+    universe = SYMBOLS + GHOST_SYMBOLS
     factor = factor_registry.build(fid)
     with tempfile.TemporaryDirectory() as td:
-        served, _ = _ask(FactorValueStore(td), fid, SYMBOLS)
+        served, _ = _ask(FactorValueStore(td), fid, universe)
     direct = materialize_range(
-        factor, view=View.DECISION, symbols=SYMBOLS, emit_start=EMIT[0],
+        factor, view=View.DECISION, symbols=universe, emit_start=EMIT[0],
         emit_end=EMIT[-1], sources=MaterializeSources(minute=MinuteProv()),
     ).sort_index()
     assert direct.index.difference(served.index).empty, "the store lost engine rows"
@@ -577,10 +846,27 @@ def test_served_panel_matches_the_direct_engine_and_adds_only_nan_rows(fid):
     finite = ~np.isnan(d)
     assert finite.sum() > 0, f"{fid}: vacuous (the engine emitted no finite value)"
     assert np.array_equal(aligned[finite], d[finite]), f"{fid}: values moved"
+
     extra = served.index.difference(direct.index)
     assert np.isnan(served.reindex(extra).to_numpy()).all(), (
         f"{fid}: the store served a finite value where the engine emits no row"
     )
+    ghosts_served = {
+        s for s in map(str, served.index.get_level_values("symbol"))
+    } & set(GHOST_SYMBOLS)
+    if stores_intermediate(factor):
+        assert len(extra) == 0, (
+            f"{fid}: the combine decides the served shape; footprint rows must not "
+            f"reach the panel"
+        )
+        assert not ghosts_served, f"{fid}: a name with nothing to standardize is absent"
+    else:
+        assert len(extra) >= len(EMIT) * len(GHOST_SYMBOLS), (
+            f"{fid}: expected explicit NaN rows for the no-bar names, got {len(extra)}"
+        )
+        assert ghosts_served == set(GHOST_SYMBOLS), (
+            f"{fid}: a value payload must carry the requested no-bar names as NaN"
+        )
 
 
 @pytest.mark.parametrize("fid", [cls().name for cls in _MINUTE_STREAM_BINDINGS])

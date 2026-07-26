@@ -140,6 +140,24 @@ class MinuteBarProvider(Protocol):
         The declared lower bound of the provider's data (a cache-coverage floor
         or a documented constant). Loading from it means "all history that
         exists is loaded"; a mid-history gap must NEVER be mistaken for it.
+
+        IT MUST BE A LOWER BOUND, AND THAT IS LOAD-BEARING BEYOND THIS FUNCTION.
+        This is the ONLY input to the per-symbol stage that depends on the
+        requested universe, so "a symbol's stored intermediate does not depend on
+        who else was requested" — the premise the cross-sectional factor's storage
+        rests on (D4c / :func:`stores_intermediate`) — is not a theorem. It holds
+        because a lower bound over a bigger set is not later than over a smaller
+        one, and a load that reaches an already-satisfied floor changes nothing.
+        Measured on a staggered-listing fixture, same data, three implementations:
+        ``min`` over the symbols 0.000e+00, a documented constant 0.000e+00, and
+        "the floor that covers ALL these symbols" (a MAX) **9.322e-03** — the
+        premise silently broken, and no test outside
+        ``tests/test_factor_store_universe.py`` would notice.
+
+        This matters now because deriving the floor PER SYMBOL from the minute
+        coverage ledger is an open D5/D6 item: derive it as a per-symbol or
+        min-over-symbols bound, never as "the date from which all of these have
+        data".
         """
 
 
@@ -228,8 +246,17 @@ def payload_columns(factor: Factor) -> tuple[str, ...]:
 # --------------------------------------------------------------------------- #
 # Trailing-trading-day trim (the P8 correctness floor)
 # --------------------------------------------------------------------------- #
-def _requested_universe(symbols) -> list[str]:
+def requested_universe(symbols) -> list[str]:
     """The requested symbols as strings, DE-DUPLICATED, first occurrence order.
+
+    THE ONE NORMALIZATION OF A CALLER-SUPPLIED SYMBOL LIST. Public, and imported
+    rather than re-implemented, because a second copy is a second thing to keep in
+    step: D4c shipped a review round in which the service layer built its own
+    ``MultiIndex.from_product`` over the raw caller list and reproduced — inside
+    the store, and persistently — the exact defect this function's next paragraph
+    describes. A caller list reaches the engine, the store, or a cross-section
+    through this function or not at all; ``tests/test_factor_store_universe.py``
+    derives the entry-point surface by inspection and fails on an unnormalized one.
 
     The engine owns this the same way ``_symbol_bars`` owns "the provider honoured
     its ``symbols`` argument" — a caller-side and a provider-side spelling of one
@@ -306,7 +333,7 @@ def materialize_range(
     in memory (no extra I/O) purely to observe the day-level counts.
     """
     resolved_view = View(view)
-    symbols = _requested_universe(symbols)  # one engine-level normalization
+    symbols = requested_universe(symbols)  # idempotent: callers normalize too
     emit_start = pd.Timestamp(emit_start).normalize()
     emit_end = pd.Timestamp(emit_end).normalize()
     w = int(factor.spec.lookback_depth) if warmup is None else int(warmup)
@@ -377,7 +404,7 @@ def materialize_intermediate_range(
             f"to the read-assembly combine, deliberately and with its own test."
         )
     resolved_view = View(view)
-    symbols = _requested_universe(symbols)
+    symbols = requested_universe(symbols)
     emit_start = pd.Timestamp(emit_start).normalize()
     emit_end = pd.Timestamp(emit_end).normalize()
     w = int(factor.spec.lookback_depth) if warmup is None else int(warmup)
@@ -831,5 +858,6 @@ __all__ = [
     "materialize_intermediate_range",
     "materialize_range",
     "payload_columns",
+    "requested_universe",
     "stores_intermediate",
 ]
