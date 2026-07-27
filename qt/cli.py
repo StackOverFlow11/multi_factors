@@ -515,19 +515,15 @@ def _cmd_run_eval_valley_price_quantile(args: argparse.Namespace) -> int:
         )
         or "n/a"
     )
-    cov = result.neutralization
     print(
         f"OK run-eval-valley-price-quantile: covered={result.covered_symbols}/"
         f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
         f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
         # The reversal neutralization is the structural novelty of this factor; a
         # neutralization that silently ate the panel shows up here as a number.
-        f"neutralization (T-1 rev20): raw_rows={cov.raw_rows} "
-        f"rev_paired={cov.rev_rows} residual_rows={cov.residual_rows} "
-        f"dates={cov.dates_residualized}/{cov.dates_total} "
-        f"cross_section min/med/max={cov.cross_section_min}/"
-        f"{cov.cross_section_median:.1f}/{cov.cross_section_max} "
-        f"mean_spearman(raw,rev20)={cov.raw_rev_spearman_mean:+.4f}\n"
+        # render() is the single home of this line (catalogue section 3 one-site
+        # normalization; it used to be an inline f-string here).
+        f"{result.neutralization.render()}\n"
         f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
         f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
         f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
@@ -576,6 +572,41 @@ def _cmd_run_eval_valley_ridge_vwap_ratio(args: argparse.Namespace) -> int:
         f"dashboards: {result.reports.no_book_dashboard} | "
         f"{result.reports.with_book_dashboard}"
     )
+    print(format_exec_basis_line(result.exec_basis))
+    return 0
+
+
+def _cmd_run_factor_eval(args: argparse.Namespace) -> int:
+    """Run the unified exec-only factor evaluation (D5 C4)."""
+    from qt.exec_basis_eval import format_exec_basis_line
+    from qt.factor_eval_runner import run_factor_eval
+
+    try:
+        result = run_factor_eval(args.config, args.factor, book_mode=args.book_mode)
+    except (ConfigError, ValueError, FileNotFoundError, NotImplementedError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    nb = result.exec_basis.no_book_metrics
+    wb = result.exec_basis.with_book_metrics
+    lines = [
+        f"OK run-factor-eval: factor={result.factor_id} book_mode={result.book_mode} "
+        f"covered={result.covered_symbols}/{result.requested_symbols}, "
+        f"stk_mins_live_calls={result.minute_live_calls}, "
+        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)"
+    ]
+    if result.coverage is not None:
+        lines.append(result.coverage.render())
+    lines.append(
+        f"exec no-book: {nb['deployment']} (predictive={nb['predictive']}) "
+        f"ic_mean={_fmt_metric(nb['ic_mean'])} ic_ir={_fmt_metric(nb['ic_ir'], '.3f')} "
+        f"N_eff={_fmt_metric(nb['effective_samples'], '.1f')}\n"
+        f"exec with-book: {wb['deployment']} (incremental={wb['incremental']}) "
+        f"incr_ic_ir={_fmt_metric(wb['incremental_ic_ir'], '.3f')}\n"
+        f"reports: {result.exec_basis.no_book_md} | {result.exec_basis.with_book_md}\n"
+        f"dashboards: {result.exec_basis.no_book_dashboard} | "
+        f"{result.exec_basis.with_book_dashboard}"
+    )
+    print("\n".join(lines))
     print(format_exec_basis_line(result.exec_basis))
     return 0
 
@@ -787,6 +818,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pra.add_argument("--config", required=True, help="Path to the YAML config.")
     p_pra.set_defaults(func=_cmd_run_eval_peak_ridge_amount_ratio)
+
+    p_fe = sub.add_parser(
+        "run-factor-eval",
+        help="Run the UNIFIED exec-only factor evaluation (D5 C4, cache-only).",
+    )
+    p_fe.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_fe.add_argument(
+        "--factor",
+        required=True,
+        help="Subject factor id (registry name, e.g. jump_amount_corr_20).",
+    )
+    p_fe.add_argument(
+        "--book-mode",
+        choices=("decision", "close"),
+        default="decision",
+        help="How the confirmed book is built: through the decision-view service "
+        "panel (default), or the legacy close-view direct compute.",
+    )
+    p_fe.set_defaults(func=_cmd_run_factor_eval)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),

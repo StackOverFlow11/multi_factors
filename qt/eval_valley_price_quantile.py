@@ -65,7 +65,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from analytics.eval import (
@@ -100,6 +99,12 @@ from factors.compute.intraday_derived import ValleyPriceQuantileFactor
 from factors.spec import FactorSpec
 from qt.config import RootConfig, load_config
 from qt.exec_basis_eval import ExecBasisEvaluation, run_exec_basis_evaluation
+# The neutralization disclosure MOVED to qt.factor_eval_disclosures (the single
+# home, D5 C4); re-exported here so historical import paths keep working.
+from qt.factor_eval_disclosures import (
+    NeutralizationCoverage,
+    summarize_neutralization,
+)
 from qt.pipeline import (
     _build_cache,
     _build_universe,
@@ -113,73 +118,6 @@ from qt.pipeline import (
 
 _LOGGER_NAME = "qt.eval_valley_price_quantile"
 _REPORT_STEM = "eval_valley_price_quantile"
-
-
-# --------------------------------------------------------------------------- #
-# Neutralization coverage (the factor-specific diagnostic)
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class NeutralizationCoverage:
-    """What the reversal neutralization actually did, measured rather than assumed.
-
-    A neutralization can fail quietly in two ways: the reversal can be unavailable for
-    most of the panel (so most residuals are NaN), or the cross-section can be too thin
-    to regress on many dates. Both are counted here and logged, so a coverage regression
-    is a number in the run record instead of an unexplained drop in sample size.
-    """
-
-    raw_rows: int  # finite RAW qbar values
-    rev_rows: int  # finite rev20 values on those rows
-    residual_rows: int  # finite residuals (the shipped factor)
-    dates_total: int
-    dates_residualized: int  # dates that cleared min_cross_section AND were non-degenerate
-    cross_section_min: int
-    cross_section_median: float
-    cross_section_max: int
-    raw_rev_spearman_mean: float  # mean per-date exposure of the RAW factor to rev20
-
-
-def summarize_neutralization(
-    raw: pd.Series,
-    rev: pd.Series,
-    residual: pd.Series,
-    *,
-    min_cross_section: int,
-) -> NeutralizationCoverage:
-    """Reduce the raw / reversal / residual panels to the coverage diagnostic."""
-    raw_finite = raw.dropna()
-    rev_on_raw = rev.reindex(raw.index)
-    paired = pd.DataFrame({"f": raw, "r": rev_on_raw}).dropna()
-
-    sizes: list[int] = []
-    exposures: list[float] = []
-    for _, g in paired.groupby(level=DATE_LEVEL, sort=True):
-        sizes.append(len(g))
-        if len(g) >= min_cross_section:
-            f = g["f"].to_numpy(dtype=float)
-            r = g["r"].to_numpy(dtype=float)
-            fr = pd.Series(f).rank().to_numpy()
-            rr = pd.Series(r).rank().to_numpy()
-            if fr.std() > 0.0 and rr.std() > 0.0:
-                exposures.append(float(np.corrcoef(fr, rr)[0, 1]))
-
-    resid_finite = residual.dropna()
-    dates_resid = int(
-        resid_finite.index.get_level_values(DATE_LEVEL).unique().size
-    )
-    return NeutralizationCoverage(
-        raw_rows=int(len(raw_finite)),
-        rev_rows=int(len(paired)),
-        residual_rows=int(len(resid_finite)),
-        dates_total=int(raw.index.get_level_values(DATE_LEVEL).unique().size),
-        dates_residualized=dates_resid,
-        cross_section_min=int(min(sizes)) if sizes else 0,
-        cross_section_median=float(np.median(sizes)) if sizes else float("nan"),
-        cross_section_max=int(max(sizes)) if sizes else 0,
-        raw_rev_spearman_mean=(
-            float(np.mean(exposures)) if exposures else float("nan")
-        ),
-    )
 
 
 # --------------------------------------------------------------------------- #

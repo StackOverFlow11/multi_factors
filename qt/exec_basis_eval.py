@@ -30,6 +30,7 @@ exactly as it is on the close-to-close runs.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from analytics.eval import (
     FactorEvalReport,
     StandardFactorEvaluator,
 )
+from analytics.eval.sections import SectionLike
 from data.availability_policy import ReturnBasis, View
 from factors import registry as factor_registry
 from factors.compute.minute.binding import is_decision_cutoff_safe
@@ -218,6 +220,25 @@ def _write_report(report: FactorEvalReport, report_dir: Path, stem: str) -> tupl
     return md_path, json_path
 
 
+def _with_extra_sections(
+    report: FactorEvalReport, extra_sections: Sequence[SectionLike]
+) -> FactorEvalReport:
+    """Re-assemble ``report`` with add-Sections appended (contract §3.6).
+
+    ``assemble`` rejects any name collision with a mandatory section, and the
+    verdict reads only the mandatory payloads, so the mandatory sections and
+    the verdict of the re-assembled report are the originals — pinned by test
+    (the D5 C4 unified runner's coverage disclosures ride on this).
+    """
+    augmented = FactorEvalReport.assemble(
+        report.spec,
+        report.cfg,
+        [*report.sections, *extra_sections],
+        thresholds=report.thresholds,
+    )
+    return augmented.with_verdict()
+
+
 def _extract_metrics(report: FactorEvalReport) -> dict:
     """Headline verdict + gated metrics, mirroring the runners' ``extract_metrics``."""
     verdict = report.require_verdict()
@@ -260,6 +281,7 @@ def run_exec_basis_evaluation(
     stem: str,
     force_rebuild: bool = False,
     book_view: str = View.CLOSE.value,
+    extra_sections: Sequence[SectionLike] | None = None,
 ) -> ExecBasisEvaluation:
     """Build the exec-to-exec returns, sanity-check them, evaluate twice, report.
 
@@ -273,6 +295,13 @@ def run_exec_basis_evaluation(
     defect design §1.1 records and D7 closes. The decision-view book path passes
     ``decision`` explicitly. Only the caller knows this, so it is a parameter
     rather than something guessed here.
+
+    ``extra_sections`` (default None -> the legacy behavior, byte-for-byte) are
+    add-Sections appended to BOTH exec reports before they are written — the
+    contract's §3.6 extension point ("may ADD sections but never drop a
+    mandatory one"). The verdict reads only the mandatory payloads, so appended
+    sections cannot move it; the unified D5 C4 runner's coverage disclosures
+    travel this way.
     """
     started = time.monotonic()
     params = ExecBasisParams.from_config(cfg)
@@ -392,6 +421,9 @@ def run_exec_basis_evaluation(
     report_with_book, ir_with_book = evaluator.evaluate_with_ir(
         factor_panel, exec_spec, cfg_with_book, ctx_with_book
     )
+    if extra_sections:
+        report_no_book = _with_extra_sections(report_no_book, extra_sections)
+        report_with_book = _with_extra_sections(report_with_book, extra_sections)
 
     nb_md, nb_json = _write_report(report_no_book, report_dir, f"{stem}_exec_no_book")
     wb_md, wb_json = _write_report(

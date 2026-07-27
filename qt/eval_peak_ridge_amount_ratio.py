@@ -61,7 +61,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from analytics.eval import (
@@ -93,6 +92,9 @@ from factors.compute.intraday_derived import PeakRidgeAmountRatioFactor
 from factors.spec import FactorSpec
 from qt.config import RootConfig, load_config
 from qt.exec_basis_eval import ExecBasisEvaluation, run_exec_basis_evaluation
+# The peak-scarcity disclosure MOVED to qt.factor_eval_disclosures (the single
+# home, D5 C4); re-exported here so historical import paths keep working.
+from qt.factor_eval_disclosures import PeakCoverage, summarize_peak_coverage
 from qt.pipeline import (
     _build_cache,
     _build_universe,
@@ -106,142 +108,6 @@ from qt.pipeline import (
 
 _LOGGER_NAME = "qt.eval_peak_ridge_amount_ratio"
 _REPORT_STEM = "eval_peak_ridge_amount_ratio"
-
-# Percentiles reported for the realized peak-bar distribution (the scarcity disclosure).
-_PEAK_PCTL = (0, 10, 25, 50, 75, 90, 100)
-
-# The counterfactual peak floor the task card asks to quantify: how many days would still
-# be valid if the PEAK leg were held to the RIDGE leg's floor instead of its own.
-_COUNTERFACTUAL_PEAK_FLOOR = PEAK_RIDGE_MIN_RIDGE_BARS
-
-
-# --------------------------------------------------------------------------- #
-# Peak-scarcity coverage (measured, never assumed)
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class PeakCoverage:
-    """Realized peak-bar distribution + day-validity rate over the whole universe.
-
-    Built from the per-day diagnostics the factor emits, so the numbers describe the days
-    the factor actually saw. ``symbol_days`` counts EVERY symbol-day with visible bars,
-    including the leading warm-up days that have no same-slot baseline yet;
-    ``classifiable_days`` counts those that clear PR-F's classifiable floor. The headline
-    ``validity_rate`` is taken over ``classifiable_days``, because a day with no baseline
-    fails for a PR-F warm-up reason rather than a peak-scarcity one and would otherwise
-    make the peak gate look worse than it is — both denominators are reported so the reader
-    can check that framing. The gate-failure counts are NOT mutually exclusive (a thin day
-    can fail several gates at once) and are reported for shape, not as a partition.
-    """
-
-    symbol_days: int
-    classifiable_days: int
-    valid_days: int
-    peak_percentiles: tuple[tuple[int, float], ...]
-    peak_mean: float
-    ridge_median: float
-    days_below_peak_gate: int
-    days_below_ridge_gate: int
-    days_below_classifiable_gate: int
-    # Counterfactual: how many days would survive if the PEAK leg were held to the RIDGE
-    # floor. Quantifies exactly what the lowered threshold buys.
-    valid_days_at_ridge_floor: int
-    # The gates this run actually applied, so the disclosure can never describe the module
-    # defaults while the run used something else.
-    min_peak_bars: int = PEAK_RIDGE_MIN_PEAK_BARS
-    min_ridge_bars: int = PEAK_RIDGE_MIN_RIDGE_BARS
-    min_classifiable: int = VOLUME_PRV_MIN_CLASSIFIABLE
-    counterfactual_peak_floor: int = _COUNTERFACTUAL_PEAK_FLOOR
-
-    @property
-    def validity_rate(self) -> float:
-        """Valid days as a share of CLASSIFIABLE days (see the class docstring)."""
-        if not self.classifiable_days:
-            return float("nan")
-        return self.valid_days / self.classifiable_days
-
-    def render(self) -> str:
-        """One-line, secret-free summary for the run log and the CLI."""
-        pctl = " ".join(f"p{p}={v:.0f}" for p, v in self.peak_percentiles)
-        return (
-            f"peak scarcity: symbol_days={self.symbol_days} "
-            f"classifiable_days={self.classifiable_days} "
-            f"valid_days={self.valid_days} ({self.validity_rate:.1%} of classifiable) "
-            f"peak_bars[{pctl} mean={self.peak_mean:.1f}] "
-            f"ridge_bars_median={self.ridge_median:.0f} "
-            f"below_peak_gate({self.min_peak_bars})={self.days_below_peak_gate} "
-            f"below_ridge_gate({self.min_ridge_bars})={self.days_below_ridge_gate} "
-            f"below_classifiable_gate({self.min_classifiable})="
-            f"{self.days_below_classifiable_gate} "
-            f"valid_if_peak_floor_were_{self.counterfactual_peak_floor}="
-            f"{self.valid_days_at_ridge_floor}"
-        )
-
-
-def summarize_peak_coverage(
-    frames: list[pd.DataFrame],
-    *,
-    min_peak_bars: int = PEAK_RIDGE_MIN_PEAK_BARS,
-    min_ridge_bars: int = PEAK_RIDGE_MIN_RIDGE_BARS,
-    min_classifiable: int = VOLUME_PRV_MIN_CLASSIFIABLE,
-    counterfactual_peak_floor: int = _COUNTERFACTUAL_PEAK_FLOOR,
-) -> PeakCoverage:
-    """Reduce the per-symbol day-level diagnostics to the scarcity disclosure.
-
-    The three floors must be the ones the RUN applied, not the module defaults — otherwise
-    the disclosure would describe gates that were never enforced.
-    """
-    gates = dict(
-        min_peak_bars=min_peak_bars,
-        min_ridge_bars=min_ridge_bars,
-        min_classifiable=min_classifiable,
-        counterfactual_peak_floor=counterfactual_peak_floor,
-    )
-    empty = tuple((p, float("nan")) for p in _PEAK_PCTL)
-    if not frames:
-        return PeakCoverage(
-            symbol_days=0,
-            classifiable_days=0,
-            valid_days=0,
-            peak_percentiles=empty,
-            peak_mean=float("nan"),
-            ridge_median=float("nan"),
-            days_below_peak_gate=0,
-            days_below_ridge_gate=0,
-            days_below_classifiable_gate=0,
-            valid_days_at_ridge_floor=0,
-            **gates,
-        )
-    diag = pd.concat(frames, ignore_index=True)
-    classifiable = diag["classifiable_bars"].to_numpy(dtype=float)
-    valid = diag["valid"].to_numpy(dtype=bool)
-    # The bar-count distributions describe the days that had a fair chance: a warm-up day
-    # with no same-slot baseline has zero of everything and would only drag the percentiles
-    # towards zero for a reason that has nothing to do with peak scarcity.
-    scored = classifiable >= min_classifiable
-    peak = diag.loc[scored, "peak_bars"].to_numpy(dtype=float)
-    ridge = diag.loc[scored, "ridge_bars"].to_numpy(dtype=float)
-    # The counterfactual raises the PEAK floor, leaving every other gate exactly as it was.
-    at_ridge_floor = valid & (
-        diag["peak_bars"].to_numpy(dtype=float) >= counterfactual_peak_floor
-    )
-    return PeakCoverage(
-        symbol_days=int(len(diag)),
-        classifiable_days=int(scored.sum()),
-        valid_days=int(valid.sum()),
-        peak_percentiles=(
-            tuple((p, float(np.percentile(peak, p))) for p in _PEAK_PCTL)
-            if peak.size
-            else empty
-        ),
-        peak_mean=float(peak.mean()) if peak.size else float("nan"),
-        ridge_median=float(np.median(ridge)) if ridge.size else float("nan"),
-        days_below_peak_gate=int((peak < min_peak_bars).sum()),
-        days_below_ridge_gate=int((ridge < min_ridge_bars).sum()),
-        days_below_classifiable_gate=int((~scored).sum()),
-        valid_days_at_ridge_floor=int(at_ridge_floor.sum()),
-        **gates,
-    )
-
 
 # --------------------------------------------------------------------------- #
 # Minute loading (cache-only, per-symbol -> memory-bounded)
