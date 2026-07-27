@@ -430,9 +430,34 @@ _ENTRY_PROBES = {
 def test_the_symbol_entry_point_surface_is_fully_probed():
     """Every entry point taking a caller symbol list has a duplicate probe.
 
-    This is the half that cannot be forgotten: the surface is discovered by
-    inspection, so adding a function that accepts a universe and forgetting to
-    normalize it fails HERE, before anyone has to think of testing it.
+    This is the half that cannot be forgotten for the shapes it covers: the
+    surface is discovered by inspection, so adding a plain function that accepts a
+    universe and forgetting to normalize it fails HERE, before anyone has to think
+    of testing it.
+
+    ITS REACH, STATED (#82: a guard that does not describe its own reach is read as
+    covering everything). A ``walk_packages`` sweep of the whole ``factors``
+    package confirms that TODAY the only public callables whose signature carries
+    ``symbols``/``universe`` are exactly the six probed here — nothing is currently
+    hiding. But four deliberately constructed entry points ESCAPE this discovery,
+    measured, against two controls that it catches:
+
+    * caught — a parameter named ``symbols`` (control), including passed
+      positionally: the match is by NAME, not by kind;
+    * ESCAPES — a parameter named something else (``names``, ``tickers``);
+    * ESCAPES — a METHOD on a public class: ``inspect.signature(cls)`` reads
+      ``__init__``, so ``FactorService.panel(self, universe, ...)`` is invisible.
+      This is the realistic one: D6 wrapping the service in a class puts the whole
+      surface out of reach;
+    * ESCAPES — a universe carried inside a container object (a dataclass field
+      named ``tickers``), since the parameter is the container;
+    * ESCAPES — an entry point in a THIRD module: this scans
+      ``factors.service`` and ``factors.materialize`` only.
+
+    So this test is the net, not the answer. The answer is that a caller list
+    reaches the engine, the store or a cross-section through
+    ``materialize.requested_universe`` or not at all (author-once); the net exists
+    because the previous round proved that discipline can lapse inside one PR.
     """
     found = _symbol_entry_points()
     assert set(found) == set(_ENTRY_PROBES), (
@@ -638,6 +663,23 @@ def test_a_max_form_floor_breaks_the_premise():
     forms) is what makes the contract a checked fact rather than a comment. The
     open D5/D6 item "derive the declared floor per symbol from the coverage ledger"
     is exactly where a max-form implementation would be natural to write.
+
+    WHEN THIS TEST SHOULD GO RED ON PURPOSE. It is pinned against a future
+    mistake, and two future changes interact with it differently:
+
+    * If the ENGINE is hardened to resolve the floor PER SYMBOL — the suggested
+      correct direction, calling ``_provider_earliest(provider, [sym], factor)``
+      inside the per-symbol loop — this test FAILS, because a max over ONE symbol
+      IS that symbol's own start, i.e. a legitimate lower bound, and the break it
+      asserts disappears. That red is the expected signal, not a regression: the
+      hardening retires the contract this test polices, so DELETE (or invert) this
+      test as part of it.
+    * A PROVIDER-SIDE change to deriving the floor per symbol does NOT trip it:
+      the max-form floor here comes from ``_StaggeredProv``, a class local to this
+      test module that no production provider implementation can reach. The test
+      speaks only about the engine-side call (``materialize._provider_earliest``
+      receiving the whole requested list at once), so provider work proceeds
+      without a false alarm.
     """
     assert _intermediate_universe_gap("max") > 0.0
 
