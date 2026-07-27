@@ -469,7 +469,7 @@ def test_a_repeated_symbol_in_the_request_changes_nothing(factor_id):
     shared cells changed, because the repeated name entered its date's
     cross-section twice and moved that date's mean and std for every member.
 
-    MUTATION (run, rc=1): removing the ``_requested_universe`` call in
+    MUTATION (run, rc=1): removing the ``requested_universe`` call in
     ``materialize_range`` restores both symptoms; restored -> rc=0. The probe that
     proves the mutation bit is the duplicate row count going 0 -> 8.
     """
