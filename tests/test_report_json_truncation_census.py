@@ -69,7 +69,15 @@ KNOWN_TRUNCATED_FIELDS: frozenset[str] = frozenset(
 #: Fields this branch is responsible for. A correction that cannot survive export
 #: is the exact defect this PR exists to fix, so it is called out separately from
 #: the inherited set rather than folded into it.
-MUST_NEVER_TRUNCATE: frozenset[str] = frozenset({"corrections"})
+#:
+#: PREFIXES, not leaf paths: ``_leaves`` does not emit a container path for a
+#: list, so the census keys for the corrections block are ``corrections.date`` /
+#: ``corrections.superseded`` / ... and a bare ``"corrections"`` set entry would
+#: intersect the census EMPTY FOREVER — the guard could never fire (proved by
+#: mutation: truncating ``corrections[0].superseded`` on disk left the exact-set
+#: version of this test green). A census field counts as offending when it
+#: equals a prefix or starts with ``prefix + "."``.
+MUST_NEVER_TRUNCATE_PREFIXES: tuple[str, ...] = ("corrections",)
 
 _REPORTS = pathlib.Path("artifacts/reports")
 
@@ -141,9 +149,16 @@ def test_the_truncated_field_set_is_exactly_the_recorded_one():
 def test_the_correction_carrier_is_never_truncated_on_disk():
     """The one field this branch owns. Separate test, separate reason to fail."""
     census = _census(_shipped_reports())
-    offending = MUST_NEVER_TRUNCATE & frozenset(census)
+    offending = sorted(
+        field
+        for field in census
+        if any(
+            field == prefix or field.startswith(prefix + ".")
+            for prefix in MUST_NEVER_TRUNCATE_PREFIXES
+        )
+    )
     assert not offending, (
-        f"{sorted(offending)} was truncated in the exported record — the "
+        f"{offending} was truncated in the exported record — the "
         f"superseded-values disclosure is exactly what must not be cut."
     )
 
