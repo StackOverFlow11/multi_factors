@@ -611,6 +611,79 @@ def _cmd_run_factor_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_factor_eval_reconcile(args: argparse.Namespace) -> int:
+    """Reconcile the unified runner against the frozen baselines (D5 C4/C5)."""
+    from pathlib import Path
+
+    from qt.factor_eval_reconcile import ReconciliationError
+
+    repo_root = Path(".").resolve()
+    try:
+        if args.mode == "panels":
+            from qt.factor_eval_reconcile import run_panels_mode
+
+            result = run_panels_mode(args.config, args.factor, repo_root)
+            unclassified = [
+                d for d in result.diffs
+                if d.classification.startswith(("unclassified", "unregistered"))
+            ]
+            print(
+                f"{'OK' if result.ok else 'FAIL'} reconcile panels {result.factor_id}: "
+                f"frozen={result.rows_frozen} new={result.rows_new} "
+                f"equal={result.equal} within_tol={result.within_tolerance} "
+                f"trim_fix={len(result.by_class('per_symbol_trim_fix'))} "
+                f"saturation={len(result.by_class('saturation_vs_anchor_truncation'))} "
+                f"nan_footprint={result.nan_footprint_rows} "
+                f"unclassified={len(unclassified)} "
+                f"max_rel_diff={result.max_rel_diff:.3e}"
+            )
+            if result.saturation_by_month:
+                print(f"  saturation by month: {result.saturation_by_month} "
+                      f"(monotonic={result.saturation_monotonic})")
+            for d in unclassified[:10]:
+                print(f"  UNCLASSIFIED {d.classification} {d.date} {d.symbol} "
+                      f"frozen={d.frozen} new={d.new}")
+            return 0 if result.ok else 1
+        if args.mode == "reports":
+            from qt.factor_eval_reconcile import run_reports_mode
+
+            results = run_reports_mode(args.config, args.factor, repo_root)
+            ok = all(r.ok for r in results)
+            for r in results:
+                counts: dict[str, int] = {}
+                for d in r.diffs:
+                    counts[d.classification] = counts.get(d.classification, 0) + 1
+                print(
+                    f"{'OK' if r.ok else 'FAIL'} reconcile reports {r.name}: "
+                    f"diffs={len(r.diffs)} {counts} "
+                    f"max_numeric_rel_diff={r.max_numeric_rel_diff:.3e}"
+                )
+                for d in r.diffs:
+                    if d.classification.startswith("unregistered"):
+                        print(f"  UNREGISTERED {d.classification} {d.path} "
+                              f"old={d.old!r} new={d.new!r}")
+            return 0 if ok else 1
+        from qt.factor_eval_reconcile import run_anchors_mode
+
+        result = run_anchors_mode(args.config, args.factor, repo_root)
+        for row in result.rows:
+            print(
+                f"{'OK  ' if row.classification == 'ok' else row.classification.upper():24s} "
+                f"{row.cls:16s} {row.date} {row.symbol} hand={row.hand!r} "
+                f"service={row.service!r} rel={row.rel_diff:.2e}"
+            )
+        print(
+            f"{'OK' if result.ok else 'FAIL'} reconcile anchors {result.factor_id}: "
+            f"{len(result.rows)} rows, ok={len(result.by_class('ok'))} "
+            f"saturation={len(result.by_class('saturation_vs_anchor_truncation'))} "
+            f"failed={len(result.by_class('failed'))}"
+        )
+        return 0 if result.ok else 1
+    except (ConfigError, ValueError, FileNotFoundError, ReconciliationError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
 def _cmd_data_update(args: argparse.Namespace) -> int:
     """Warm/update the tushare caches (P4-3); never runs a backtest."""
     from qt.data_updater import format_summary, run_data_update
@@ -837,6 +910,27 @@ def build_parser() -> argparse.ArgumentParser:
         "panel (default), or the legacy close-view direct compute.",
     )
     p_fe.set_defaults(func=_cmd_run_factor_eval)
+
+    p_fr = sub.add_parser(
+        "run-factor-eval-reconcile",
+        help="Reconcile the unified runner against the frozen baselines "
+        "(D5 C4 harness, C5 audit; hard-gates on the 77/77 exec baseline).",
+    )
+    p_fr.add_argument("--config", required=True, help="Path to the YAML config.")
+    p_fr.add_argument(
+        "--factor",
+        required=True,
+        help="Subject factor id (registry name, e.g. jump_amount_corr_20).",
+    )
+    p_fr.add_argument(
+        "--mode",
+        required=True,
+        choices=("panels", "reports", "anchors"),
+        help="panels: service panel vs the frozen D1 panel; reports: new "
+        "factor_eval_* artifacts vs the frozen exec artifacts; anchors: service "
+        "values vs the hand-computed anchor rows.",
+    )
+    p_fr.set_defaults(func=_cmd_run_factor_eval_reconcile)
 
     for name, func, help_text in (
         ("fetch-data", _cmd_fetch_data, "Run the spine, report data fetch."),
