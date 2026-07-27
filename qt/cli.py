@@ -631,15 +631,18 @@ def _cmd_run_factor_eval_reconcile(args: argparse.Namespace) -> int:
                 f"{'OK' if result.ok else 'FAIL'} reconcile panels {result.factor_id}: "
                 f"frozen={result.rows_frozen} new={result.rows_new} "
                 f"equal={result.equal} within_tol={result.within_tolerance} "
-                f"trim_fix={len(result.by_class('per_symbol_trim_fix'))} "
-                f"saturation={len(result.by_class('saturation_vs_anchor_truncation'))} "
+                f"warmup={len(result.by_class('warmup_left_extension'))} "
+                f"float_tail={len(result.by_class('float_reordering_tail'))} "
+                f"threshold_flip={len(result.by_class('threshold_flip_tail'))} "
                 f"nan_footprint={result.nan_footprint_rows} "
                 f"unclassified={len(unclassified)} "
                 f"max_rel_diff={result.max_rel_diff:.3e}"
             )
-            if result.saturation_by_month:
-                print(f"  saturation by month: {result.saturation_by_month} "
-                      f"(monotonic={result.saturation_monotonic})")
+            if result.warmup_by_direction:
+                print(f"  warmup by direction: {result.warmup_by_direction}")
+            if result.warmup_by_month:
+                print(f"  warmup by month: {result.warmup_by_month} "
+                      f"(monotonic={result.warmup_monotonic})")
             for d in unclassified[:10]:
                 print(f"  UNCLASSIFIED {d.classification} {d.date} {d.symbol} "
                       f"frozen={d.frozen} new={d.new}")
@@ -675,7 +678,7 @@ def _cmd_run_factor_eval_reconcile(args: argparse.Namespace) -> int:
         print(
             f"{'OK' if result.ok else 'FAIL'} reconcile anchors {result.factor_id}: "
             f"{len(result.rows)} rows, ok={len(result.by_class('ok'))} "
-            f"saturation={len(result.by_class('saturation_vs_anchor_truncation'))} "
+            f"warmup={len(result.by_class('warmup_left_extension'))} "
             f"failed={len(result.by_class('failed'))}"
         )
         return 0 if result.ok else 1
