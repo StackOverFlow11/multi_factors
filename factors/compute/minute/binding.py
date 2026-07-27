@@ -65,6 +65,8 @@ from factors.compute.minute.amp_marginal_anomaly_vol import (
     compute_amp_marginal_anomaly_vol,
 )
 from factors.compute.minute.intraday_amp_cut import (
+    V_MEAN_COL,
+    V_STD_COL,
     IntradayAmpCutFactor,
     combine_amp_cut_cross_section,
     compute_amp_cut_stats,
@@ -164,6 +166,11 @@ class MinuteStreamBinding:
 
     per_symbol: Callable[[Factor, pd.DataFrame], pd.DataFrame]
     combine: Callable[[Factor, pd.DataFrame], pd.Series]
+    #: The COLUMNS ``per_symbol`` produces. Declared because the intermediate of a
+    #: cross-sectional factor is what the value store persists (D4c), and a stored
+    #: artifact must be validated against the shape the code now expects without
+    #: computing anything. Pinned against the columns actually produced by test.
+    intermediate_columns: tuple[str, ...] = (STATS_VALUE_COL,)
     #: OPTIONAL per-symbol DAY-LEVEL diagnostics (D5): the gate-attrition frame a
     #: factor's scarcity disclosure reduces. Only the factors that HAVE such a
     #: disclosure set it; ``None`` means "this factor publishes no per-day
@@ -261,7 +268,9 @@ _MINUTE_STREAM_BINDINGS: dict[type[Factor], MinuteStreamBinding] = {
     AmpMarginalAnomalyVolFactor: _pure_stream(compute_amp_marginal_anomaly_vol),
     VolumePeakCountFactor: _pure_stream(compute_volume_peak_count),
     IntradayAmpCutFactor: MinuteStreamBinding(
-        per_symbol=_amp_cut_per_symbol, combine=_amp_cut_combine
+        per_symbol=_amp_cut_per_symbol,
+        combine=_amp_cut_combine,
+        intermediate_columns=(V_MEAN_COL, V_STD_COL),
     ),
     PeakIntervalKurtosisFactor: _pure_stream(compute_peak_interval_kurtosis),
     ValleyRelativeVwapFactor: _pure_stream(compute_valley_relative_vwap),
@@ -488,6 +497,16 @@ def minute_diagnostics_from_bars(factor: Factor, bars: pd.DataFrame) -> pd.DataF
     return pd.DataFrame() if fn is None else fn(factor, bars)
 
 
+def minute_intermediate_columns(factor: Factor) -> tuple[str, ...]:
+    """The columns ``factor``'s per-symbol intermediate carries (D4c).
+
+    The value store persists this frame verbatim for a cross-sectional factor, so
+    the shape has to be answerable WITHOUT computing anything — a stored artifact
+    is validated against it on read.
+    """
+    return tuple(_stream_binding(factor).intermediate_columns)
+
+
 def combine_minute_stats(factor: Factor, stats: pd.DataFrame) -> pd.Series:
     """``factor``'s daily raw Series from the ASSEMBLED per-symbol intermediates.
 
@@ -517,6 +536,7 @@ __all__ = [
     "is_minute_bound",
     "is_valid_day_pooled",
     "minute_diagnostics_from_bars",
+    "minute_intermediate_columns",
     "minute_raw_from_bars",
     "minute_stats_from_bars",
     "pooled_baseline_days",
