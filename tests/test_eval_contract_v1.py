@@ -25,6 +25,7 @@ from analytics.eval import (
     render_verdict_summary,
     require_basis_columns,
 )
+from analytics.eval import contract as contract_module
 from analytics.eval.render import _requires_row
 from data.availability_policy import ReturnBasis, View
 
@@ -96,19 +97,38 @@ def test_the_exec_basis_module_restates_the_identity_it_scores_on():
     }
 
 
-def test_a_factor_that_is_not_cutoff_safe_cannot_get_an_exec_identity():
+def test_a_factor_that_is_not_cutoff_safe_cannot_get_an_exec_identity(monkeypatch):
     """The derivation refuses rather than declaring a view the values do not have.
 
-    ``jump_amount_corr_20``'s compute applies no 14:50 truncation, so its values are
-    close-view; (close, exec_to_exec) is not a legal pairing, and that refusal is
-    the correct outcome — there is no honest exec artifact of it until it is fixed.
+    ``jump_amount_corr_20`` used to BE the live example: its compute applied no
+    14:50 truncation, so its values were close-view and (close, exec_to_exec) is
+    not a legal pairing. It was fixed and left ``NOT_DECISION_CUTOFF_SAFE``, so
+    the deny list is now empty and no real factor exercises this path.
+
+    The refusal is still the property under test, so the offender is INJECTED
+    rather than the test deleted: a real factor class is put on the deny list for
+    the duration, and the derivation must refuse it. Keeping a fixed factor named
+    here as though it were still broken would be the stale-wording failure this
+    repo keeps re-learning; deleting the test would drop the guard on the day the
+    next offender appears.
     """
+    from factors.compute.minute import binding as binding_module
+    from factors.compute.minute.volume_peak_count import VolumePeakCountFactor
     from qt.exec_basis_eval import exec_identity, subject_view
 
-    assert subject_view("jump_amount_corr_20") == "close"
+    # Nothing real is on the list any more: every bound factor derives decision-view.
+    assert binding_module.NOT_DECISION_CUTOFF_SAFE == frozenset()
     assert subject_view("volume_peak_count_20") == "decision"
+    assert subject_view("jump_amount_corr_20") == "decision"
+
+    monkeypatch.setattr(
+        binding_module,
+        "NOT_DECISION_CUTOFF_SAFE",
+        frozenset({VolumePeakCountFactor}),
+    )
+    assert subject_view("volume_peak_count_20") == "close"
     with pytest.raises(ValueError, match="no 14:50 truncation of its own"):
-        exec_identity(_cfg(), factor_id="jump_amount_corr_20", book_view="close")
+        exec_identity(_cfg(), factor_id="volume_peak_count_20", book_view="close")
 
 
 def test_the_no_book_and_with_book_runs_do_not_share_one_book_view():
@@ -270,7 +290,14 @@ def test_every_verdict_threshold_default_is_the_frozen_close_era_value():
 
 
 def test_contract_version_is_stated():
-    assert EVAL_CONTRACT_VERSION == "1.0"
+    """Pinned so a bump has to be deliberate — and it has to bring its statement.
+
+    v1.0 -> v1.1 added the top-level ``corrections`` key; the module docstring is
+    that statement, and this assertion is what forces the next bump to write one
+    too. The thresholds above are unchanged by that bump (asserted separately).
+    """
+    assert EVAL_CONTRACT_VERSION == "1.1"
+    assert "CONTRACT v1.1" in contract_module.__doc__
 
 
 # --------------------------------------------------------------------------- #

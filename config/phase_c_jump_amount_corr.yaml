@@ -6,6 +6,15 @@
 # CACHE-ONLY: the minute read is provably live-call-free; daily / universe /
 # covariate endpoints go through the read-through cache (warm -> 0 gap fetches).
 #
+# PIT TRUNCATION (read this before comparing any run against a pre-2026-07-25 artifact):
+# the factor pools only the 1min bars visible at 14:50 (available_time <= that bar's
+# trade_date + 14:50), like every sibling minute factor. It did NOT always: this factor
+# was built before the standing 14:50-truncation authorization and ran on FULL-day bars,
+# so its value at d read that day's 14:50-15:00 window -- POST-ENTRY information under the
+# 14:51-VWAP exec_to_exec basis. Artifacts produced before the fix are superseded and are
+# kept, labelled, under artifacts/reports/pr_c_untruncated_close_to_close/. The factor
+# spec version distinguishes them: v1.0 = untruncated, v1.1 = truncated.
+#
 # Universe = CSI500 (000905.SH), PIT membership; window = 2021-07-01 .. 2026-06-30
 # (the project's minute-coverage window; the report notes the factor is stronger in
 # mid/small caps). Daily rebalance (project + contract default). The evaluator runs

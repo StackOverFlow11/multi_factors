@@ -218,6 +218,105 @@ def _definition_block_line(spec: FactorSpec) -> str | None:
     )
 
 
+#: Wrap width of the description inside the FACTOR DEFINITION band.
+DEFINITION_WRAP_WIDTH = 150
+
+#: How many wrapped lines the band's description slot can hold before the text
+#: collides with the metadata row below it. NOT a style preference — the slot is
+#: bounded by fixed axes-fraction anchors (description at 0.62 va="top"), and the
+#: metadata row's anchor DEPENDS ON THE SPEC FORM: 0.10 for a daily spec, 0.20
+#: for an intraday one (which also draws the minute block at 0.04). A longer
+#: description silently DRAWS OVER the metadata.
+#:
+#: The two forms therefore have DIFFERENT capacities, and sizing by the daily
+#: branch alone is exactly the defect this split fixes: ``build(factor_id).spec``
+#: is daily (``is_intraday=False``) for every shipped minute factor, but the
+#: exec-basis dashboard renders ``intraday_spec_variant`` (``is_intraday=True``),
+#: so a single 5 measured on the daily branch overprints 9 of the 11 exec-form
+#: dashboards.
+#:
+#: MEASURED, not chosen, on the real dashboard geometry (figsize 15x21.5, the
+#: GridSpec of ``_render``); the gap between the two boxes falls 15 px per line:
+#:
+#:   * daily branch (metadata at 0.10): 4 lines +18.8 px, 5 lines +3.8 px,
+#:     6 lines -11.2 px  -> capacity 5;
+#:   * intraday branch (metadata at 0.20): 4 lines +1.5 px, 5 lines -13.5 px
+#:     -> capacity 4.
+#:
+#: Neither number is reduced for comfort: every factor whose description fits its
+#: own branch keeps rendering in full, and only the ones that genuinely overflow
+#: (7 of the 11 minute factors at 5 lines daily, 9 of 11 at 4 lines intraday)
+#: get an elision marker.
+#:
+#: The slack at capacity is thin (+3.8 / +1.5 px, about a quarter of a line).
+#: That is a fact about the layout, not a hidden risk:
+#: ``tests/test_definition_band_layout.py`` re-measures every shipped spec in
+#: BOTH forms against the real geometry, so a font or matplotlib change that
+#: eats the slack turns the guard RED instead of silently overprinting. The
+#: numbers are checked, never trusted.
+DEFINITION_MAX_LINES_DAILY = 5
+DEFINITION_MAX_LINES_INTRADAY = 4
+
+
+def definition_max_lines(spec) -> int:
+    """The description-line budget for THIS spec's form — daily 5, intraday 4.
+
+    Keyed on ``spec.is_intraday`` because that is what moves the metadata row
+    (see :data:`DEFINITION_MAX_LINES_DAILY`). A spec carries its own form, so
+    the budget cannot be measured on one branch and spent on the other.
+    """
+    if spec.is_intraday:
+        return DEFINITION_MAX_LINES_INTRADAY
+    return DEFINITION_MAX_LINES_DAILY
+
+
+def definition_description_lines(spec) -> list[str]:
+    """The description lines the band may draw, bounded so it cannot overlap.
+
+    The bound is per spec form (:func:`definition_max_lines`): the slot holds
+    5 lines in the daily branch and 4 in the intraday one, so the same
+    description can fit one dashboard and need elision on the other. Before
+    any bound existed, nine of the eleven shipped minute factors had
+    descriptions long enough to collide with the metadata row (measured with
+    the real renderer: ``valley_price_quantile_20`` is 25 wrapped lines and,
+    unbounded, overruns the metadata row by 296 px in the daily branch / 314
+    px in the intraday one). The renderer had exactly one commit in its
+    history when the bound was added, so every dashboard produced before it
+    was drawn that way — this is a standing defect, not a regression, and
+    "both texts unreadable" is the worst of the options.
+
+    Bounding it visibly is strictly better than overdrawing: an elided tail is
+    marked and points at the copy that carries the description in full (the
+    Markdown provenance box — the JSON's is capped at
+    ``analytics.eval.render.MAX_VALUE_CHARS``). Nothing is dropped without
+    saying so, which is the whole difference between this and what it
+    replaces.
+    """
+    cap = definition_max_lines(spec)
+    lines = textwrap.wrap(spec.description, width=DEFINITION_WRAP_WIDTH)
+    if len(lines) <= cap:
+        return lines
+    elided = len(lines) - (cap - 1)
+    return lines[: cap - 1] + [
+        f"... [{elided} more lines elided to fit — FULL definition in the "
+        f"Markdown report's provenance box]"
+    ]
+
+
+def _correction_marker(spec) -> str:
+    """Compact "this version supersedes published values" marker, or ``""``.
+
+    Empty when nothing is declared — an unconditional badge would say something
+    about every factor, and "no correction declared" is not "known correct".
+    """
+    corrections = tuple(getattr(spec, "corrections", ()) or ())
+    if not corrections:
+        return ""
+    first = corrections[0]
+    extra = f" (+{len(corrections) - 1})" if len(corrections) > 1 else ""
+    return f"CORRECTED v{first.from_version} -> v{first.to_version}{extra}"
+
+
 def _definition_band(ax, data: DashboardData) -> None:
     """MANDATORY panel: how the factor is computed, from the FactorSpec.
 
@@ -235,7 +334,16 @@ def _definition_band(ax, data: DashboardData) -> None:
     ax.text(0.185, 0.90, f"{spec.factor_id}  (v{spec.version})", fontsize=9.5,
             fontweight="bold", color="#111111", transform=ax.transAxes, va="top",
             family="DejaVu Sans Mono")
-    ax.text(0.012, 0.62, textwrap.fill(spec.description, width=150), fontsize=9.2,
+    # Corrected factors say so ON the picture. The dashboard is the surface a
+    # reader is most likely to look at alone, and "this version supersedes
+    # published values" is not something they should have to open the JSON for.
+    # Sourced from the SAME structured tuple as the JSON block and the Markdown
+    # row — never re-worded here.
+    marker = _correction_marker(spec)
+    if marker:
+        ax.text(0.60, 0.90, marker, fontsize=9.0, fontweight="bold", color="#A33A00",
+                transform=ax.transAxes, va="top", family="DejaVu Sans Mono")
+    ax.text(0.012, 0.62, "\n".join(definition_description_lines(spec)), fontsize=9.2,
             color="#222222", transform=ax.transAxes, va="top")
     block = _definition_block_line(spec)
     meta_y = 0.20 if block is not None else 0.10

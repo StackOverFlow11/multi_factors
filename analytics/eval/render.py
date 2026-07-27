@@ -87,6 +87,29 @@ def sanitize_payload(value: object) -> object:
     return cleaned
 
 
+def corrections_record(spec) -> list[dict[str, str]]:
+    """``spec.corrections`` as plain dicts — REDACTED but never truncated.
+
+    Deliberately NOT routed through :func:`sanitize_payload`. That function caps a
+    string at :data:`MAX_VALUE_CHARS` and appends ``...[truncated]``, which is right
+    for arbitrary payload values (a payload can accidentally hold a whole panel's
+    repr) and WRONG here: measured on the 44 shipped eval JSONs, 44/44 had a
+    truncated ``spec.description``, so a correction written as prose in the
+    description reached the Markdown and the dashboard and was cut out of the JSON —
+    the one copy a machine consumer reads. A record that drops the disclosure of its
+    own provenance is the same shape as the defect this project keeps re-learning.
+
+    Safe to skip the cap because these are not arbitrary values: every field is an
+    authored, fixed-shape string that ``FactorCorrection`` already bounds at
+    construction, and over-length there RAISES rather than trimming. Redaction still
+    runs — dropping the cap must not drop the secret guard.
+    """
+    return [
+        {k: sanitize_text(str(v)) for k, v in c.as_dict().items()}
+        for c in (getattr(spec, "corrections", ()) or ())
+    ]
+
+
 def format_value(value: object) -> str:
     """Compact deterministic rendering of one payload value."""
     if isinstance(value, dict):
@@ -150,6 +173,11 @@ def report_to_dict(report: FactorEvalReport) -> dict:
             entry["note"] = section.note
         sections.append(dict(sorted(entry.items())))
     return {
+        # Contract v1.1: the factor's STRUCTURED correction statements, top level
+        # (sibling of eval_contract_version) rather than inside ``spec``, because
+        # the ``spec`` block goes through the 200-char payload cap and a superseded
+        # -values disclosure must never be the thing that gets trimmed.
+        "corrections": corrections_record(report.spec),
         "criteria_source": report.criteria_source,
         # Contract v1.0 (analytics/eval/contract.py): stated in the machine-readable
         # record so a stored verdict can be matched to the contract that produced it
@@ -158,7 +186,15 @@ def report_to_dict(report: FactorEvalReport) -> dict:
         "eval_config": sanitize_payload(vars(report.cfg)),
         "schema_version": report.SCHEMA_VERSION,
         "sections": sections,
-        "spec": sanitize_payload(vars(report.spec)),
+        # ``corrections`` is dropped from the spec dump: it is exported whole at
+        # top level, and leaving it here too would put a SECOND copy in the record
+        # — one rendered by ``clean_value``'s ``str()`` fallback (a dataclass repr)
+        # and then cut at MAX_VALUE_CHARS. Two carriers for one fact, of which the
+        # in-spec one is broken, is worse than the single-carrier problem this
+        # whole field was added to fix.
+        "spec": sanitize_payload(
+            {k: v for k, v in vars(report.spec).items() if k != "corrections"}
+        ),
         # the ACTUAL criteria values used, whatever their source (design §6, v0.6).
         "thresholds": sanitize_payload(vars(report.thresholds)),
         # The DERIVED deployment label + the three axis-verdicts it was derived
@@ -239,11 +275,31 @@ def _requires_row(spec) -> str:
     return ", ".join(sorted(f"{f.source}.{f.field}" for f in fields))
 
 
+def _correction_rows(spec) -> list[tuple[str, str]]:
+    """One provenance row per declared correction (none = no rows, not a blank one).
+
+    A factor with nothing to correct must not grow an empty "corrections:" row —
+    "no correction has been DECLARED" and "this factor is known to be right" are
+    different statements, and a blank row invites reading the second one.
+    """
+    return [
+        (
+            f"⚠️ CORRECTION (v{c['from_version']} -> v{c['to_version']}, {c['date']})",
+            f"{c['defect']} {c['effect']} {c['superseded']}",
+        )
+        for c in corrections_record(spec)
+    ]
+
+
 def _provenance_rows(report: FactorEvalReport) -> list[tuple[str, str]]:
     spec, cfg = report.spec, report.cfg
     rows: list[tuple[str, object]] = [
         ("factor_id", spec.factor_id),
         ("description", spec.description),
+        # Rendered from the SAME structured tuple the JSON's top-level
+        # ``corrections`` block is built from, so the human copy and the machine
+        # copy cannot disagree about whether this factor's values were superseded.
+        *_correction_rows(spec),
         ("family", spec.family),
         ("hypothesis (expected IC sign, fixed pre-run)", f"{spec.expected_ic_sign:+d}"),
         ("horizon / return basis", f"h={spec.forward_return_horizon} / {spec.return_basis}"),

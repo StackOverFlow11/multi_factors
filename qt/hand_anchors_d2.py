@@ -83,10 +83,11 @@ def read_minutes(
 
     ``pit=True`` keeps only the 14:50-visible bars (``bar_end + 1min <=
     trade_date + 14:50`` — the runners' ``data_lag='1min'``). ``pit=False``
-    returns the FULL day: two factors need it — PR-C (jump) predates the
-    cutoff convention and its engine computes on full-day bars (day-level PIT
-    only), and PR-E (amp anomaly) resamples the FULL day to 5min FIRST and
-    PIT-filters the DERIVED bars by their own available_time.
+    returns the FULL day: PR-E (amp anomaly) needs it because it resamples the
+    FULL day to 5min FIRST and PIT-filters the DERIVED bars by their own
+    available_time. (PR-C / jump used to need it too — its engine had no
+    intraday cutoff at all. That was a lookahead defect, not a convention: it
+    is fixed, and this hand check now truncates like every sibling.)
     """
     # Clip to the evaluation plane's start: the cache holds BACKFILLED bars
     # from before 2021-07-01, but the frozen panels were computed on
@@ -377,9 +378,11 @@ def hand_peak_ridge_amount_ratio(symbol: str, d: pd.Timestamp) -> float:
 
 
 def hand_jump_amount_corr(symbol: str, d: pd.Timestamp) -> float:
-    # FULL-day bars: the engine's compute has NO 14:50 cutoff (PR-C predates
-    # the cutoff convention; its PIT contract is day-level, dates <= d only).
-    bars = read_minutes(symbol, d - pd.Timedelta(days=90), d, pit=False)
+    # 14:50-visible bars only (pit=True, the default): the engine truncates each
+    # day at the decision time like every sibling minute factor. Before the
+    # truncation fix this read full days to mirror an engine that had no
+    # intraday cutoff — mirroring a defect is how a hand check blesses one.
+    bars = read_minutes(symbol, d - pd.Timedelta(days=90), d)
     ok = (bars["open"].to_numpy(float) > 0) & np.isfinite(bars["amount"].to_numpy(float))
     work = bars[ok].sort_values("bar_end").reset_index(drop=True)
     days = sorted(work["trade_date"].unique())

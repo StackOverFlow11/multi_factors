@@ -277,10 +277,36 @@ docstring，按 #74 先例）。它改变 artifact 的**三处且仅三处**，�
 | 1 | JSON `eval_config` 块 | **+3 键** `view` / `return_basis` / `book_view` | `report_to_dict` 的 `sanitize_payload(vars(report.cfg))` 自动带上 `EvalConfig` 的新字段（与 §七 的 `spec` 16→20 完全同一机制） |
 | 2 | JSON 顶层 | **+1 键** `eval_contract_version` | 显式写入：一个 verdict 只有对着产生它的契约版本才可解释（#74 的教训） |
 | 3 | Markdown `## 0. Header & Provenance` | **+4 行** `evaluation contract` / `requires (endpoint inputs)` / `adjustment / overnight boundary` / `lookback depth ...` | R24 的身份字段 + D1 契约 v1.0/v1.1 的三个声明维，从 `vars(spec)` 的 repr 转述升级为具名行 |
+| 4 | JSON 顶层 | **+1 键** `corrections`（契约 **v1.1**，见下） | 更正是**结构化事实**，必须在**有长度上限的自由文本通道之外**传达 |
+| 5 | Markdown `## 0.` + dashboard PNG | 每条更正 **+1 行** provenance 行；PNG 头行 **+1 个** `CORRECTED vX -> vY` 标记（无更正的因子零新增） | 与 #4 同一结构化元组派生（author once），三个呈现面不可能互相矛盾 |
+| 6 | dashboard PNG FACTOR DEFINITION 带 | 描述被**限行**（`DEFINITION_MAX_LINES=4`），超出部分标注省略并指向 Markdown | **修既有缺陷**，见下 |
+
+**#4/#5 的成因（契约 v1.1）**：`sanitize_payload` 对**任何**导出字符串封顶 200 字符
+（`MAX_VALUE_CHARS`）并追加 `...[truncated]`。这是**通用行为、非某条路径特有**——实测
+已发布的 **44/44** 份 eval JSON 的 `spec.description` 全部被截断（共 218 个
+`[truncated]` 标记）。所以写进 `description` 的更正只到得了 Markdown 与 PNG，在 JSON ——
+**汇总层读的那一份**——里被切掉。v1.1 把更正改为 `FactorSpec.corrections`
+（`FactorCorrection` 元组），经 `corrections_record` 在**封顶通道之外**导出（仍脱敏），
+且超长在 spec 构造期 **raise 而非裁剪**。
+
+**#6 的成因（既有缺陷，非本次回归）**：FACTOR DEFINITION 带把描述锚在 y=0.62（va=top）、
+metadata 行锚在 y=0.20/0.10（va=bottom），**中间没有任何约束**，长描述直接**画在 metadata
+上面**，两行都糊。真实渲染几何实测：**11 个分钟因子里 7 个重叠**
+（`valley_price_quantile_20` 超出 **296 px** / 25 行对 4 行槽位）。
+`analytics/eval/figures.py` **在 git 里只有一个 commit**，所以这不是新引入的——**每一份已
+产出的 dashboard 都是这样画的**，包括冻结的 22 张。限行 + 显式省略标记严格优于覆盖绘制
+（后者两段文字同时不可读且不声明）。守卫 `tests/test_definition_band_layout.py` 用**真实
+dashboard 几何**渲染后比对 Text 的 bbox，**几何断言而非看图**。
 
 ⚠️ **`book_view` 使 exec 侧 no_book 与 with_book 两份 artifact 的 `eval_config` 块首次不同**（`null` vs `"close"`）。这是**有意**的：一次 with-book 评估携带**两个**信息集（候选因子的与因子簿的），一个 `view` 字段表达不了；设计 §1.1 记录的因子簿 close-view 活缺陷要到 D7 才关，在那之前诚实的 artifact 就该写 `view=decision, book_view=close`。对账时**不要**把这一处不同当作 no_book/with_book 之间的回归。
 
-⚠️ **`jump_amount_corr_20` 的 exec 评估现在会 loud raise**（`qt.exec_basis_eval.exec_identity`）：它的值是 close 视图（compute 无 14:50 截断，实测），(close, exec_to_exec) 非法配对。这是**故意的阻断**——在该因子被截断修正之前，它没有诚实的 exec artifact；而写一份声明 `view=decision` 的假 artifact 正是本字段要防的事。修正由**独立的 correctness-fix PR** 处理；它落地时从 `factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE` 移除该条即可解除阻断。
+✅ **已解除（解除于截断修正 PR，本节保留作记录）**：`jump_amount_corr_20` 的 exec 评估曾经 loud raise（`qt.exec_basis_eval.exec_identity`）——它的值是 close 视图（compute 无 14:50 截断，实测），(close, exec_to_exec) 非法配对。那是**故意的阻断**：在该因子被截断修正之前，它没有诚实的 exec artifact，而写一份声明 `view=decision` 的假 artifact 正是本字段要防的事。
+
+独立的 correctness-fix PR 已把该因子截断到 14:50（用与十个兄弟相同的 `visible_minute_frame`），并在**同一个 PR 里**从 `factors.compute.minute.binding.NOT_DECISION_CUTOFF_SAFE` 移除该条 + 用旧 runner 重跑重述了它的 exec verdict（Watch/Watch 不变，数字见 `docs/factors/pr_c_cutoff_fix_reference_panel.md` §六），所以不存在「因子已修好、评估仍被拦」的中间态。`NOT_DECISION_CUTOFF_SAFE` 现在为空集，且这个空集是**被测量的**：`tests/test_decision_cutoff_visibility.py` 把十个 bars-bound 因子全部纳入 clean 参数化——**它正是逼出这次删除的东西**（截断落地后它红了，并在失败信息里给出「drop it from … and re-state its verdict」）。
+
+⚠️ 连带影响（D5b 评审的 NIT，自动消失）：那个阻断点在 runner 里偏晚（跑完逐票分钟聚合、写完两份 close_to_close 报告之后才 raise）。deny list 条目移除后该路径不再 raise，此 NIT 无需单独处理。
+
+⚠️ **C5 面板腿注意**：该因子的 D1 冻结面板（`artifacts/refactor_baseline/panels/jump_amount_corr_20.parquet`）是用**未截断**定义冻的，仍按原样保留不动；对账请改用 `artifacts/refactor_baseline/pr_c_cutoff_fix/`（同一条旧 runner 取值路径 + 截断输入）。provenance 与「为什么两份并存」见 `docs/factors/pr_c_cutoff_fix_reference_panel.md`。
 
 **没有变的**（`tests/test_eval_contract_v1.py` 逐值钉住）：`VerdictThresholds` 的**每一个**
 默认门（`min_abs_icir=0.30` / `min_incremental_abs_icir=0.15` /

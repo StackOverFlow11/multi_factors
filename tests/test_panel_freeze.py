@@ -33,10 +33,12 @@ from qt.panel_freeze import (
     atomic_write_parquet,
     canonical_content_hash,
     file_sha256,
+    freezable_factor_ids,
     manifest_row,
     read_frozen_panel,
     reconcile_with_eval_artifact,
     render_manifest_markdown,
+    resolve_selection,
 )
 
 
@@ -313,3 +315,39 @@ def test_reconcile_missing_payload_is_loud(tmp_path: Path):
     processed = _panel([1.0, 2.0, 3.0, 4.0], KEYS)
     with pytest.raises(ValueError, match="data_coverage"):
         reconcile_with_eval_artifact("eval_x", processed, ["000001.SZ"], tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# --only selection (added for the PR-C intraday-cutoff correctness re-freeze)
+# --------------------------------------------------------------------------- #
+def test_selection_default_is_none_so_the_full_freeze_is_untouched():
+    assert resolve_selection(None) is None
+
+
+def test_selection_keeps_the_given_order_and_accepts_book_and_minute_ids():
+    assert resolve_selection(["jump_amount_corr_20", "value_ep"]) == (
+        "jump_amount_corr_20",
+        "value_ep",
+    )
+
+
+def test_selection_rejects_an_unknown_factor_id():
+    """A typo must cost a readable error, not an empty output root reported as
+    success — "froze 0 panels" is how a correctness re-freeze silently produces
+    nothing at all."""
+    with pytest.raises(ValueError, match="does not produce"):
+        resolve_selection(["jump_amount_corr"])  # missing the _20 window suffix
+
+
+def test_selection_rejects_an_empty_selection():
+    with pytest.raises(ValueError, match="empty selection"):
+        resolve_selection([])
+
+
+def test_freezable_ids_are_the_14_the_freeze_writes():
+    ids = freezable_factor_ids()
+    assert len(ids) == 14
+    assert {"value_ep", "value_bp", "volatility_20"} <= ids
+    # Every determinism subject must be freezable, or --only could silently drop
+    # the double-run subject the manifest still claims to have checked.
+    assert set(DETERMINISM_FACTORS) <= ids

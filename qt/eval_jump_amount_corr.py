@@ -104,6 +104,12 @@ def _load_jump_factor_panel(
     root = cfg.data.cache.root_dir
     store = IntradayParquetStore(root)
     start = pd.Timestamp(cfg.data.start).normalize()
+    # Whole-day READ window; the 14:50 PIT truncation is applied inside
+    # ``compute_jump_amount_corr`` (as in every sibling minute factor), so the
+    # post-cutoff bars this read returns are dropped before any pooling. This
+    # read is NOT the cutoff — a reader who assumes it is will conclude the
+    # factor is truncated when the compute is not, which is exactly how the
+    # missing truncation survived review here.
     end = pd.Timestamp(cfg.data.end).normalize() + pd.Timedelta("23:59:59")
 
     series: list[pd.Series] = []

@@ -4,10 +4,21 @@ Reproduces the Kaiyuan report §6 factor (``价格跳跃成交额相关性``, fu
 -10.23%): the trailing-``lookback_days``-trading-day lagged Pearson correlation
 between the traded ``amount`` at price-JUMP minutes and the amount at the
 STRICTLY-next minute. The daily value at ``(date d, symbol s)`` uses ONLY bars
-at dates ``<= d`` (the trailing window ending at d), so a factor value never
-sees a future bar (invariant #1); it is meant to trade close-to-close from d+1.
+whose ``available_time`` is at or before ``d + decision_time`` within the
+trailing window ending at d, so a factor value never sees a bar it could not
+know at the decision moment (invariant #1).
 
 Definition (LOCKED, per bar of one (symbol, day) session):
+  * PIT truncation (standing authorization, 2026-07-19): each day keeps only the
+    1min bars with ``available_time <= (that bar's trade_date + decision_time)``
+    (default 14:50) — history days AND the signal day are truncated identically,
+    exactly as in the ten sibling minute factors. CORRECTNESS FIX (post-#79):
+    this factor was built BEFORE that authorization and was the one of the eleven
+    with no truncation at all, so under the 14:51-VWAP exec_to_exec basis its
+    value at d read d's 14:50-15:00 bars — i.e. the execution minute itself and
+    the nine after it. The published pre-fix values are superseded; see
+    ``tests/test_minute_decision_cutoff_leakage.py`` for the guard that now
+    covers the whole minute-factor surface;
   * ``amplitude = (high - low) / open``           (guard open > 0, amount finite);
   * ``jump``     = within-(symbol, day) amplitude z-score (ddof=1) ``> jump_z``;
   * pair each jump minute ``t`` with the STRICTLY-next minute (same session,
@@ -32,6 +43,7 @@ import pandas as pd
 from data.availability_policy import STK_MINS_1MIN
 from data.clean.intraday_schema import (
     DATE_LEVEL,
+    DEFAULT_DECISION_TIME,
     SYMBOL_LEVEL,
     validate_intraday_bars,
 )
@@ -39,8 +51,9 @@ from factors.base import Factor
 from factors.compute.minute.primitives import (
     ONE_MINUTE_SECONDS,
     empty_factor_series,
+    visible_minute_frame,
 )
-from factors.spec import FactorSpec, PanelField
+from factors.spec import FactorCorrection, FactorSpec, PanelField
 
 # Factor DEFINITION constants (reproduced from the report; NOT tuned knobs). The
 # daily value is a trailing-``JUMP_LOOKBACK_DAYS``-trading-day lagged correlation
@@ -50,6 +63,38 @@ from factors.spec import FactorSpec, PanelField
 JUMP_LOOKBACK_DAYS = 20
 JUMP_MIN_PAIRS = 10
 JUMP_Z = 1.0
+
+#: The intraday-cutoff correctness fix, declared as a STRUCTURED fact so every
+#: artifact carries it verbatim (see :class:`factors.spec.FactorCorrection` for why
+#: this cannot live in ``description``). This factor is the only one of the eleven
+#: that shipped without a 14:50 truncation, so it is the only one with an entry.
+_CUTOFF_CORRECTION = FactorCorrection(
+    from_version="1.0",
+    to_version="1.1",
+    date="2026-07-25",
+    defect=(
+        "v1.0 applied NO intraday PIT truncation at all — this factor was built "
+        "before the standing 14:50-truncation authorization and was the one minute "
+        "factor of eleven that never got it, so a value at date d pooled that day's "
+        "full session including the 14:50-15:00 bars."
+    ),
+    effect=(
+        "Under the 14:51-VWAP exec_to_exec basis the entry anchor for d is d's own "
+        "14:51 execution bar, so those values used POST-ENTRY information: the "
+        "execution minute itself and the nine minutes after it. Measured on the "
+        "shipped v1.0 engine, perturbing only the excluded bars moved every emitted "
+        "cell (1,477/1,477 and 1,373/1,373 in two independent samples, max |diff| "
+        "1.28 and 1.05); the other ten minute factors moved zero cells."
+    ),
+    superseded=(
+        "Every jump_amount_corr_20 evaluation artifact produced before this date is "
+        "superseded, on BOTH bases. The close_to_close copies are kept, labelled, "
+        "under artifacts/reports/pr_c_untruncated_close_to_close/; the exec copies "
+        "remain in the frozen exec baseline as the byte record of what was "
+        "published. Aggregate metrics moved little and the Watch verdict survived, "
+        "but that was established by re-running, not inferred from the similarity."
+    ),
+)
 
 
 def _minute_requires(*fields: str) -> tuple[PanelField, ...]:
@@ -63,6 +108,7 @@ def compute_jump_amount_corr(
     lookback_days: int = JUMP_LOOKBACK_DAYS,
     min_pairs: int = JUMP_MIN_PAIRS,
     jump_z: float = JUMP_Z,
+    decision_time: str = DEFAULT_DECISION_TIME,
     name: str = "jump_amount_corr",
 ) -> pd.Series:
     """PIT-safe daily "price-jump turnover correlation" factor from 1min ``bars``.
@@ -76,6 +122,7 @@ def compute_jump_amount_corr(
         lookback_days: trailing trading-day window length (part of the definition).
         min_pairs: minimum jump-pairs in the window for a finite value.
         jump_z: within-day amplitude z-score threshold defining a jump minute.
+        decision_time: per-bar PIT cutoff time-of-day (default 14:50:00).
         name: the returned Series name (the factor-panel column name).
 
     Returns:
@@ -91,15 +138,24 @@ def compute_jump_amount_corr(
     if len(bars) == 0:
         return empty_factor_series(name)
 
-    work = bars.reset_index()[
-        [SYMBOL_LEVEL, "bar_end", "open", "high", "low", "amount"]
-    ].copy()
-    # Guard bad rows BEFORE anything else: a non-positive open makes the amplitude
-    # meaningless and a non-finite amount would poison the correlation.
+    # PIT truncation FIRST, on the SAME shared helper the sibling amplitude family
+    # uses (jump / ideal-amplitude / amp-anomaly / amp-cut): keep only the bars whose
+    # own ``available_time`` is at or before their ``trade_date + decision_time``.
+    # ``trade_date`` is this factor's date axis, so it is renamed to DATE_LEVEL and
+    # every downstream step below is unchanged.
+    work = visible_minute_frame(
+        bars,
+        columns=("open", "high", "low", "amount"),
+        decision_time=decision_time,
+    ).rename(columns={"trade_date": DATE_LEVEL})
+    if work.empty:
+        return empty_factor_series(name)
+    # Guard bad rows: a non-positive open makes the amplitude meaningless and a
+    # non-finite amount would poison the correlation. (Row filters commute, so the
+    # surviving set is the same whichever of the two masks is applied first.)
     work = work[(work["open"] > 0.0) & np.isfinite(work["amount"].to_numpy(dtype=float))]
     if work.empty:
         return empty_factor_series(name)
-    work[DATE_LEVEL] = work["bar_end"].dt.normalize()
     # Sort so the "strictly next minute" shift and the per-symbol trading-day
     # rolling both see bars in chronological order within each (symbol, day).
     work = work.sort_values([SYMBOL_LEVEL, "bar_end"], kind="mergesort")
@@ -238,15 +294,25 @@ class JumpAmountCorrFactor(Factor):
         """
         return FactorSpec(
             factor_id=self.name,
-            version="1.0",
+            # 1.1: the intraday-cutoff correctness fix. The DEFINITION changed, so
+            # every artifact self-identifies which one produced it (the version is
+            # printed in the report title and on the dashboard).
+            version="1.1",
             description=(
-                f"Price-jump turnover correlation (Kaiyuan report §6): trailing "
+                f"Price-jump turnover correlation (Kaiyuan report §6): 1min bars "
+                f"PIT-truncated at 14:50 per bar, then the trailing "
                 f"{self._lookback_days}-trading-day lagged Pearson corr between the "
                 f"traded amount at price-JUMP minutes (within-day amplitude z-score "
                 f">1) and the amount at the strictly-next minute. Derived from 1min "
-                f"bars but a DAILY signal traded close-to-close; >= {JUMP_MIN_PAIRS} "
-                f"jump-pairs required else NaN."
+                f"bars but a DAILY signal; >= {JUMP_MIN_PAIRS} jump-pairs required "
+                f"else NaN."
             ),
+            # The correction is a STRUCTURED fact, not a sentence appended here:
+            # the report JSON caps every payload string at 200 chars, so a
+            # correction living in ``description`` reaches the Markdown and the
+            # dashboard and is cut out of the machine-readable copy (measured:
+            # 44/44 shipped eval JSONs have a truncated description).
+            corrections=(_CUTOFF_CORRECTION,),
             expected_ic_sign=-1,
             is_intraday=False,
             forward_return_horizon=1,
