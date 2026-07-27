@@ -223,46 +223,81 @@ DEFINITION_WRAP_WIDTH = 150
 
 #: How many wrapped lines the band's description slot can hold before the text
 #: collides with the metadata row below it. NOT a style preference — the slot is
-#: bounded by fixed axes-fraction anchors (description at 0.62 va="top", metadata
-#: at 0.20/0.10 va="bottom"), so a longer description silently DRAWS OVER the
-#: metadata.
+#: bounded by fixed axes-fraction anchors (description at 0.62 va="top"), and the
+#: metadata row's anchor DEPENDS ON THE SPEC FORM: 0.10 for a daily spec, 0.20
+#: for an intraday one (which also draws the minute block at 0.04). A longer
+#: description silently DRAWS OVER the metadata.
+#:
+#: The two forms therefore have DIFFERENT capacities, and sizing by the daily
+#: branch alone is exactly the defect this split fixes: ``build(factor_id).spec``
+#: is daily (``is_intraday=False``) for every shipped minute factor, but the
+#: exec-basis dashboard renders ``intraday_spec_variant`` (``is_intraday=True``),
+#: so a single 5 measured on the daily branch overprints 9 of the 11 exec-form
+#: dashboards.
 #:
 #: MEASURED, not chosen, on the real dashboard geometry (figsize 15x21.5, the
-#: GridSpec of ``_render``): the gap between the two boxes falls 15 px per line and
-#: goes negative at SIX lines — 1..5 lines give +63.8/+48.8/+33.8/+18.8/+3.8 px,
-#: 6 gives -11.2. Five is therefore the capacity, and it is deliberately not
-#: reduced for comfort: every factor whose description fits today keeps rendering
-#: in full, and only the seven that genuinely overflow get an elision marker.
+#: GridSpec of ``_render``); the gap between the two boxes falls 15 px per line:
 #:
-#: The slack at five lines is thin (~4 px, a quarter of a line). That is a fact
-#: about the layout, not a hidden risk: ``tests/test_definition_band_layout.py``
-#: re-measures every shipped spec against the real geometry, so a font or
-#: matplotlib change that eats the slack turns the guard RED instead of silently
-#: overprinting. The number is checked, never trusted.
-DEFINITION_MAX_LINES = 5
+#:   * daily branch (metadata at 0.10): 4 lines +18.8 px, 5 lines +3.8 px,
+#:     6 lines -11.2 px  -> capacity 5;
+#:   * intraday branch (metadata at 0.20): 4 lines +1.5 px, 5 lines -13.5 px
+#:     -> capacity 4.
+#:
+#: Neither number is reduced for comfort: every factor whose description fits its
+#: own branch keeps rendering in full, and only the ones that genuinely overflow
+#: (7 of the 11 minute factors at 5 lines daily, 9 of 11 at 4 lines intraday)
+#: get an elision marker.
+#:
+#: The slack at capacity is thin (+3.8 / +1.5 px, about a quarter of a line).
+#: That is a fact about the layout, not a hidden risk:
+#: ``tests/test_definition_band_layout.py`` re-measures every shipped spec in
+#: BOTH forms against the real geometry, so a font or matplotlib change that
+#: eats the slack turns the guard RED instead of silently overprinting. The
+#: numbers are checked, never trusted.
+DEFINITION_MAX_LINES_DAILY = 5
+DEFINITION_MAX_LINES_INTRADAY = 4
+
+
+def definition_max_lines(spec) -> int:
+    """The description-line budget for THIS spec's form — daily 5, intraday 4.
+
+    Keyed on ``spec.is_intraday`` because that is what moves the metadata row
+    (see :data:`DEFINITION_MAX_LINES_DAILY`). A spec carries its own form, so
+    the budget cannot be measured on one branch and spent on the other.
+    """
+    if spec.is_intraday:
+        return DEFINITION_MAX_LINES_INTRADAY
+    return DEFINITION_MAX_LINES_DAILY
 
 
 def definition_description_lines(spec) -> list[str]:
     """The description lines the band may draw, bounded so it cannot overlap.
 
-    Six of the eleven shipped minute factors have descriptions long enough to
-    collide with the metadata row (measured with the real renderer:
-    ``valley_price_quantile_20`` overlaps by 291 px, and it is 25 wrapped lines
-    against a 4-line slot). The renderer has ONE commit in its history, so those
-    dashboards have always been drawn that way — this is a standing defect, not a
-    regression, and "both texts unreadable" is the worst of the options.
+    The bound is per spec form (:func:`definition_max_lines`): the slot holds
+    5 lines in the daily branch and 4 in the intraday one, so the same
+    description can fit one dashboard and need elision on the other. Before
+    any bound existed, nine of the eleven shipped minute factors had
+    descriptions long enough to collide with the metadata row (measured with
+    the real renderer: ``valley_price_quantile_20`` is 25 wrapped lines and,
+    unbounded, overruns the metadata row by 296 px in the daily branch / 314
+    px in the intraday one). The renderer had exactly one commit in its
+    history when the bound was added, so every dashboard produced before it
+    was drawn that way — this is a standing defect, not a regression, and
+    "both texts unreadable" is the worst of the options.
 
     Bounding it visibly is strictly better than overdrawing: an elided tail is
     marked and points at the copy that carries the description in full (the
     Markdown provenance box — the JSON's is capped at
-    ``analytics.eval.render.MAX_VALUE_CHARS``). Nothing is dropped without saying
-    so, which is the whole difference between this and what it replaces.
+    ``analytics.eval.render.MAX_VALUE_CHARS``). Nothing is dropped without
+    saying so, which is the whole difference between this and what it
+    replaces.
     """
+    cap = definition_max_lines(spec)
     lines = textwrap.wrap(spec.description, width=DEFINITION_WRAP_WIDTH)
-    if len(lines) <= DEFINITION_MAX_LINES:
+    if len(lines) <= cap:
         return lines
-    elided = len(lines) - (DEFINITION_MAX_LINES - 1)
-    return lines[: DEFINITION_MAX_LINES - 1] + [
+    elided = len(lines) - (cap - 1)
+    return lines[: cap - 1] + [
         f"... [{elided} more lines elided to fit — FULL definition in the "
         f"Markdown report's provenance box]"
     ]
