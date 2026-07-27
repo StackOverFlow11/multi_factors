@@ -36,22 +36,13 @@ from pathlib import Path
 import pandas as pd
 
 from data.cache.intraday_cache import ENDPOINT as INTRADAY_ENDPOINT
-from data.cache.intraday_cache import READ_COLUMNS
-from data.cache.intraday_parquet_store import IntradayParquetStore
-from data.clean.intraday_schema import (
-    RAW_INTRADAY_FREQ,
-    empty_intraday_bars,
-    normalize_intraday_bars,
-)
+from data.clean.intraday_schema import RAW_INTRADAY_FREQ
 from factors import registry as factor_registry
 from factors.compute.minute.binding import minute_raw_from_bars
 from factors.view_lag import minute_decision_cutoff
+from qt.factor_eval_providers import CacheMinuteProvider
 
 DEFAULT_CACHE_ROOT = "artifacts/cache/tushare/v1"
-#: The intraday cache's DECLARED earliest bar date (measured on the real cache:
-#: several CSI500 names carry 1min bars from 2015-01-05). The pooled saturation
-#: loop needs a declared floor; it must never infer one from row counts.
-CACHE_MINUTE_DATA_START = "2015-01-05"
 DEFAULT_FACTORS = (
     "jump_amount_corr_20",
     "minute_ideal_amp_10",
@@ -63,44 +54,6 @@ DEFAULT_FACTORS = (
 DEFAULT_START = "2024-03-01"
 DEFAULT_END = "2024-04-05"
 DEFAULT_N_SYMBOLS = 40
-
-
-class CacheMinuteProvider:
-    """Cache-only MinuteBarProvider: per-symbol read + normalize, zero live calls."""
-
-    def __init__(self, root: str) -> None:
-        self._store = IntradayParquetStore(root)
-        self.calls = 0
-        self.live_calls = 0  # provably 0 — read_range has no fetch closure
-
-    def earliest_available(self, symbols):
-        """The cache's DECLARED minute-data floor (measured: bars from 2015-01-05).
-
-        Declared, never inferred from row counts — a long mid-history no-bar gap
-        (a suspension) is indistinguishable from exhaustion by row count, which
-        is exactly the unsound signal the pooled saturation loop refuses.
-        """
-        return pd.Timestamp(CACHE_MINUTE_DATA_START)
-
-    def minute_bars(self, symbols, start, end):
-        self.calls += 1
-        if not symbols:
-            return empty_intraday_bars()
-        parts = []
-        s = pd.Timestamp(start)
-        e = pd.Timestamp(end)
-        for sym in symbols:
-            part = self._store.read_range(INTRADAY_ENDPOINT, sym, RAW_INTRADAY_FREQ, s, e)
-            if part.empty:
-                continue
-            parts.append(
-                normalize_intraday_bars(
-                    part.rename(columns={"bar_end": "time"})[READ_COLUMNS], freq=RAW_INTRADAY_FREQ
-                )
-            )
-        if not parts:
-            return empty_intraday_bars()
-        return pd.concat(parts).sort_index(kind="mergesort")
 
 
 def _sample_symbols(root: str, n: int) -> list[str]:

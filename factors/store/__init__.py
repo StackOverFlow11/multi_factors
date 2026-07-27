@@ -35,6 +35,7 @@ from factors.store.hashing import params_hash, short_hash
 from factors.store.incremental import (
     CacheHorizonConfig,
     IncrementalResult,
+    IntermediatePayloadNotWiredError,
     endpoint_horizons,
     factor_lookback_depth,
     overlap_window,
@@ -56,6 +57,7 @@ __all__ = [
     "CacheHorizonConfig",
     "FactorValueStore",
     "IncrementalResult",
+    "IntermediatePayloadNotWiredError",
     "RunRecord",
     "RunRegistry",
     "StoreKey",
