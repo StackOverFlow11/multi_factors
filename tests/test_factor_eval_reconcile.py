@@ -702,18 +702,50 @@ def test_panels_pooled_warmup_after_early_region_is_unclassified():
 
 
 def test_panels_pooled_warmup_non_monotonic_monthly_counts_fail():
+    # REVERSE (lead ruling 1): the first month is exempt as the partial
+    # month, but months AFTER it must still be non-increasing — {07:1,
+    # 08:1, 09:2} rises after the exempt month and must FAIL.
     frozen = _frozen_panel(
-        [("2021-07-01", "A", NAN), ("2021-08-02", "A", NAN), ("2021-08-03", "A", NAN)],
+        [
+            ("2021-07-01", "A", NAN),
+            ("2021-08-02", "A", NAN),
+            ("2021-09-01", "A", NAN), ("2021-09-02", "A", NAN),
+        ],
         "f",
     )
     new = _new_series(
-        [("2021-07-01", "A", 1.0), ("2021-08-02", "A", 2.0), ("2021-08-03", "A", 3.0)]
+        [
+            ("2021-07-01", "A", 1.0),
+            ("2021-08-02", "A", 2.0),
+            ("2021-09-01", "A", 3.0), ("2021-09-02", "A", 4.0),
+        ]
     )
     result = classify_panel_differences(
         new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
     )
-    assert not result.ok  # 2021-08 (2) > 2021-07 (1) violates 按月递减至零
+    assert not result.ok  # 2021-09 (2) > 2021-08 (1) violates 按月递减至零
     assert not result.warmup_monotonic
+
+
+def test_panels_pooled_warmup_partial_first_month_is_exempt_from_monotonicity():
+    # FORWARD (lead ruling 1): the FIRST month with warmup diffs is the
+    # partial month in which residual/value existence starts (vpq: the
+    # frozen panel's first values exist only from ~07-29) — it is exempt
+    # from the monotonicity check, so {07:5, 08:10, 09:3} passes even
+    # though 2021-08 > 2021-07.
+    rows = (
+        [(f"2021-07-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(5))]
+        + [(f"2021-08-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(10))]
+        + [(f"2021-09-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(3))]
+    )
+    frozen = _frozen_panel(rows, "f")
+    new = _new_series([(d, s, 1.0) for d, s, _v in rows])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
+    )
+    assert result.ok, result.diffs
+    assert result.warmup_by_month == {"2021-07": 5, "2021-08": 10, "2021-09": 3}
+    assert result.warmup_monotonic
 
 
 def test_panels_float_reordering_tail_within_bounds_passes():
@@ -788,6 +820,157 @@ def test_panels_threshold_flip_beyond_cell_cap_fails():
     )
     assert not result.ok
     assert len(result.by_class("threshold_flip_tail")) == n
+
+
+# --------------------------------------------------------------------------- #
+# panels mode — threshold_flip_contamination (catalogue §七之五, lead ruling 2)
+# --------------------------------------------------------------------------- #
+def test_panels_threshold_flip_contamination_within_bounds_passes():
+    # FORWARD: the measured vpq shape — the direct symbol (600623.SH) at
+    # 1.6e-04 and cross-sectionally contaminated symbols at <= 5.5e-07, all
+    # inside [2023-06-01, 2023-07-14], on a CROSS-SECTIONAL factor.
+    rows = [
+        ("2023-06-01", "600623.SH", 1.0), ("2023-07-14", "600623.SH", 1.0),
+        ("2023-06-15", "S1", 2.0), ("2023-07-14", "S2", 3.0),
+    ]
+    deltas = [1.6e-04, -1.6e-04, 5.5e-07, -5.5e-07]
+    frozen = _frozen_panel(rows, "f")
+    new = _new_series([(d, s, v + dv) for (d, s, v), dv in zip(rows, deltas)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("threshold_flip_contamination")) == 4
+
+
+def test_panels_contamination_direct_symbol_above_2e_04_fails():
+    # REVERSE (bound 1 of 4): the direct symbol overshoots 2e-04 inside the
+    # window -> UNCLASSIFIED, never a fall-through to the generic tails.
+    frozen = _frozen_panel([("2023-06-15", "600623.SH", 1.0)], "f")
+    new = _new_series([("2023-06-15", "600623.SH", 1.0 + 3e-04)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+    assert not result.by_class("threshold_flip_contamination")
+
+
+def test_panels_contamination_other_symbol_above_1e_06_fails():
+    # REVERSE (bound 2 of 4): a contaminated symbol overshoots 1e-06 inside
+    # the window.
+    frozen = _frozen_panel([("2023-07-01", "S1", 1.0)], "f")
+    new = _new_series([("2023-07-01", "S1", 1.0 + 2e-06)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_contamination_outside_window_fails():
+    # REVERSE (bound 3 of 4): the same magnitude one day AFTER the window
+    # (2023-07-15) is a new fact, not the adjudicated mechanism.
+    frozen = _frozen_panel([("2023-07-15", "600623.SH", 1.0)], "f")
+    new = _new_series([("2023-07-15", "600623.SH", 1.0 + 1.6e-04)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_contamination_beyond_cell_cap_fails():
+    # REVERSE (bound 4 of 4): 20,020 in-window cells within the abs bounds
+    # (1001 symbols x 20 dates) exceed the 20,000 cap.
+    symbols = [f"S{i}" for i in range(1001)]
+    dates = [f"2023-06-{d + 1:02d}" for d in range(20)]
+    rows = [(d, s, 1.0) for d in dates for s in symbols]
+    frozen = _frozen_panel(rows, "f")
+    new = _new_series([(d, s, 1.0 + 5e-07) for d, s, _v in rows])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("threshold_flip_contamination")) == len(rows)
+
+
+def test_panels_contamination_not_available_for_bars_only_factor():
+    # REVERSE: the class is CROSS-SECTIONAL-ONLY — the same in-window cells
+    # on a bars-only factor (is_cross_sectional=False) are unclassified.
+    frozen = _frozen_panel([("2023-06-15", "600623.SH", 1.0)], "f")
+    new = _new_series([("2023-06-15", "600623.SH", 1.0 + 1.6e-04)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# panels mode — float-tail abs floor + tiered cap (lead ruling 3)
+# --------------------------------------------------------------------------- #
+def test_panels_float_dust_abs_floor_passes_regardless_of_rel():
+    # FORWARD: a near-zero cross-sectional OLS residual — abs 5e-13 (machine
+    # precision on a ~1e-6 residual) but rel ~5e-07 >> 5e-12. The abs floor
+    # (|diff| <= 1e-12) classes it as float dust on ANY factor kind.
+    frozen = _frozen_panel([("2022-11-03", "A", 1e-06)], "f")
+    new = _new_series([("2022-11-03", "A", 1e-06 + 5e-13)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("float_reordering_tail")) == 1
+
+
+def test_panels_float_dust_above_abs_floor_with_rel_overage_fails():
+    # REVERSE: abs 2e-12 > the 1e-12 floor AND rel ~2e-06 > 5e-12 — neither
+    # criterion catches it, so it is unclassified (the floor is not a
+    # tolerance widening).
+    frozen = _frozen_panel([("2022-11-03", "A", 1e-06)], "f")
+    new = _new_series([("2022-11-03", "A", 1e-06 + 2e-12)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_float_tail_cross_sectional_cap_allows_up_to_1000():
+    # FORWARD: 500 float-tail cells pass on a cross-sectional factor (the
+    # bars-only 101 cap would fail them — the cap is tiered, measured vpq
+    # 707 + headroom).
+    n = 500
+    frozen = _frozen_panel([(f"2022-11-{(i % 28) + 1:02d}", f"S{i}", 1.0) for i in range(n)], "f")
+    new = _new_series(
+        [(f"2022-11-{(i % 28) + 1:02d}", f"S{i}", 1.0 * (1 + 3e-12)) for i in range(n)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("float_reordering_tail")) == n
+
+
+def test_panels_float_tail_cross_sectional_cap_1001_fails():
+    # REVERSE: 1001 float-tail cells — one above the cross-sectional cap.
+    n = 1001
+    frozen = _frozen_panel([(f"2022-11-{(i % 28) + 1:02d}", f"S{i}", 1.0) for i in range(n)], "f")
+    new = _new_series(
+        [(f"2022-11-{(i % 28) + 1:02d}", f"S{i}", 1.0 * (1 + 3e-12)) for i in range(n)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("float_reordering_tail")) == n
 
 
 def test_panels_frozen_finite_new_nan_never_allowed():

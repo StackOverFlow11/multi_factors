@@ -400,7 +400,8 @@ anchors 腿同判据：hand 侧按旧几何算、service 侧按新几何算，�
 
 真实对账（cache-only，`stk_mins_live_calls=0`；store 由本次 run 冷填，pooled 饱和加载
 1132s）：reports 4/4 OK；anchors 修复后 5/5（ok=4 + warmup=1）；**panels FAIL，差异已全量
-分解如下（三块，类外 0 未解释）——具名类边界修订留待 lead 裁定，本节先如实登记事实**：
+分解如下（三块，类外 0 未解释）——具名类边界**已由 lead 裁定（2026-07-28）并落地**，
+三条裁定与边界参数见本节末**：
 
 1. **warmup 块（24,516 格，全 finite→finite，2021-07-30→2021-09-30）**：即登记的
    `warmup_left_extension`（anchor 截断 vs 饱和左延）。**但 vpq 的逐月计数结构性地
@@ -433,3 +434,24 @@ C5 全量对账会踩到同一处**——修复是通用的。
 路径）vs `residualize_on_reversal(qbar, reversal_20(未滞后面板))`，1,135,926 格
 max|diff|=0.0、NaN 集合互差为 0——平移面板左端效应在真实缓存上**不存在**，与 fixture
 层钉死一致。
+
+**lead 三裁定（2026-07-28，已落地 `qt/factor_eval_reconcile.py` + 正反向测试）**：
+
+1. **pooled 月单调性起点**：`warmup_left_extension` 的 pooled 按月非递增检查**从首个
+   完整月开始**——残差/值存在性起始的那个部分月不参与单调性判定（该月差异仍必须在
+   早区窗内且方向合规），首月之后仍强制非递增，违反即失败。*理由*：vpq 冻结面板的
+   残差 ~07-29 才存在（qbar 需 ≥10 有效日 + rev20 需 21 收盘），首月结构性必为
+   部分月，对它施加非递增是判一个构造上必假的命题。
+2. **新具名类 `threshold_flip_contamination`（仅截面因子）**：窗口
+   [2023-06-01, 2023-07-14]；直接 symbol（600623.SH）|diff| ≤ **2e-04**；其余 symbol
+   污染格 |diff| ≤ **1e-06**；总 cell 数 ≤ **20,000**。这是本类全部参数，逐格校验，
+   任何越界即 unclassified → FAIL。*理由*：与 `threshold_flip_tail` 同 symbol 同窗口
+   同族（PRV 临界 bar 分类翻转 × rolling-sigma 浮点噪声 × 整数成交量），vpq 表现为
+   连续值（600623.SH 30 日 max 1.60e-04）+ 逐日截面 OLS 系数污染全截面（19,113 格
+   ≤5.5e-07）；非输入侧变化——两缓存 ledger 自冻结前零写入、qbar 新旧几何逐位一致
+   （max 1.1e-16）、同 symbol+窗口翻转已对 volume_peak 登记过。
+3. **float 尾判据修两处**：① 增加 abs 下限——|diff| ≤ **1e-12** 一律计 float dust
+   （近零残差上 rel 判据失真，实测 abs ~1e-16）；② cap 分档——bars-only 因子 ≤101
+   （不变），**截面因子 ≤1,000**（实测 707 + 余量）。全局容差不动。*理由*：101 的 cap
+   按 jump（bars-only）标定，对近零值多、格子多的截面 OLS 残差系统性偏紧；abs 下限
+   把「rel 在近零值上失真」从 cap 压力里剥离，两处都不放宽对真回归的牙。

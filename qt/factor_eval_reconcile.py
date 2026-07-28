@@ -26,17 +26,43 @@ gate that runs at every mode's entry:
        and a finite value on a row the frozen panel does not have);
      * valid-day-POOLED factor: the early region [2021-07-01, 2021-10-31],
        same three directions, and the per-month counts must be
-       non-increasing ("按月递减至零"; a violation fails the mode).
+       non-increasing ("按月递减至零"; a violation fails the mode) STARTING
+       FROM THE FIRST FULL MONTH — lead ruling 1 (catalogue §七之五): the
+       first month with warmup diffs is the PARTIAL month in which
+       residual/value existence starts (vpq: the frozen panel's first values
+       exist only from ~07-29), so it is structurally exempt from the
+       monotonicity check; its cells must still sit inside the early region
+       with a registered direction. Months after it stay strictly gated.
   2. ``float_reordering_tail`` — scattered finite-vs-finite cells with rel
      diff <= 5e-12 (rolling-correlation summation order; the JC1 1e-12 gate
-     is the attributable floor, this is the measured tail above it). The
-     class is CAPPED at 101 cells (the measured jump count); more fails.
+     is the attributable floor, this is the measured tail above it), OR with
+     abs diff <= 1e-12 regardless of rel (lead ruling 3: on near-zero
+     cross-sectional OLS residuals the rel criterion is meaningless — the
+     measured dust is ~1e-16 machine precision on ~1e-5 residuals). The
+     class is CAPPED — 101 cells for bars-only factors (the measured jump
+     count), 1000 for cross-sectional ones (measured vpq 707 + headroom);
+     more fails.
   3. ``threshold_flip_tail`` — count factors (volume_peak): rolling-sigma
      float noise (~4e-10) times an integer volume sitting on the peak
      threshold flips the count by EXACTLY +/-1 on a sparse (symbol, day)
      cluster (measured: 20 cells, 600623.SH 2023-06-15..07-14). Bounds:
      |delta| == 1 exactly, rel <= 1e-2, at most 25 cells; more fails.
-  4. the jump cutoff reference — handled by the reference-path selection above.
+  4. ``threshold_flip_contamination`` — CROSS-SECTIONAL factors only (lead
+     ruling 2, catalogue §七之五): the same PRV critical-bar flip family as
+     (3), observed on vpq as a CONTINUOUS value change (valley VWAP ->
+     q_day -> qbar) plus second-order contamination of the whole cross
+     section through the per-date OLS coefficients. Bounds (checked cell by
+     cell; any violation is UNCLASSIFIED and fails): window
+     [2023-06-01, 2023-07-14]; the directly affected symbol (600623.SH)
+     |diff| <= 2e-04; every other symbol |diff| <= 1e-06; at most 20,000
+     cells in total. Not an input-side change: (a) both cache ledgers had
+     ZERO writes since the panel freeze (daily max fetched_at 2026-07-18,
+     minute 2026-07-16, freeze 2026-07-24); (b) qbar is bitwise-identical
+     across the old/new loading geometries (max 1.1e-16); (c) the flip sits
+     on the same symbol and window already registered for volume_peak as
+     (3) — the frozen panel was produced by the pre-D2 code path, the
+     served one by the migrated primitives.
+  5. the jump cutoff reference — handled by the reference-path selection above.
 
   Anything else (finite->NaN, finite-vs-finite beyond every named tail, a
   finite value on a row the frozen panel does not have outside the warmup
@@ -156,6 +182,16 @@ METRIC_REL_TOL = 1e-9
 #: failing; a flood of float-noise cells fails the cap.
 FLOAT_TAIL_REL_TOL = 5e-12
 FLOAT_TAIL_MAX_CELLS = 101
+#: Lead ruling 3 (catalogue §七之五): an ABS lower bound — on near-zero
+#: cross-sectional OLS residuals the rel criterion is meaningless (measured
+#: dust: abs ~1e-16 machine precision on ~1e-5 residuals, rel >> 5e-12), so
+#: |diff| <= 1e-12 is float dust regardless of rel.
+FLOAT_TAIL_ABS_TOL = 1e-12
+#: Lead ruling 3: the cell cap is tiered by factor kind. The 101 cap was
+#: calibrated on jump (bars-only); cross-sectional OLS residuals produce
+#: systematically more dust cells (measured vpq: 707), so the cross-sectional
+#: cap is 1000 (measured + headroom). Bars-only stays 101.
+FLOAT_TAIL_MAX_CELLS_CROSS_SECTIONAL = 1000
 
 #: ``threshold_flip_tail`` (catalogue §七之三): count factors (volume_peak) —
 #: rolling-sigma float noise (~4e-10) times an integer volume sitting on the
@@ -163,6 +199,32 @@ FLOAT_TAIL_MAX_CELLS = 101
 #: 600623.SH 2023-06-15..07-14. An amplitude > 1 or a larger cluster fails.
 THRESHOLD_FLIP_REL_TOL = 1e-2
 THRESHOLD_FLIP_MAX_CELLS = 25
+
+#: ``threshold_flip_contamination`` (catalogue §七之五, lead ruling 2) —
+#: CROSS-SECTIONAL factors ONLY. Mechanism: the same PRV critical-bar
+#: classification flip as ``threshold_flip_tail`` (rolling-sigma float noise
+#: x an integer volume on the threshold), but on a continuous-value factor
+#: (vpq: valley VWAP -> q_day -> qbar) the flip shows as a small continuous
+#: change on the directly affected symbol, and the per-date cross-sectional
+#: OLS coefficients propagate it as a second-order contamination of EVERY
+#: symbol on those dates. Why this is NOT an input-side change: (a) both
+#: cache ledgers had ZERO writes since the panel freeze (daily max
+#: fetched_at 2026-07-18, minute 2026-07-16; freeze 2026-07-24); (b) qbar is
+#: bitwise-identical across the old and new loading geometries (max
+#: 1.1e-16); (c) the same symbol+window flip is already registered as
+#: ``threshold_flip_tail`` for volume_peak — the frozen panel came from the
+#: pre-D2 code path, the served one from the migrated primitives.
+#: THE FULL PARAMETER SET of the class (lead ruling: cell-by-cell; any
+#: violation lands in ``unclassified_finite_vs_finite`` and fails):
+THRESHOLD_FLIP_CONTAMINATION_LO = pd.Timestamp("2023-06-01")
+THRESHOLD_FLIP_CONTAMINATION_HI = pd.Timestamp("2023-07-14")
+THRESHOLD_FLIP_CONTAMINATION_SYMBOL = "600623.SH"
+#: measured direct-symbol max |diff| 1.60e-04 -> bound 2e-04
+THRESHOLD_FLIP_CONTAMINATION_DIRECT_ABS_TOL = 2e-04
+#: measured contaminated-symbol max |diff| 5.5e-07 -> bound 1e-06
+THRESHOLD_FLIP_CONTAMINATION_CROSS_ABS_TOL = 1e-06
+#: measured 19,143 cells -> cap 20,000
+THRESHOLD_FLIP_CONTAMINATION_MAX_CELLS = 20_000
 
 EARLY_REGION_LO = pd.Timestamp("2021-07-01")
 EARLY_REGION_HI = pd.Timestamp("2021-10-31")
@@ -646,7 +708,8 @@ class PanelCellDiff:
     frozen: object
     new: object
     classification: str  # warmup_left_extension | float_reordering_tail |
-    # threshold_flip_tail | unclassified_* | unregistered_*
+    # threshold_flip_tail | threshold_flip_contamination |
+    # unclassified_* | unregistered_*
 
 
 @dataclass
@@ -675,11 +738,12 @@ def classify_panel_differences(
     factor_id: str,
     is_pooled: bool,
     lookback_depth: int,
+    is_cross_sectional: bool = False,
     tol: float = PANEL_REL_TOL,
     early_lo: pd.Timestamp = EARLY_REGION_LO,
     early_hi: pd.Timestamp = EARLY_REGION_HI,
     float_tail_tol: float = FLOAT_TAIL_REL_TOL,
-    float_tail_max: int = FLOAT_TAIL_MAX_CELLS,
+    float_tail_max: int | None = None,
     flip_rel_tol: float = THRESHOLD_FLIP_REL_TOL,
     flip_max: int = THRESHOLD_FLIP_MAX_CELLS,
 ) -> PanelDiff:
@@ -694,8 +758,22 @@ def classify_panel_differences(
     dates are under-warmed), the materializer saturates to the cache's real
     start. Bounded: the grid's first ``lookback_depth - 1`` trading dates.
     Pooled: the early region [early_lo, early_hi] with non-increasing
-    per-month counts.
+    per-month counts STARTING FROM THE FIRST FULL MONTH (lead ruling 1 —
+    the first month with warmup diffs is the partial month in which
+    residual/value existence starts and is exempt; later months stay gated).
+
+    ``is_cross_sectional`` (D4c ``stores_intermediate`` factors — the served
+    value is a per-date cross-sectional combine): enables the
+    ``threshold_flip_contamination`` class and the wider float-tail cap
+    (lead rulings 2 and 3); a bars-only factor never gets either.
+    ``float_tail_max=None`` resolves the cap from the factor kind.
     """
+    if float_tail_max is None:
+        float_tail_max = (
+            FLOAT_TAIL_MAX_CELLS_CROSS_SECTIONAL
+            if is_cross_sectional
+            else FLOAT_TAIL_MAX_CELLS
+        )
     result = PanelDiff(factor_id=factor_id)
     frozen = frozen.copy()
     frozen["date"] = pd.to_datetime(frozen["date"])
@@ -763,19 +841,49 @@ def classify_panel_differences(
             result.equal += 1
             continue
         if pd.notna(frozen_v) and pd.notna(new_v):
+            abs_diff = abs(frozen_v - new_v)
             denom = max(abs(frozen_v), abs(new_v))
-            rel = abs(frozen_v - new_v) / denom if denom > 0 else 0.0
+            rel = abs_diff / denom if denom > 0 else 0.0
             result.max_rel_diff = max(result.max_rel_diff, rel)
             if rel <= tol:
                 result.within_tolerance += 1
             elif _in_warmup(date, symbol):
                 _warmup_cell(date, symbol, frozen_v, new_v, "finite_to_finite")
-            elif rel <= float_tail_tol:
+            elif (
+                is_cross_sectional
+                and THRESHOLD_FLIP_CONTAMINATION_LO
+                <= date
+                <= THRESHOLD_FLIP_CONTAMINATION_HI
+            ):
+                # Lead ruling 2: INSIDE the registered window a cross-sectional
+                # cell must meet the contamination bounds — the direct symbol
+                # (600623.SH) at <= 2e-04, every other symbol at <= 1e-06.
+                # Any overshoot is UNCLASSIFIED here, never a fall-through to
+                # the generic tails (the window's mechanism is adjudicated;
+                # a bigger move inside it is a new fact, not float noise).
+                bound = (
+                    THRESHOLD_FLIP_CONTAMINATION_DIRECT_ABS_TOL
+                    if symbol == THRESHOLD_FLIP_CONTAMINATION_SYMBOL
+                    else THRESHOLD_FLIP_CONTAMINATION_CROSS_ABS_TOL
+                )
+                cls = (
+                    "threshold_flip_contamination"
+                    if abs_diff <= bound
+                    else "unclassified_finite_vs_finite"
+                )
+                result.diffs.append(
+                    PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
+                                  float(new_v), cls)
+                )
+            elif abs_diff <= FLOAT_TAIL_ABS_TOL or rel <= float_tail_tol:
+                # Lead ruling 3: |diff| <= 1e-12 is float dust REGARDLESS of
+                # rel (the rel criterion is meaningless on near-zero
+                # cross-sectional OLS residuals).
                 result.diffs.append(
                     PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
                                   float(new_v), "float_reordering_tail")
                 )
-            elif abs(frozen_v - new_v) == 1.0 and rel <= flip_rel_tol:
+            elif abs_diff == 1.0 and rel <= flip_rel_tol:
                 result.diffs.append(
                     PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
                                   float(new_v), "threshold_flip_tail")
@@ -802,13 +910,21 @@ def classify_panel_differences(
             )
 
     counts = [result.warmup_by_month[m] for m in sorted(result.warmup_by_month)]
-    result.warmup_monotonic = all(b <= a for a, b in zip(counts, counts[1:]))
+    # Lead ruling 1: the FIRST month with warmup diffs is the PARTIAL month in
+    # which residual/value existence starts (vpq: the frozen panel's first
+    # values exist only from ~07-29, so July is structurally partial) — it is
+    # EXEMPT from the monotonicity check. Months after it must still be
+    # non-increasing ("按月递减至零"); a violation fails the mode.
+    post_first = counts[1:]
+    result.warmup_monotonic = all(b <= a for a, b in zip(post_first, post_first[1:]))
     result.ok = (
         not any(d.classification.startswith("unclassified") or
                 d.classification.startswith("unregistered") for d in result.diffs)
         and result.warmup_monotonic
         and len(result.by_class("float_reordering_tail")) <= float_tail_max
         and len(result.by_class("threshold_flip_tail")) <= flip_max
+        and len(result.by_class("threshold_flip_contamination"))
+        <= THRESHOLD_FLIP_CONTAMINATION_MAX_CELLS
     )
     return result
 
@@ -968,22 +1084,27 @@ def run_panels_mode(config_path: str, factor_id: str, repo_root: Path) -> PanelD
         )
     factor = factor_registry.build(factor_id)
     frozen = pd.read_parquet(frozen_panel_path(factor_id, repo_root))
+    from factors.materialize import stores_intermediate
+
+    is_cross = stores_intermediate(factor)
     result = classify_panel_differences(
         served[factor_id],
         frozen,
         factor_id=factor_id,
         is_pooled=is_valid_day_pooled(factor),
         lookback_depth=int(factor.spec.lookback_depth),
+        is_cross_sectional=is_cross,
     )
     logger.info(
         "panels %s: rows frozen=%d new=%d equal=%d tol=%d warmup=%d(%s) "
-        "float_tail=%d threshold_flip=%d footprint=%d unclassified=%d "
-        "max_rel=%.3e live_calls=%d ok=%s",
+        "float_tail=%d threshold_flip=%d flip_contamination=%d footprint=%d "
+        "unclassified=%d max_rel=%.3e live_calls=%d ok=%s",
         factor_id, result.rows_frozen, result.rows_new, result.equal,
         result.within_tolerance, len(result.by_class("warmup_left_extension")),
         result.warmup_by_direction,
         len(result.by_class("float_reordering_tail")),
         len(result.by_class("threshold_flip_tail")),
+        len(result.by_class("threshold_flip_contamination")),
         result.nan_footprint_rows,
         len([d for d in result.diffs if d.classification.startswith("un")]),
         result.max_rel_diff, live_calls, result.ok,
@@ -1142,7 +1263,9 @@ __all__ = [
     "AnchorsDiff",
     "EARLY_REGION_HI",
     "EARLY_REGION_LO",
+    "FLOAT_TAIL_ABS_TOL",
     "FLOAT_TAIL_MAX_CELLS",
+    "FLOAT_TAIL_MAX_CELLS_CROSS_SECTIONAL",
     "FLOAT_TAIL_REL_TOL",
     "LeafDiff",
     "METRIC_REL_TOL",
@@ -1151,6 +1274,12 @@ __all__ = [
     "REGISTERED_EXTRA_SECTIONS",
     "ReconciliationError",
     "ReportDiff",
+    "THRESHOLD_FLIP_CONTAMINATION_CROSS_ABS_TOL",
+    "THRESHOLD_FLIP_CONTAMINATION_DIRECT_ABS_TOL",
+    "THRESHOLD_FLIP_CONTAMINATION_HI",
+    "THRESHOLD_FLIP_CONTAMINATION_LO",
+    "THRESHOLD_FLIP_CONTAMINATION_MAX_CELLS",
+    "THRESHOLD_FLIP_CONTAMINATION_SYMBOL",
     "THRESHOLD_FLIP_MAX_CELLS",
     "THRESHOLD_FLIP_REL_TOL",
     "check_new_pair_consistency",
