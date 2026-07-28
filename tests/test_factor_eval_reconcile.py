@@ -702,12 +702,14 @@ def test_panels_pooled_warmup_after_early_region_is_unclassified():
 
 
 def test_panels_pooled_warmup_non_monotonic_monthly_counts_fail():
-    # REVERSE (lead ruling 1): the first month is exempt as the partial
-    # month, but months AFTER it must still be non-increasing — {07:1,
-    # 08:1, 09:2} rises after the exempt month and must FAIL.
+    # REVERSE (lead ruling 1): the structurally anchored exempt month (July,
+    # where the frozen panel's FIRST finite value lives) is exempt, but
+    # months AFTER it must still be non-increasing — {07:1, 08:1, 09:2}
+    # rises after the exempt month and must FAIL.
     frozen = _frozen_panel(
         [
             ("2021-07-01", "A", NAN),
+            ("2021-07-15", "B", 9.9),  # first finite frozen value -> exempt 2021-07
             ("2021-08-02", "A", NAN),
             ("2021-09-01", "A", NAN), ("2021-09-02", "A", NAN),
         ],
@@ -716,6 +718,7 @@ def test_panels_pooled_warmup_non_monotonic_monthly_counts_fail():
     new = _new_series(
         [
             ("2021-07-01", "A", 1.0),
+            ("2021-07-15", "B", 9.9),
             ("2021-08-02", "A", 2.0),
             ("2021-09-01", "A", 3.0), ("2021-09-02", "A", 4.0),
         ]
@@ -723,27 +726,77 @@ def test_panels_pooled_warmup_non_monotonic_monthly_counts_fail():
     result = classify_panel_differences(
         new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
     )
+    assert result.warmup_exempt_month == "2021-07"
     assert not result.ok  # 2021-09 (2) > 2021-08 (1) violates 按月递减至零
     assert not result.warmup_monotonic
 
 
+def test_panels_pooled_warmup_zero_diff_exempt_month_does_not_reset_the_gate():
+    # REVIEW PROBE, reversed (LOW-1): the exemption is anchored to the
+    # STRUCTURAL partial month (the frozen panel's first-finite-value month),
+    # NOT to the first month that HAPPENS to have warmup diffs. Here July
+    # (the structural partial month) has ZERO diffs and the counts then rise
+    # {08:2, 09:5} — the positional "first month WITH diffs is exempt"
+    # reading let exactly this through; the structural anchor must FAIL it.
+    frozen = _frozen_panel(
+        [("2021-07-29", "B", 9.9)]  # first finite frozen value -> exempt 2021-07
+        + [(f"2021-08-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(2))]
+        + [(f"2021-09-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(5))],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-29", "B", 9.9)]
+        + [(f"2021-08-{d + 1:02d}", f"S{i}", 1.0) for i, d in enumerate(range(2))]
+        + [(f"2021-09-{d + 1:02d}", f"S{i}", 1.0) for i, d in enumerate(range(5))]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
+    )
+    assert result.warmup_exempt_month == "2021-07"
+    assert result.warmup_by_month == {"2021-08": 2, "2021-09": 5}
+    assert not result.warmup_monotonic
+    assert not result.ok
+
+
+def test_panels_pooled_warmup_all_nan_frozen_panel_gets_no_exemption():
+    # DEGENERATE: a frozen panel with NO finite value at all has no
+    # structural partial month to anchor to -> no exemption (conservative):
+    # {07:1, 08:2} rises from the very first month and must FAIL.
+    frozen = _frozen_panel(
+        [("2021-07-01", "A", NAN), ("2021-08-02", "A", NAN), ("2021-08-03", "A", NAN)],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-01", "A", 1.0), ("2021-08-02", "A", 2.0), ("2021-08-03", "A", 3.0)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
+    )
+    assert result.warmup_exempt_month is None
+    assert result.warmup_by_month == {"2021-07": 1, "2021-08": 2}
+    assert not result.warmup_monotonic
+    assert not result.ok
+
+
 def test_panels_pooled_warmup_partial_first_month_is_exempt_from_monotonicity():
-    # FORWARD (lead ruling 1): the FIRST month with warmup diffs is the
-    # partial month in which residual/value existence starts (vpq: the
-    # frozen panel's first values exist only from ~07-29) — it is exempt
-    # from the monotonicity check, so {07:5, 08:10, 09:3} passes even
-    # though 2021-08 > 2021-07.
+    # FORWARD (lead ruling 1): the exempt month is the month of the frozen
+    # panel's FIRST FINITE VALUE — the structural partial month in which
+    # residual/value existence starts (vpq: the frozen panel's first values
+    # exist only from ~07-29) — it is exempt from the monotonicity check, so
+    # {07:5, 08:10, 09:3} passes even though 2021-08 > 2021-07.
     rows = (
-        [(f"2021-07-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(5))]
+        [("2021-07-29", "B", 9.9)]  # first finite frozen value -> exempt 2021-07
+        + [(f"2021-07-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(5))]
         + [(f"2021-08-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(10))]
         + [(f"2021-09-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(3))]
     )
     frozen = _frozen_panel(rows, "f")
-    new = _new_series([(d, s, 1.0) for d, s, _v in rows])
+    new = _new_series([(d, s, v if pd.notna(v) else 1.0) for d, s, v in rows])
     result = classify_panel_differences(
         new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
     )
     assert result.ok, result.diffs
+    assert result.warmup_exempt_month == "2021-07"
     assert result.warmup_by_month == {"2021-07": 5, "2021-08": 10, "2021-09": 3}
     assert result.warmup_monotonic
 

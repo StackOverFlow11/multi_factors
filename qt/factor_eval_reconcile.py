@@ -26,13 +26,18 @@ gate that runs at every mode's entry:
        and a finite value on a row the frozen panel does not have);
      * valid-day-POOLED factor: the early region [2021-07-01, 2021-10-31],
        same three directions, and the per-month counts must be
-       non-increasing ("按月递减至零"; a violation fails the mode) STARTING
-       FROM THE FIRST FULL MONTH — lead ruling 1 (catalogue §七之五): the
-       first month with warmup diffs is the PARTIAL month in which
-       residual/value existence starts (vpq: the frozen panel's first values
-       exist only from ~07-29), so it is structurally exempt from the
-       monotonicity check; its cells must still sit inside the early region
-       with a registered direction. Months after it stay strictly gated.
+       non-increasing ("按月递减至零"; a violation fails the mode) with ONE
+       STRUCTURALLY ANCHORED EXEMPTION — lead ruling 1 (catalogue §七之五):
+       the exempt month is the month of the frozen panel's FIRST FINITE
+       VALUE, the structural partial month in which residual/value
+       existence starts (vpq: the frozen panel's first values exist only
+       from ~07-29), so it is exempt from the monotonicity check; its cells
+       must still sit inside the early region with a registered direction.
+       The anchor is read from the FROZEN GRID, never from where warmup
+       diffs happen to land: a zero-diff exempt month followed by a rising
+       shape still FAILS. If the frozen panel has no finite value at all
+       there is no exemption (the conservative direction). Months after the
+       exempt month stay strictly gated.
   2. ``float_reordering_tail`` — scattered finite-vs-finite cells with rel
      diff <= 5e-12 (rolling-correlation summation order; the JC1 1e-12 gate
      is the attributable floor, this is the measured tail above it), OR with
@@ -725,6 +730,7 @@ class PanelDiff:
     warmup_by_month: dict[str, int] = field(default_factory=dict)
     warmup_by_direction: dict[str, int] = field(default_factory=dict)
     warmup_monotonic: bool = True
+    warmup_exempt_month: str | None = None
     ok: bool = True
 
     def by_class(self, classification: str) -> list[PanelCellDiff]:
@@ -758,9 +764,12 @@ def classify_panel_differences(
     dates are under-warmed), the materializer saturates to the cache's real
     start. Bounded: the grid's first ``lookback_depth - 1`` trading dates.
     Pooled: the early region [early_lo, early_hi] with non-increasing
-    per-month counts STARTING FROM THE FIRST FULL MONTH (lead ruling 1 —
-    the first month with warmup diffs is the partial month in which
-    residual/value existence starts and is exempt; later months stay gated).
+    per-month counts, with ONE structurally anchored exemption (lead
+    ruling 1): the exempt month is the month of the frozen panel's FIRST
+    FINITE VALUE — the structural partial month in which residual/value
+    existence starts. The anchor comes from the frozen grid, not from
+    where diffs land; a frozen panel with no finite value gets no
+    exemption (conservative). Later months stay gated.
 
     ``is_cross_sectional`` (D4c ``stores_intermediate`` factors — the served
     value is a per-date cross-sectional combine): enables the
@@ -909,14 +918,28 @@ def classify_panel_differences(
                               "unclassified_nan_to_finite")
             )
 
-    counts = [result.warmup_by_month[m] for m in sorted(result.warmup_by_month)]
-    # Lead ruling 1: the FIRST month with warmup diffs is the PARTIAL month in
-    # which residual/value existence starts (vpq: the frozen panel's first
-    # values exist only from ~07-29, so July is structurally partial) — it is
-    # EXEMPT from the monotonicity check. Months after it must still be
+    # Lead ruling 1, STRUCTURALLY anchored: the exempt month is the month of
+    # the frozen panel's FIRST FINITE VALUE — the partial month in which
+    # residual/value existence starts (vpq: the frozen panel's first values
+    # exist only from ~07-29, so July is structurally partial). The anchor is
+    # read from the frozen GRID, never from where warmup diffs happen to land:
+    # an exempt month with ZERO diffs followed by a rising shape must still
+    # fail (the positional "first month WITH diffs" reading let exactly that
+    # through). A frozen panel with no finite value at all gets NO exemption
+    # (the conservative direction). Every other month's counts must be
     # non-increasing ("按月递减至零"); a violation fails the mode.
-    post_first = counts[1:]
-    result.warmup_monotonic = all(b <= a for a, b in zip(post_first, post_first[1:]))
+    if is_pooled:
+        finite_dates = frozen_s.index[frozen_s.notna().to_numpy()].get_level_values(
+            "date"
+        )
+        if len(finite_dates):
+            result.warmup_exempt_month = str(finite_dates.min().to_period("M"))
+    gated = [
+        result.warmup_by_month[m]
+        for m in sorted(result.warmup_by_month)
+        if m != result.warmup_exempt_month
+    ]
+    result.warmup_monotonic = all(b <= a for a, b in zip(gated, gated[1:]))
     result.ok = (
         not any(d.classification.startswith("unclassified") or
                 d.classification.startswith("unregistered") for d in result.diffs)
@@ -1097,11 +1120,13 @@ def run_panels_mode(config_path: str, factor_id: str, repo_root: Path) -> PanelD
     )
     logger.info(
         "panels %s: rows frozen=%d new=%d equal=%d tol=%d warmup=%d(%s) "
+        "exempt_month=%s "
         "float_tail=%d threshold_flip=%d flip_contamination=%d footprint=%d "
         "unclassified=%d max_rel=%.3e live_calls=%d ok=%s",
         factor_id, result.rows_frozen, result.rows_new, result.equal,
         result.within_tolerance, len(result.by_class("warmup_left_extension")),
         result.warmup_by_direction,
+        result.warmup_exempt_month,
         len(result.by_class("float_reordering_tail")),
         len(result.by_class("threshold_flip_tail")),
         len(result.by_class("threshold_flip_contamination")),

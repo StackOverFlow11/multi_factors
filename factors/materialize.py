@@ -56,6 +56,7 @@ dimension on the store key — was rejected.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -85,6 +86,8 @@ from factors.view_lag import (
     ex_date_mask,
     minute_decision_cutoff,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Extra calendar days loaded before the emit window so the exact trailing-trading
 #: -day trim always has enough history (covers weekends + holiday clusters + the
@@ -297,10 +300,20 @@ def _warmup_start(dates: pd.DatetimeIndex, emit_start: pd.Timestamp, warmup: int
     trading days precede ``emit_start`` the earliest available date is used
     (near the data start the emit rows are honestly under-warmed -> NaN, and
     single/batch stay consistent because both trim to the same earliest date).
+    The clamp is DISCLOSED with one INFO log line (the clamp fact, the actual
+    start date, and the declared warmup depth) — the saturation disclosures
+    set the convention that a silently narrowed load window is never silent.
     """
     order = dates.sort_values()
     pos = int(order.searchsorted(emit_start, side="left"))  # index of emit_start (or ins.)
     keep_idx = max(0, pos - int(warmup))
+    if pos - int(warmup) < 0 and len(order):
+        logger.info(
+            "warmup trim clamped to the data start %s: only %d trading day(s) "
+            "precede emit_start %s, fewer than the declared warmup depth %d "
+            "(emit rows near the data start are honestly under-warmed).",
+            order[0].date(), pos, pd.Timestamp(emit_start).date(), int(warmup),
+        )
     return order[keep_idx]
 
 
