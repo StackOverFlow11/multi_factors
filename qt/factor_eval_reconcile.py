@@ -795,7 +795,11 @@ def classify_panel_differences(
     ``new_only_finite`` direction explicitly requires frozen-symbol
     membership), so the class cannot exceed the ceiling by construction —
     an overshoot means the boundary/counting logic itself is broken and
-    fails the mode. AMPLITUDE inside the region stays UNBOUNDED by the
+    fails the mode. The "by construction" argument assumes (date, symbol)
+    index uniqueness on both sides; duplicate frozen rows overcount, and
+    the class then exceeds the ceiling and fails CLOSED (the safe
+    direction — bad data is never waved through). AMPLITUDE inside the
+    region stays UNBOUNDED by the
     standing ruling: for C5's geometry-reconciliation purpose that is
     acceptable, because the two loading geometries legitimately differ on
     exactly those cells (the old runner's partial pool vs the saturated
