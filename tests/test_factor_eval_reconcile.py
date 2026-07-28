@@ -397,6 +397,134 @@ def test_md_prose_WORD_change_does_not_pair_and_fails():
 
 
 # --------------------------------------------------------------------------- #
+# reports mode — registered add-Section additions (§七之四, D5 C4b vpq)
+# --------------------------------------------------------------------------- #
+def _with_neutralization_section(new: dict) -> dict:
+    """The unified runner's vpq artifact: one extra add-Section the frozen lacks."""
+    new = dict(new)
+    new["sections"] = [
+        *new["sections"],
+        {
+            "name": "neutralization_coverage",
+            "note": "neutralization (T-1 rev20): raw_rows=100 rev_paired=90 "
+            "residual_rows=80 dates=10/10 cross_section min/med/max=11/12.0/13 "
+            "mean_spearman(raw,rev20)=-0.1234",
+            "payload": {
+                "raw_rows": 100,
+                "rev_rows": 90,
+                "residual_rows": 80,
+                "dates_total": 10,
+                "dates_residualized": 10,
+                "cross_section_min": 11,
+                "cross_section_median": 12.0,
+                "cross_section_max": 13,
+                "raw_rev_spearman_mean": -0.1234,
+            },
+        },
+    ]
+    return new
+
+
+def test_json_registered_section_addition_passes_for_vpq():
+    new = _with_neutralization_section(_frozen_like())
+    result = diff_report_json(
+        _frozen_like(), new, name="t", strict=True, correction_expected=False,
+        registered_sections=("neutralization_coverage",),
+    )
+    assert result.ok, result.diffs
+    classes = {d.classification for d in result.diffs}
+    assert classes == {"registered_section_addition"}
+    assert all(d.path.startswith("sections[1]") for d in result.diffs)
+
+
+def test_json_extra_section_without_registration_fails():
+    new = _with_neutralization_section(_frozen_like())
+    result = diff_report_json(
+        _frozen_like(), new, name="t", strict=True, correction_expected=False
+    )
+    assert not result.ok
+    assert result.by_class("unregistered_addition")
+
+
+def test_json_section_addition_is_matched_by_NAME_not_index():
+    """A DIFFERENT section at the registered index stays unregistered."""
+    new = _with_neutralization_section(_frozen_like())
+    new["sections"][1]["name"] = "some_other_coverage"
+    result = diff_report_json(
+        _frozen_like(), new, name="t", strict=True, correction_expected=False,
+        registered_sections=("neutralization_coverage",),
+    )
+    assert not result.ok
+    # every leaf of the foreign section is unregistered, incl. the payload
+    assert len(result.by_class("unregistered_addition")) >= 10
+
+
+_NEUTRALIZATION_MD = (
+    "## + neutralization_coverage\n"
+    "\n"
+    "neutralization (T-1 rev20): raw_rows=100 rev_paired=90 residual_rows=80 "
+    "dates=10/10 cross_section min/med/max=11/12.0/13 "
+    "mean_spearman(raw,rev20)=-0.1234\n"
+    "\n"
+    "- cross_section_max: 13\n"
+    "- cross_section_median: 12.0\n"
+    "- cross_section_min: 11\n"
+    "- dates_residualized: 10\n"
+    "- dates_total: 10\n"
+    "- raw_rev_spearman_mean: -0.1234\n"
+    "- raw_rows: 100\n"
+    "- residual_rows: 80\n"
+    "- rev_rows: 90\n"
+)
+
+
+def test_md_registered_section_lines_pass_for_vpq():
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    prefixes = _registered_section_md_prefixes(("neutralization_coverage",))
+    result = diff_report_md(
+        _MD_OLD, _MD_OLD + _NEUTRALIZATION_MD, name="t", correction_expected=False,
+        registered_section_lines=prefixes,
+    )
+    assert result.ok, result.diffs
+    assert {d.classification for d in result.diffs} == {"registered_section_addition"}
+
+
+def test_md_section_lines_without_registration_fail():
+    result = diff_report_md(
+        _MD_OLD, _MD_OLD + _NEUTRALIZATION_MD, name="t", correction_expected=False
+    )
+    assert not result.ok
+    assert result.by_class("unregistered_addition")
+
+
+def test_md_section_prefixes_are_derived_from_the_dataclass_fields():
+    """A NeutralizationCoverage field rename breaks the registration loudly."""
+    from dataclasses import fields as dc_fields
+
+    from qt.factor_eval_disclosures import NeutralizationCoverage
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    prefixes = _registered_section_md_prefixes(("neutralization_coverage",))
+    for f in dc_fields(NeutralizationCoverage):
+        assert f"- {f.name}:" in prefixes
+    # the note prefix really is the render() format's head (not a stale copy)
+    cov = NeutralizationCoverage(
+        raw_rows=1, rev_rows=1, residual_rows=1, dates_total=1,
+        dates_residualized=1, cross_section_min=1, cross_section_median=1.0,
+        cross_section_max=1, raw_rev_spearman_mean=0.0,
+    )
+    assert cov.render().startswith("neutralization (T-1 rev20):")
+
+
+def test_md_section_prefixes_reject_an_unknown_section():
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    with pytest.raises(ValueError, match="no MD rendering is registered"):
+        _registered_section_md_prefixes(("bogus_coverage",))
+
+
+# --------------------------------------------------------------------------- #
 # panels mode — cell classification
 # --------------------------------------------------------------------------- #
 def _frozen_panel(rows: list[tuple[str, str, float]], fid: str) -> pd.DataFrame:
@@ -574,6 +702,66 @@ def test_panels_pooled_warmup_after_early_region_is_unclassified():
 
 
 def test_panels_pooled_warmup_non_monotonic_monthly_counts_fail():
+    # REVERSE (lead ruling 1): the structurally anchored exempt month (July,
+    # where the frozen panel's FIRST finite value lives) is exempt, but
+    # months AFTER it must still be non-increasing — {07:1, 08:1, 09:2}
+    # rises after the exempt month and must FAIL.
+    frozen = _frozen_panel(
+        [
+            ("2021-07-01", "A", NAN),
+            ("2021-07-15", "B", 9.9),  # first finite frozen value -> exempt 2021-07
+            ("2021-08-02", "A", NAN),
+            ("2021-09-01", "A", NAN), ("2021-09-02", "A", NAN),
+        ],
+        "f",
+    )
+    new = _new_series(
+        [
+            ("2021-07-01", "A", 1.0),
+            ("2021-07-15", "B", 9.9),
+            ("2021-08-02", "A", 2.0),
+            ("2021-09-01", "A", 3.0), ("2021-09-02", "A", 4.0),
+        ]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
+    )
+    assert result.warmup_exempt_month == "2021-07"
+    assert not result.ok  # 2021-09 (2) > 2021-08 (1) violates 按月递减至零
+    assert not result.warmup_monotonic
+
+
+def test_panels_pooled_warmup_zero_diff_exempt_month_does_not_reset_the_gate():
+    # REVIEW PROBE, reversed (LOW-1): the exemption is anchored to the
+    # STRUCTURAL partial month (the frozen panel's first-finite-value month),
+    # NOT to the first month that HAPPENS to have warmup diffs. Here July
+    # (the structural partial month) has ZERO diffs and the counts then rise
+    # {08:2, 09:5} — the positional "first month WITH diffs is exempt"
+    # reading let exactly this through; the structural anchor must FAIL it.
+    frozen = _frozen_panel(
+        [("2021-07-29", "B", 9.9)]  # first finite frozen value -> exempt 2021-07
+        + [(f"2021-08-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(2))]
+        + [(f"2021-09-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(5))],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-29", "B", 9.9)]
+        + [(f"2021-08-{d + 1:02d}", f"S{i}", 1.0) for i, d in enumerate(range(2))]
+        + [(f"2021-09-{d + 1:02d}", f"S{i}", 1.0) for i, d in enumerate(range(5))]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
+    )
+    assert result.warmup_exempt_month == "2021-07"
+    assert result.warmup_by_month == {"2021-08": 2, "2021-09": 5}
+    assert not result.warmup_monotonic
+    assert not result.ok
+
+
+def test_panels_pooled_warmup_all_nan_frozen_panel_gets_no_exemption():
+    # DEGENERATE: a frozen panel with NO finite value at all has no
+    # structural partial month to anchor to -> no exemption (conservative):
+    # {07:1, 08:2} rises from the very first month and must FAIL.
     frozen = _frozen_panel(
         [("2021-07-01", "A", NAN), ("2021-08-02", "A", NAN), ("2021-08-03", "A", NAN)],
         "f",
@@ -584,8 +772,33 @@ def test_panels_pooled_warmup_non_monotonic_monthly_counts_fail():
     result = classify_panel_differences(
         new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
     )
-    assert not result.ok  # 2021-08 (2) > 2021-07 (1) violates 按月递减至零
+    assert result.warmup_exempt_month is None
+    assert result.warmup_by_month == {"2021-07": 1, "2021-08": 2}
     assert not result.warmup_monotonic
+    assert not result.ok
+
+
+def test_panels_pooled_warmup_partial_first_month_is_exempt_from_monotonicity():
+    # FORWARD (lead ruling 1): the exempt month is the month of the frozen
+    # panel's FIRST FINITE VALUE — the structural partial month in which
+    # residual/value existence starts (vpq: the frozen panel's first values
+    # exist only from ~07-29) — it is exempt from the monotonicity check, so
+    # {07:5, 08:10, 09:3} passes even though 2021-08 > 2021-07.
+    rows = (
+        [("2021-07-29", "B", 9.9)]  # first finite frozen value -> exempt 2021-07
+        + [(f"2021-07-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(5))]
+        + [(f"2021-08-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(10))]
+        + [(f"2021-09-{d + 1:02d}", f"S{i}", NAN) for i, d in enumerate(range(3))]
+    )
+    frozen = _frozen_panel(rows, "f")
+    new = _new_series([(d, s, v if pd.notna(v) else 1.0) for d, s, v in rows])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
+    )
+    assert result.ok, result.diffs
+    assert result.warmup_exempt_month == "2021-07"
+    assert result.warmup_by_month == {"2021-07": 5, "2021-08": 10, "2021-09": 3}
+    assert result.warmup_monotonic
 
 
 def test_panels_float_reordering_tail_within_bounds_passes():
@@ -660,6 +873,157 @@ def test_panels_threshold_flip_beyond_cell_cap_fails():
     )
     assert not result.ok
     assert len(result.by_class("threshold_flip_tail")) == n
+
+
+# --------------------------------------------------------------------------- #
+# panels mode — threshold_flip_contamination (catalogue §七之五, lead ruling 2)
+# --------------------------------------------------------------------------- #
+def test_panels_threshold_flip_contamination_within_bounds_passes():
+    # FORWARD: the measured vpq shape — the direct symbol (600623.SH) at
+    # 1.6e-04 and cross-sectionally contaminated symbols at <= 5.5e-07, all
+    # inside [2023-06-01, 2023-07-14], on a CROSS-SECTIONAL factor.
+    rows = [
+        ("2023-06-01", "600623.SH", 1.0), ("2023-07-14", "600623.SH", 1.0),
+        ("2023-06-15", "S1", 2.0), ("2023-07-14", "S2", 3.0),
+    ]
+    deltas = [1.6e-04, -1.6e-04, 5.5e-07, -5.5e-07]
+    frozen = _frozen_panel(rows, "f")
+    new = _new_series([(d, s, v + dv) for (d, s, v), dv in zip(rows, deltas)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("threshold_flip_contamination")) == 4
+
+
+def test_panels_contamination_direct_symbol_above_2e_04_fails():
+    # REVERSE (bound 1 of 4): the direct symbol overshoots 2e-04 inside the
+    # window -> UNCLASSIFIED, never a fall-through to the generic tails.
+    frozen = _frozen_panel([("2023-06-15", "600623.SH", 1.0)], "f")
+    new = _new_series([("2023-06-15", "600623.SH", 1.0 + 3e-04)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+    assert not result.by_class("threshold_flip_contamination")
+
+
+def test_panels_contamination_other_symbol_above_1e_06_fails():
+    # REVERSE (bound 2 of 4): a contaminated symbol overshoots 1e-06 inside
+    # the window.
+    frozen = _frozen_panel([("2023-07-01", "S1", 1.0)], "f")
+    new = _new_series([("2023-07-01", "S1", 1.0 + 2e-06)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_contamination_outside_window_fails():
+    # REVERSE (bound 3 of 4): the same magnitude one day AFTER the window
+    # (2023-07-15) is a new fact, not the adjudicated mechanism.
+    frozen = _frozen_panel([("2023-07-15", "600623.SH", 1.0)], "f")
+    new = _new_series([("2023-07-15", "600623.SH", 1.0 + 1.6e-04)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_contamination_beyond_cell_cap_fails():
+    # REVERSE (bound 4 of 4): 20,020 in-window cells within the abs bounds
+    # (1001 symbols x 20 dates) exceed the 20,000 cap.
+    symbols = [f"S{i}" for i in range(1001)]
+    dates = [f"2023-06-{d + 1:02d}" for d in range(20)]
+    rows = [(d, s, 1.0) for d in dates for s in symbols]
+    frozen = _frozen_panel(rows, "f")
+    new = _new_series([(d, s, 1.0 + 5e-07) for d, s, _v in rows])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("threshold_flip_contamination")) == len(rows)
+
+
+def test_panels_contamination_not_available_for_bars_only_factor():
+    # REVERSE: the class is CROSS-SECTIONAL-ONLY — the same in-window cells
+    # on a bars-only factor (is_cross_sectional=False) are unclassified.
+    frozen = _frozen_panel([("2023-06-15", "600623.SH", 1.0)], "f")
+    new = _new_series([("2023-06-15", "600623.SH", 1.0 + 1.6e-04)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# panels mode — float-tail abs floor + tiered cap (lead ruling 3)
+# --------------------------------------------------------------------------- #
+def test_panels_float_dust_abs_floor_passes_regardless_of_rel():
+    # FORWARD: a near-zero cross-sectional OLS residual — abs 5e-13 (machine
+    # precision on a ~1e-6 residual) but rel ~5e-07 >> 5e-12. The abs floor
+    # (|diff| <= 1e-12) classes it as float dust on ANY factor kind.
+    frozen = _frozen_panel([("2022-11-03", "A", 1e-06)], "f")
+    new = _new_series([("2022-11-03", "A", 1e-06 + 5e-13)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("float_reordering_tail")) == 1
+
+
+def test_panels_float_dust_above_abs_floor_with_rel_overage_fails():
+    # REVERSE: abs 2e-12 > the 1e-12 floor AND rel ~2e-06 > 5e-12 — neither
+    # criterion catches it, so it is unclassified (the floor is not a
+    # tolerance widening).
+    frozen = _frozen_panel([("2022-11-03", "A", 1e-06)], "f")
+    new = _new_series([("2022-11-03", "A", 1e-06 + 2e-12)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_float_tail_cross_sectional_cap_allows_up_to_1000():
+    # FORWARD: 500 float-tail cells pass on a cross-sectional factor (the
+    # bars-only 101 cap would fail them — the cap is tiered, measured vpq
+    # 707 + headroom).
+    n = 500
+    frozen = _frozen_panel([(f"2022-11-{(i % 28) + 1:02d}", f"S{i}", 1.0) for i in range(n)], "f")
+    new = _new_series(
+        [(f"2022-11-{(i % 28) + 1:02d}", f"S{i}", 1.0 * (1 + 3e-12)) for i in range(n)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("float_reordering_tail")) == n
+
+
+def test_panels_float_tail_cross_sectional_cap_1001_fails():
+    # REVERSE: 1001 float-tail cells — one above the cross-sectional cap.
+    n = 1001
+    frozen = _frozen_panel([(f"2022-11-{(i % 28) + 1:02d}", f"S{i}", 1.0) for i in range(n)], "f")
+    new = _new_series(
+        [(f"2022-11-{(i % 28) + 1:02d}", f"S{i}", 1.0 * (1 + 3e-12)) for i in range(n)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("float_reordering_tail")) == n
 
 
 def test_panels_frozen_finite_new_nan_never_allowed():

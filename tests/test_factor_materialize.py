@@ -375,3 +375,34 @@ def test_build_horizon_config_from_live_config():
 def test_build_horizon_config_refuses_missing_attr():
     with pytest.raises(ValueError, match="fina_tail_days"):
         build_horizon_config(_PartialCacheCfg())
+
+
+# --------------------------------------------------------------------------- #
+# warmup-trim clamp disclosure (D5 C4 review NIT-1)
+# --------------------------------------------------------------------------- #
+def test_warmup_start_clamp_to_data_start_logs_one_disclosure_line(caplog):
+    import logging
+
+    from factors.materialize import _warmup_start
+
+    dates = pd.DatetimeIndex(["2021-07-01", "2021-07-02", "2021-07-05"])
+    with caplog.at_level(logging.INFO, logger="factors.materialize"):
+        keep = _warmup_start(dates, pd.Timestamp("2021-07-05"), warmup=20)
+    assert keep == pd.Timestamp("2021-07-01")  # clamped to the earliest date
+    lines = [r for r in caplog.records if "warmup trim clamped" in r.message]
+    assert len(lines) == 1
+    msg = lines[0].message
+    assert "2021-07-01" in msg  # the actual start date
+    assert "20" in msg  # the declared warmup depth
+
+
+def test_warmup_start_without_clamp_is_silent(caplog):
+    import logging
+
+    from factors.materialize import _warmup_start
+
+    dates = pd.DatetimeIndex([f"2021-07-{d:02d}" for d in range(1, 10)])
+    with caplog.at_level(logging.INFO, logger="factors.materialize"):
+        keep = _warmup_start(dates, pd.Timestamp("2021-07-09"), warmup=3)
+    assert keep == pd.Timestamp("2021-07-06")
+    assert not [r for r in caplog.records if "warmup trim clamped" in r.message]

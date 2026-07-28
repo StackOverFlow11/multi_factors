@@ -62,9 +62,10 @@ from data.clean.intraday_schema import DEFAULT_DECISION_TIME
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from factors import registry as factor_registry
 from factors.base import Factor
-from factors.compute.minute.binding import combine_minute_stats
+from factors.compute.minute.binding import combine_minute_stats, minute_combine_daily_spec
 from factors.materialize import (
     MaterializeSources,
+    combine_daily_panel,
     materialize_intermediate_range,
     materialize_range,
     payload_columns,
@@ -305,6 +306,9 @@ def _assemble(
     payload_by_id: dict[str, pd.DataFrame],
     dates: pd.DatetimeIndex,
     symbols: list[str],
+    *,
+    sources: MaterializeSources,
+    view: View,
 ) -> pd.DataFrame:
     """Slice each stored payload to (dates x universe) and stack the values.
 
@@ -314,6 +318,11 @@ def _assemble(
     universe standardizes them" is a property of the READ, not of the artifact —
     so the same store serves a 12-name and a 24-name request correctly, and
     neither can pollute the other (D4c / design revision A2).
+
+    A factor whose combine DECLARES a daily input (valley_price_quantile's
+    reversal neutralization) is handed the view-lagged, trailing-trimmed daily
+    panel built by ``materialize.combine_daily_panel`` from the injected sources
+    — the declaration is consulted, never an isinstance dispatch (red line #5).
     """
     symbol_set = set(map(str, symbols))
     columns: dict[str, pd.Series] = {}
@@ -326,7 +335,16 @@ def _assemble(
             sym = payload.index.get_level_values(SYMBOL_LEVEL)
             sliced = payload[d.isin(dates) & pd.Index(sym).isin(symbol_set)]
         if stores_intermediate(factor):
-            columns[fid] = combine_minute_stats(factor, sliced)
+            if sliced.empty:
+                columns[fid] = pd.Series([], index=_empty_index(), dtype=float, name=fid)
+            elif minute_combine_daily_spec(factor) is not None:
+                daily = combine_daily_panel(
+                    factor, view=view, symbols=symbols, emit_start=dates.min(),
+                    emit_end=dates.max(), sources=sources,
+                )
+                columns[fid] = combine_minute_stats(factor, sliced, daily=daily)
+            else:
+                columns[fid] = combine_minute_stats(factor, sliced)
         elif sliced.empty:
             columns[fid] = pd.Series([], index=_empty_index(), dtype=float, name=fid)
         else:
@@ -389,7 +407,7 @@ def panel(
             sources=sources, view=resolved_view, cutoff=cutoff,
             diagnostics=diagnostics,
         )
-    return _assemble(factors, payload_by_id, dates, symbols)
+    return _assemble(factors, payload_by_id, dates, symbols, sources=sources, view=resolved_view)
 
 
 def cross_section(
@@ -414,4 +432,51 @@ def cross_section(
     )
 
 
-__all__ = ["DecisionPoint", "cross_section", "panel"]
+def stored_payload(
+    factor_id: str,
+    universe: Iterable[str],
+    decisions: list[DecisionPoint],
+    *,
+    store: FactorValueStore,
+    sources: MaterializeSources,
+    view: object = View.DECISION,
+    basis: object = ReturnBasis.EXEC_TO_EXEC,
+    params_by_id: Mapping[str, Mapping[str, object]] | None = None,
+) -> pd.DataFrame:
+    """The factor's STORED payload over ``decisions`` x ``universe`` (read-through).
+
+    For most factors the payload IS the value; for a cross-sectional factor it is
+    the per-symbol INTERMEDIATE whose combine runs at read-assembly (D4c). A
+    disclosure that is reduced from the raw intermediate alongside the served
+    value (valley_price_quantile's NeutralizationCoverage — catalogue §三
+    mechanism B) reads the intermediate HERE: the same key + fingerprint +
+    coverage engine as :func:`panel`, sliced to exactly this request, so the
+    disclosure can never be computed from a payload the value read did not also
+    see, and never from a superset a wider earlier request happened to leave in
+    the store.
+    """
+    resolved_view, _ = require_legal_pairing(view, basis)
+    symbols = requested_universe(universe)
+    if not decisions:
+        raise ValueError("stored_payload() needs at least one DecisionPoint.")
+    cutoff = _uniform_cutoff(decisions)
+    dates = pd.DatetimeIndex(
+        sorted({pd.Timestamp(d.date).normalize() for d in decisions})
+    )
+    factor = _build_factor(factor_id, params_by_id)
+    fp = _fingerprint(factor)
+    key = store_key(
+        factor, view=resolved_view.value, params=(params_by_id or {}).get(factor_id)
+    )
+    payload = _ensure_coverage(
+        factor, key, fp, dates=dates, symbols=symbols, store=store,
+        sources=sources, view=resolved_view, cutoff=cutoff, diagnostics=None,
+    )
+    if payload.empty:
+        return payload
+    d = payload.index.get_level_values(DATE_LEVEL)
+    sym = payload.index.get_level_values(SYMBOL_LEVEL)
+    return payload[d.isin(dates) & pd.Index(sym).isin(set(map(str, symbols)))]
+
+
+__all__ = ["DecisionPoint", "cross_section", "panel", "stored_payload"]

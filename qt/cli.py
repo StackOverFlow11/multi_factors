@@ -634,6 +634,7 @@ def _cmd_run_factor_eval_reconcile(args: argparse.Namespace) -> int:
                 f"warmup={len(result.by_class('warmup_left_extension'))} "
                 f"float_tail={len(result.by_class('float_reordering_tail'))} "
                 f"threshold_flip={len(result.by_class('threshold_flip_tail'))} "
+                f"flip_contamination={len(result.by_class('threshold_flip_contamination'))} "
                 f"nan_footprint={result.nan_footprint_rows} "
                 f"unclassified={len(unclassified)} "
                 f"max_rel_diff={result.max_rel_diff:.3e}"

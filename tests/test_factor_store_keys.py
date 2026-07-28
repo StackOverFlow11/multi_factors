@@ -69,13 +69,20 @@ def test_params_hash_none_equals_empty():
 # --------------------------------------------------------------------------- #
 # code_hash: the shared set + module identity
 # --------------------------------------------------------------------------- #
-def test_shared_set_is_the_enumerated_four_plus_ops():
+def test_shared_set_is_the_enumerated_five_plus_ops():
     labels = {label for label, _ in shared_set_labeled_files()}
     assert "factors.compute.minute.primitives" in labels
+    # D5 C4b: the minute binding carries load-bearing value semantics the
+    # column-shape validation cannot see, so it is folded into every code hash.
+    assert "factors.compute.minute.binding" in labels
     assert "factors.base" in labels
     assert "factors.spec" in labels
     # factors.ops expands to every module under the package
     assert any(label.startswith("factors.ops") for label in labels)
+    # ...and files that merely CONSUME the binding (engine/service) are NOT
+    # folded: a code-hash invalidation must stay a factor-semantics event.
+    assert "factors.materialize" not in labels
+    assert "factors.service" not in labels
 
 
 def test_code_hash_is_stable():
@@ -124,6 +131,72 @@ def test_code_hash_changes_when_a_shared_set_member_content_changes(tmp_path):
 
     # And the real code_hash equals the un-mutated fold (shared set + one-hop IS in it).
     assert code_hash(factor) == base
+
+
+def test_code_hash_changes_when_the_binding_content_changes(tmp_path):
+    """MUTATION (D5 C4b): a content change to the minute BINDING module must move
+    the code hash — the binding decides which compute function a factor is bound
+    to and how the per-symbol/combine split runs, and the D4c shape validation
+    covers only the intermediate's column names, so a value-carrying binding edit
+    was previously invisible to the store key. An engine file that merely
+    CONSUMES the binding (factors/materialize.py) must stay OUT of the fold.
+    """
+    factor = _vol()
+    folded = _folded_items(factor)
+    base = content_hash_of_labeled_files(folded)
+
+    target_label = "factors.compute.minute.binding"
+    mutated_items = []
+    swapped = False
+    for label, path in folded:
+        if label == target_label:
+            copy = tmp_path / "binding_mutated.py"
+            copy.write_bytes(Path(path).read_bytes() + b"\n# D5 C4b mutation\n")
+            mutated_items.append((label, copy))
+            swapped = True
+        else:
+            mutated_items.append((label, path))
+    assert swapped, "shared set unexpectedly lacks the binding module"
+    assert content_hash_of_labeled_files(mutated_items) != base
+
+    # And the real code_hash equals the un-mutated fold (the binding IS in it).
+    assert code_hash(factor) == base
+    # Control: the engine consumer is not folded, so an edit to IT moves nothing.
+    assert all(label != "factors.materialize" for label, _ in folded)
+
+
+def test_binding_mutation_moves_every_registered_factor_code_hash(tmp_path):
+    """The binding fold is GLOBAL: mutating its content moves EVERY registered
+    factor's code hash (over-invalidate-safe — the one-time wholesale store
+    invalidation this causes is disclosed in the code_hash module docstring).
+    """
+    from factors.registry.registry import DEFAULT_REGISTRY
+
+    classes = {
+        entry.factor_cls
+        for entry in list(DEFAULT_REGISTRY._exact.values())
+        + list(DEFAULT_REGISTRY._prefixes)
+    }
+    assert len(classes) >= 14, "the closing factor set alone has 14 members"
+    binding_label, binding_path = "factors.compute.minute.binding", None
+    for label, path in shared_set_labeled_files():
+        if label == binding_label:
+            binding_path = path
+    assert binding_path is not None
+    mutated_copy = tmp_path / "binding_mutated.py"
+    mutated_copy.write_bytes(Path(binding_path).read_bytes() + b"\n# D5 C4b mutation\n")
+
+    for cls in classes:
+        folded = _folded_items(cls)
+        base = content_hash_of_labeled_files(folded)
+        mutated = [
+            (label, mutated_copy if label == binding_label else path)
+            for label, path in folded
+        ]
+        assert content_hash_of_labeled_files(mutated) != base, (
+            f"{cls.__name__}: a binding content change did not move its code hash"
+        )
+        assert code_hash(cls) == base
 
 
 def test_one_hop_folds_a_composed_module_but_not_unrelated_modules():

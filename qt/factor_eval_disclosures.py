@@ -66,6 +66,7 @@ from data.clean.intraday_volume_prv import VOLUME_PRV_MIN_CLASSIFIABLE
 from data.clean.schema import DATE_LEVEL
 from factors.compute.minute.peak_ridge_amount_ratio import PeakRidgeAmountRatioFactor
 from factors.compute.minute.ridge_minute_return import RidgeMinuteReturnFactor
+from factors.compute.minute.valley_price_quantile import ValleyPriceQuantileFactor
 from factors.compute.minute.valley_ridge_vwap_ratio import ValleyRidgeVwapRatioFactor
 
 # Percentiles reported for the realized ridge/peak-bar distributions.
@@ -632,13 +633,33 @@ def disclosure_binding_for(factor) -> DisclosureBinding | None:
     return _DISCLOSURE_BY_CLASS.get(type(factor))
 
 
+#: The add-Section name of the ONE mechanism-B disclosure (catalogue §三).
+NEUTRALIZATION_SECTION_NAME = "neutralization_coverage"
+
+#: factor class -> publishes the NeutralizationCoverage disclosure. Mechanism B
+#: (catalogue §三): NO diagnostics sink — the disclosure is reduced from the
+#: raw + reversal + residual panels AFTER the loop, so it cannot ride
+#: :func:`disclosure_binding_for`'s sink table. Class-keyed like that table,
+#: so the two mechanisms agree by construction.
+_NEUTRALIZATION_DISCLOSURE_CLASSES: frozenset[type] = frozenset(
+    {ValleyPriceQuantileFactor}
+)
+
+
+def publishes_neutralization_disclosure(factor) -> bool:
+    """True iff ``factor`` publishes the mechanism-B NeutralizationCoverage."""
+    return type(factor) in _NEUTRALIZATION_DISCLOSURE_CLASSES
+
+
 __all__ = [
     "DisclosureBinding",
+    "NEUTRALIZATION_SECTION_NAME",
     "NeutralizationCoverage",
     "PeakCoverage",
     "RidgeCoverage",
     "RidgeReturnCoverage",
     "disclosure_binding_for",
+    "publishes_neutralization_disclosure",
     "summarize_neutralization",
     "summarize_peak_coverage",
     "summarize_ridge_coverage",

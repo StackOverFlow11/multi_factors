@@ -42,7 +42,6 @@ from factors import registry as factor_registry
 from factors.base import Factor
 from factors.compute.minute import binding as binding_module
 from factors.compute.minute.binding import (
-    _DEFERRED,
     _MINUTE_BINDINGS,
     _MINUTE_STREAM_BINDINGS,
     CROSS_SECTIONAL_MINUTE_FACTORS,
@@ -73,7 +72,7 @@ def _streamed_factor_ids() -> tuple[str, ...]:
     round-trip through ``factor_registry.build`` below is what proves it.
     """
     ids = []
-    for cls in _MINUTE_STREAM_BINDINGS:
+    for cls in _MINUTE_BINDINGS:
         factor_id = cls().name
         rebuilt = factor_registry.build(factor_id)
         assert type(rebuilt) is cls, (
@@ -84,8 +83,9 @@ def _streamed_factor_ids() -> tuple[str, ...]:
     return tuple(sorted(ids))
 
 
-#: The bars-only minute factors (valley_price_quantile is the deliberately
-#: deferred eleventh — it also needs the daily panel, so it has no bars binding).
+#: The bars-only minute factors. valley_price_quantile is NOT here: its combine
+#: declares a daily-panel input (D5 C4b), so it has no bars-only whole-factor
+#: binding; it IS stream-bound and reconciled in tests/test_minute_binding_vpq.py.
 STREAMED_FACTOR_IDS = _streamed_factor_ids()
 
 #: The BOUNDED minute factors (fixed trailing trim, no saturation expansion) —
@@ -247,12 +247,31 @@ def test_split_stages_reproduce_the_whole_factor_call(factor_id):
     assert n > 0, f"{factor_id}: vacuous (no finite values on the fixture)"
 
 
-def test_stream_bindings_cover_exactly_the_bound_minute_factors():
-    """A factor bound at one granularity but not the other is a readable error."""
-    assert set(_MINUTE_STREAM_BINDINGS) == set(_MINUTE_BINDINGS)
+def test_stream_bindings_cover_the_bars_only_factors_plus_the_daily_bound_one():
+    """The stream table is the bars-only table PLUS exactly valley_price_quantile.
+
+    The ten bars-only factors must live in BOTH tables (a factor bound at one
+    granularity but not the other is a readable error); valley_price_quantile is
+    stream-only BY DESIGN — its combine declares a daily-panel input, so it has
+    no bars-only whole-factor form — and that daily declaration is asserted here
+    rather than assumed (D5 C4b).
+    """
+    from factors.compute.minute.binding import minute_combine_daily_spec
+    from factors.compute.minute.valley_price_quantile import ValleyPriceQuantileFactor
+
+    assert set(_MINUTE_STREAM_BINDINGS) - set(_MINUTE_BINDINGS) == {
+        ValleyPriceQuantileFactor
+    }
+    assert set(_MINUTE_BINDINGS) < set(_MINUTE_STREAM_BINDINGS)
     assert CROSS_SECTIONAL_MINUTE_FACTORS <= set(_MINUTE_STREAM_BINDINGS)
     assert is_cross_sectional_minute(IntradayAmpCutFactor())
     assert not is_cross_sectional_minute(factor_registry.build("volume_peak_count_20"))
+    # The daily declaration is on EXACTLY the one stream-only factor.
+    for cls in _MINUTE_STREAM_BINDINGS:
+        factor = cls()
+        assert (minute_combine_daily_spec(factor) is not None) is (
+            cls is ValleyPriceQuantileFactor
+        ), cls.__name__
 
 
 def test_every_minute_factor_class_is_classified_by_a_binding_table():
@@ -288,11 +307,11 @@ def test_every_minute_factor_class_is_classified_by_a_binding_table():
             ):
                 defined[obj] = path.name
 
-    classified = set(_MINUTE_STREAM_BINDINGS) | set(_DEFERRED)
+    classified = set(_MINUTE_STREAM_BINDINGS)
     assert defined, "found no minute factor classes — the walk itself is broken"
     unclassified = {cls.__name__: defined[cls] for cls in defined if cls not in classified}
     assert not unclassified, (
-        f"minute factor(s) in neither _MINUTE_STREAM_BINDINGS nor _DEFERRED: "
+        f"minute factor(s) missing from _MINUTE_STREAM_BINDINGS: "
         f"{unclassified} — they would vanish from every parametrized "
         f"reconciliation without a single test going red"
     )
@@ -303,13 +322,18 @@ def test_every_minute_factor_class_is_classified_by_a_binding_table():
     )
 
 
-def test_deferred_factor_still_raises_readably_through_the_split_stages():
-    """valley_price_quantile is deferred: both stages must say so, not mis-compute."""
+def test_whole_factor_entry_point_still_refuses_the_daily_bound_factor():
+    """valley_price_quantile has NO bars-only whole-factor form (its combine
+    needs the daily panel): the whole-factor entry point must refuse it
+    readably, while its stream stage works (the binding proper is reconciled in
+    tests/test_minute_binding_vpq.py)."""
     factor = factor_registry.build("valley_price_quantile_20")
-    with pytest.raises(NotImplementedError, match="valley_price_quantile"):
-        minute_stats_from_bars(factor, DENSE)
-    with pytest.raises(NotImplementedError, match="valley_price_quantile"):
-        combine_minute_stats(factor, pd.DataFrame())
+    with pytest.raises(KeyError, match="valley_price_quantile"):
+        minute_raw_from_bars(factor, DENSE)
+    assert not minute_stats_from_bars(factor, DENSE).empty
+    # ...and the daily-declared combine refuses a missing daily panel readably.
+    with pytest.raises(ValueError, match="daily"):
+        combine_minute_stats(factor, minute_stats_from_bars(factor, DENSE))
 
 
 # --------------------------------------------------------------------------- #

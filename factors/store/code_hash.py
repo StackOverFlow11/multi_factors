@@ -5,7 +5,10 @@ A stored factor value is only valid while the CODE that produced it is unchanged
 
 1. the factor's own module file;
 2. the ENUMERATED shared set every factor leans on:
-   ``{factors.compute.minute.primitives, factors.ops.*, factors.base, factors.spec}``;
+   ``{factors.compute.minute.primitives, factors.compute.minute.binding,
+   factors.ops.*, factors.base, factors.spec}`` (the binding joined in D5 C4b —
+   it carries load-bearing value semantics the column-shape validation cannot
+   see);
 3. the factor module's DIRECT project-internal imports that are NOT already in the
    shared set — folded ONE HOP, module-granular, derived from the AST (never a
    manual list, red line #6).
@@ -55,8 +58,19 @@ from factors.store.hashing import content_hash_of_labeled_files
 # --------------------------------------------------------------------------- #
 #: Single-module members (design §3.4). ``factors.ops`` is a PACKAGE, expanded to
 #: every ``*.py`` under it (so a new operator file joins the set automatically).
+#: ``factors.compute.minute.binding`` joined in D5 C4b: it carries LOAD-BEARING
+#: value semantics (which compute function a factor is bound to, the per-symbol /
+#: combine split, the declared daily combine input), while the D4c shape
+#: validation covers only the intermediate's COLUMN NAMES — so a value-carrying
+#: edit to the binding moved no store key and neither guard could see it.
+#: Folding it here invalidates every factor's key on a binding edit
+#: (over-invalidate-safe; the direction the store prefers). ONE-TIME EFFECT,
+#: disclosed: the first fold changes all 11 minute factors' keys (and the daily
+#: factors' — the shared set is global), so a factor store filled before the
+#: fold is wholesale invalid and must be recomputed once.
 _SHARED_SET_SINGLE_MODULES: tuple[str, ...] = (
     "factors.compute.minute.primitives",
+    "factors.compute.minute.binding",
     "factors.base",
     "factors.spec",
 )

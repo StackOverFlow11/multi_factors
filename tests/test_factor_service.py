@@ -810,3 +810,64 @@ def test_panel_requires_uniform_cutoff():
                   [DecisionPoint(date=DATES[40], cutoff="14:50:00"),
                    DecisionPoint(date=DATES[41], cutoff="14:45:00")],
                   store=store, sources=src)
+
+
+# --------------------------------------------------------------------------- #
+# stored_payload: the disclosure read-back of the STORED payload (D5 C4b)
+# --------------------------------------------------------------------------- #
+def test_stored_payload_value_factor_matches_the_panel_read_and_is_request_scoped():
+    """For a value-payload factor the stored payload IS the value, read back
+    through the same engine; a narrower request is served the SLICE, never the
+    superset a wider earlier request left in the store."""
+    dates = list(DATES[40:56])
+    with tempfile.TemporaryDirectory() as td:
+        store = FactorValueStore(td)
+        src = _sources()
+        decisions = [DecisionPoint(date=d) for d in dates]
+        served = panel(["momentum_20"], SYMS, decisions, store=store, sources=src)
+
+        payload = service_mod.stored_payload(
+            "momentum_20", SYMS, decisions, store=store, sources=src
+        )
+        got = payload["momentum_20"].sort_index()
+        want = served["momentum_20"].sort_index()
+        assert got.index.equals(want.index)
+        gv, wv = got.to_numpy(), want.to_numpy()
+        assert np.array_equal(np.isnan(gv), np.isnan(wv))
+        assert np.array_equal(gv[~np.isnan(gv)], wv[~np.isnan(wv)])  # BIT identical
+
+        sub = service_mod.stored_payload(
+            "momentum_20", SYMS[:1], decisions[:4], store=store, sources=src
+        )
+        assert set(map(str, sub.index.get_level_values("symbol"))) == {SYMS[0]}
+        assert set(sub.index.get_level_values("date")) == set(dates[:4])
+
+
+def test_stored_payload_cross_sectional_factor_is_the_intermediate_no_recompute():
+    """For the cross-sectional factor the payload is the per-symbol INTERMEDIATE
+    (v_mean/v_std — never the combined value), and a warm store is NOT
+    re-materialized for the disclosure read (zero minute-bars reads)."""
+    dates = list(DATES[42:54])
+    with tempfile.TemporaryDirectory() as td:
+        store = FactorValueStore(td)
+        src = _sources()
+        decisions = [DecisionPoint(date=d) for d in dates]
+        served = panel(
+            ["intraday_amp_cut_10"], SYMS, decisions, store=store, sources=src
+        )
+        calls_after_panel = src.minute.calls
+        assert calls_after_panel > 0  # the cold fill really read bars
+
+        payload = service_mod.stored_payload(
+            "intraday_amp_cut_10", SYMS, decisions, store=store, sources=src
+        )
+        assert src.minute.calls == calls_after_panel  # warm: NO re-materialization
+        assert set(payload.columns) == {"v_mean", "v_std"}
+        assert not payload.empty
+        # the per-symbol intermediate really carried values on this fixture...
+        assert payload["v_mean"].notna().any()
+        # ...and the served value is the COMBINE of exactly this payload, not a
+        # column of it (all-NaN here: 2 symbols < the combine's cross-section
+        # floor — the served shape is the combine's business, D4c)
+        assert "intraday_amp_cut_10" not in payload.columns
+        assert served["intraday_amp_cut_10"].isna().all()
