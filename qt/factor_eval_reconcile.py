@@ -93,13 +93,18 @@ gate that runs at every mode's entry:
 
 * ``--mode anchors`` — the service path produces engine values for the
   ``hand_anchors_d2.json`` rows (same real-cache bars) and reconciles against
-  the HAND side. The hand side was computed with the OLD loading geometry
-  (left edge anchored at 2021-07-01), so a mismatch inside the warmup
-  boundary is the registered ``warmup_left_extension`` class — for bounded
-  factors the frozen grid's first ``lookback_depth - 1`` trading dates (the
-  harness never had this class for bounded factors before §七之三; the
-  first-run failures were exactly this asymmetry). EXPECTED SIGNAL (do not
-  misread as a regression): jump's NON-warmup rows must reconcile — the
+  the HAND side. A cross-sectional factor (``stores_intermediate`` — its
+  served value is a function of the requested universe, D4c) is served over
+  the FULL config universe, because the hand side was computed over it and a
+  5-name request both empties the panel (below the combine's cross-section
+  floor) and asks a different question; per-symbol factors keep the cheap
+  anchor-symbols-only request. The hand side was computed with the OLD
+  loading geometry (left edge anchored at 2021-07-01), so a mismatch inside
+  the warmup boundary is the registered ``warmup_left_extension`` class —
+  for bounded factors the frozen grid's first ``lookback_depth - 1`` trading
+  dates (the harness never had this class for bounded factors before §七之三;
+  the first-run failures were exactly this asymmetry). EXPECTED SIGNAL (do
+  not misread as a regression): jump's NON-warmup rows must reconcile — the
   service carries the corrected, truncated definition, so the frozen-engine
   mismatches on random dates go GREEN here (rel ~1e-15). A jump mismatch
   outside the warmup boundary FAILS this mode.
@@ -1077,14 +1082,26 @@ def run_anchors_mode(config_path: str, factor_id: str, repo_root: Path) -> Ancho
         Path(cfg.output.log_dir) / f"factor_eval_reconcile_anchors_{factor_id}.log",
         name="qt.factor_eval_reconcile",
     )
-    symbols = sorted({row["symbol"] for row in rows})
+    anchor_symbols = sorted({row["symbol"] for row in rows})
     value_factors = ()
     if factor_id in ("value_ep", "value_bp"):
         from qt.factor_eval_runner import _build_book_factors
 
         value_factors = tuple(_build_book_factors())
+    # A CROSS-SECTIONAL factor's served value is a function of the REQUESTED
+    # universe (D4c: the combine runs at read-assembly over exactly what was
+    # asked for) — and the hand anchors were computed over the FULL evaluation
+    # universe. Requesting just the anchor symbols both empties the panel
+    # (5 names < the combine's cross-section floor -> all-NaN, measured on
+    # valley_price_quantile) and asks a different question than the hand side
+    # answered. So such a factor is served over the full config universe and
+    # the anchor cells are looked up inside it; per-symbol factors keep the
+    # cheap anchor-only request (their values are universe-independent).
+    from factors.materialize import stores_intermediate
+
+    request_symbols = None if stores_intermediate(factor) else anchor_symbols
     store, sources, _panel, symbols, _cache = _build_bundle(
-        cfg, logger, symbols=symbols, value_factors=value_factors
+        cfg, logger, symbols=request_symbols, value_factors=value_factors
     )
     decisions = [factor_service.DecisionPoint(pd.Timestamp(row["date"])) for row in rows]
     served = factor_service.panel(

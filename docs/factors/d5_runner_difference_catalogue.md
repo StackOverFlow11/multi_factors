@@ -395,3 +395,41 @@ anchors 腿同判据：hand 侧按旧几何算、service 侧按新几何算，�
    `reversal_20`（未滞后面板）、新几何是 `reversal_20_shifted`（决策滞后面板），两者
    **逐位等价**（C4b 双侧钉死），故平移面板本身**不产生**类外差异；左端 22 个交易日窗口的
    零 NaN 差异已在 fixture 层钉死。若真实缓存对账出现类外差异，如实全报。
+
+### 七之五、C4b vpq 真实对账（2026-07-28 实测）——panels 腿差异分解与 anchors 修复登记
+
+真实对账（cache-only，`stk_mins_live_calls=0`；store 由本次 run 冷填，pooled 饱和加载
+1132s）：reports 4/4 OK；anchors 修复后 5/5（ok=4 + warmup=1）；**panels FAIL，差异已全量
+分解如下（三块，类外 0 未解释）——具名类边界修订留待 lead 裁定，本节先如实登记事实**：
+
+1. **warmup 块（24,516 格，全 finite→finite，2021-07-30→2021-09-30）**：即登记的
+   `warmup_left_extension`（anchor 截断 vs 饱和左延）。**但 vpq 的逐月计数结构性地
+   从部分月开始**（2021-07: 902 → 2021-08: 19,975 → 2021-09: 3,639）——冻结面板的残差
+   要到 ~07-29 才存在（qbar 需 ≥10 有效日 + rev20 需 21 收盘），7 月天然非满月，pooled
+   规则「按月非递增」在首月必假。monotonicity 起点需按因子推迟（如从首个满月起算）。
+2. **600623.SH 分类翻转块（19,143 格，2023-06-01→2023-07-14）**：直接受影响行只有
+   **600623.SH 一只、30 个交易日**（max |Δ|=1.60e-04）；其余 19,113 格（959 票 ≤ 5.5e-07）
+   是该股输入变化经**逐日 OLS 系数**污染全截面的二阶效应。与 C4 首轮登记的
+   `threshold_flip_tail`（volume_peak_count，**同一 symbol 同一窗口** 600623.SH
+   2023-06-15..07-14）同族：D2 迁移前后 PRV 分类在临界 bar 上的翻转（rolling-sigma 浮点
+   噪声 × 整数成交量），在 vpq 身上表现为 valley VWAP→q_day→qbar 的连续值变化 +
+   截面污染，而非 ±1 计数。qbar 本身新旧几何**逐位一致**（max 1.1e-16，旧锚 vs 饱和
+   三票抽样 141 格）；日频/分钟缓存 ledger 自冻结（2026-07-24）前零写入（日频 max
+   fetched_at 2026-07-18、分钟 2026-07-16），**输入侧无变化**——差异源是冻结面板由
+   pre-D2 旧代码路径产生、当前引擎是迁移后 primitives。
+3. **浮点尘（~232 格）**：rel>5e-12 中 abs ≤ 1e-8 的部分（残差量级 ~1e-5，rel 判据在
+   近零值上失真，abs 实为 ~1e-16 机器精度）；加上 rel ≤ 5e-12 的 707 格**超过**
+   `FLOAT_TAIL_MAX_CELLS`=101 的既有上限。`float_reordering_tail` 的 cap 是按 jump 实测
+   标定的，对截面 OLS 残差（近零值多、格子多）系统性偏紧——需要 abs 下限或按因子标定。
+
+**anchors 模式修复（已落地）**：截面因子（`stores_intermediate`）的 served 值是请求
+universe 的函数，只请求锚行 symbol（5 只 < `min_cross_section`=10）会全 NaN——改为
+**按 config 全 universe 服务再查锚格**（per-symbol 因子保持锚-only 请求）。实测：修复前
+4/5 行 service=NaN（假 FAIL），修复后 4 行精确对上（2 行 rel=0.0、2 行 ~1e-15）+ 1 行
+warmup_end（2021-07-30，rel 2.61e-01，属登记 warmup 类）。**intraday_amp_cut 有同样性质，
+C5 全量对账会踩到同一处**——修复是通用的。
+
+**第三条路（shifted vs legacy rev）在真实全 universe 上逐位一致**：served（引擎 shifted
+路径）vs `residualize_on_reversal(qbar, reversal_20(未滞后面板))`，1,135,926 格
+max|diff|=0.0、NaN 集合互差为 0——平移面板左端效应在真实缓存上**不存在**，与 fixture
+层钉死一致。
