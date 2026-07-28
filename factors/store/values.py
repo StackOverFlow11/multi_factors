@@ -62,7 +62,8 @@ from factors.store.keys import StoreKey
 _FINGERPRINT_META_KEY = b"factor_store_fingerprint"
 
 
-def _payload_columns(frame: pd.DataFrame) -> tuple[str, ...]:
+def payload_columns(frame: pd.DataFrame) -> tuple[str, ...]:
+    """The payload columns of a stored frame (the artifact's shape signature)."""
     return tuple(str(c) for c in frame.columns)
 
 
@@ -161,7 +162,7 @@ class FactorValueStore:
             if (
                 existing is None
                 or existing.empty
-                or _payload_columns(existing) != _payload_columns(frame)
+                or payload_columns(existing) != payload_columns(frame)
             ):
                 combined = frame
             else:
@@ -205,7 +206,7 @@ class FactorValueStore:
         """
         if frame is None:
             return None
-        columns = _payload_columns(frame)
+        columns = payload_columns(frame)
         if columns != (key.factor_id,):
             raise ValueError(
                 f"{key.factor_id}: the stored payload carries {list(columns)}, not the "
@@ -266,7 +267,7 @@ class FactorValueStore:
         frame = self._read_raw(key)
         if frame is None:
             return None
-        if _payload_columns(frame) != tuple(str(c) for c in columns):
+        if payload_columns(frame) != tuple(str(c) for c in columns):
             return None  # different payload shape: a miss, never a partial read
         stored = self.stored_fingerprint(key)
         if stored is None:
@@ -289,4 +290,4 @@ class FactorValueStore:
         return frame[symbols.isin(valid_symbols)]
 
 
-__all__ = ["FactorValueStore"]
+__all__ = ["FactorValueStore", "payload_columns"]

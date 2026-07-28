@@ -29,7 +29,14 @@ Mismatch action (§3.3 修订 2): the whole column of every mismatched symbol is
 re-computed (not locally patched), classified by the factor's ``adjustment``:
 ``price_level`` mismatches are EXPECTED (an ex-date re-based the level — the
 key/fingerprint invalidation path); ``returns_invariant`` / ``none`` mismatches
-mean upstream data actually changed and are recorded LOUDLY.
+mean upstream data actually changed and are recorded LOUDLY. A stored NaN cell
+recomputing to finite is NOT a mismatch: it is a footprint fill (the D4c fill
+recorded the cell as covered-but-empty and the cache later warmed), counted in
+the result notes and absorbed, never ``revision_detected``.
+
+A CROSS-SECTIONAL factor's stored payload (its per-symbol intermediate, D4c) is
+refused up front with :class:`IntermediatePayloadNotWiredError`: the incremental
+path is deliberately not wired for that shape (D5 C4 deferral).
 
 Layering: ``factors.store`` never imports ``qt`` (red line #10); this uses stdlib
 + numpy/pandas + the availability-policy leaf + the sibling store modules.
@@ -48,12 +55,28 @@ from data.availability_policy import Adjustment, revision_horizon
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from factors.base import Factor
 from factors.store.keys import StoreKey
-from factors.store.values import FactorValueStore
+from factors.store.values import FactorValueStore, payload_columns
 
 #: recompute(emit_start, end, warmup) -> Series over [emit_start, end], having
 #: loaded ``warmup`` trading days of input history before emit_start. emit_start
 #: is None to compute from the very beginning (a cold store / full column).
 RecomputeFn = Callable[[pd.Timestamp | None, pd.Timestamp, int], pd.Series]
+
+
+class IntermediatePayloadNotWiredError(ValueError):
+    """``tail_recompute`` reached a CROSS-SECTIONAL factor's stored payload.
+
+    Such a factor stores its universe-independent per-symbol INTERMEDIATE
+    (several columns), not its value (D4c). The incremental path is NOT WIRED
+    for that shape: the recompute callable returns a value Series, the overlap
+    validation is value-level, and the footprint semantics of an intermediate
+    payload are unhandled. That is a DELIBERATE deferral (D5 C4 — the eval
+    runner reaches these factors through the service's read-through, which
+    never calls tail_recompute), tracked for the 21:00-update story; wiring it
+    (an intermediate-returning recompute fn, footprint-aware overlap
+    validation, post-combine value validation) is its own engine work. See
+    ``factors.materialize.make_recompute_fn``.
+    """
 
 
 @dataclass(frozen=True)
@@ -132,8 +155,28 @@ def _symbols(series: pd.Series) -> pd.Index:
     return series.index.get_level_values(SYMBOL_LEVEL)
 
 
-def _mismatched_symbols(stored_overlap: pd.Series, new_overlap: pd.Series) -> list[str]:
-    """Symbols whose overlap values differ bit-for-bit (NaN-aware) between the two."""
+def _classify_overlap_differences(
+    stored_overlap: pd.Series, new_overlap: pd.Series
+) -> tuple[list[str], list[str]]:
+    """Split NaN-aware overlap differences into REVISIONS vs footprint FILLS.
+
+    Returns ``(revised_symbols, filled_symbols)``:
+
+    * REVISED — a stored FINITE value recomputed to a different value or to
+      NaN. The store asserted a value and the recompute contradicts it: that is
+      an upstream data revision (loud for ``returns_invariant``/``none``,
+      expected for ``price_level``).
+    * FILLED — a stored NaN recomputed to a FINITE value. A stored NaN asserts
+      NO value, so it cannot be contradicted: D4c writes explicit NaN
+      "footprint" rows for the cells a fill covered but the factor produced
+      nothing for (``factors.service._record_fill_footprint``), and those cells
+      legitimately turn finite once the upstream cache warms. Reading that as a
+      revision misdiagnoses the store's own bookkeeping as upstream data
+      churn, so it is classified separately (counted in the result notes,
+      never ``revision_detected``) and the recomputed value simply replaces
+      the NaN. An honestly under-warmed stored NaN (near the data start)
+      filling later is the same shape and gets the same treatment.
+    """
     old = stored_overlap.sort_index(kind="mergesort")
     new = new_overlap.reindex(old.index)
     ov = old.to_numpy(dtype=float)
@@ -142,9 +185,12 @@ def _mismatched_symbols(stored_overlap: pd.Series, new_overlap: pd.Series) -> li
     both_nan = np.isnan(ov) & np.isnan(nv)
     differs = (~(ov == nv)) & ~both_nan
     if not differs.any():
-        return []
-    syms = old.index.get_level_values(SYMBOL_LEVEL)[differs]
-    return sorted(set(map(str, syms)))
+        return [], []
+    old_nan = np.isnan(ov)
+    syms = old.index.get_level_values(SYMBOL_LEVEL)
+    revised = sorted(set(map(str, syms[differs & ~old_nan])))
+    filled = sorted(set(map(str, syms[differs & old_nan])))
+    return revised, filled
 
 
 def tail_recompute(
@@ -165,7 +211,19 @@ def tail_recompute(
     (classified by ``adjustment``), and append the new tail.
     """
     w_dep = factor_lookback_depth(factor)
-    stored = store.read(key)
+    stored_frame = store.read_frame(key)
+    if stored_frame is not None and not stored_frame.empty:
+        columns = payload_columns(stored_frame)
+        if columns != (key.factor_id,):
+            raise IntermediatePayloadNotWiredError(
+                f"{key.factor_id}: the stored payload carries {list(columns)}, not the "
+                f"single value column {key.factor_id!r} — a cross-sectional factor "
+                f"stores its per-symbol INTERMEDIATE, and the incremental path is NOT "
+                f"WIRED for it (deliberate deferral, D5 C4; tracked for the "
+                f"21:00-update story). The eval runner reaches this factor through the "
+                f"service's read-through, which never calls tail_recompute."
+            )
+    stored = None if stored_frame is None else stored_frame[key.factor_id].rename(key.factor_id)
     if stored is None or stored.empty:
         full = recompute(None, today, w_dep)
         store.write(key, full, fingerprint=fingerprint)
@@ -213,11 +271,22 @@ def tail_recompute(
     tail = recomputed[rec_dates > last]
 
     stored_overlap = stored[_dates(stored) >= emit_start]
-    mismatched = _mismatched_symbols(stored_overlap, new_overlap)
+    mismatched, filled = _classify_overlap_differences(stored_overlap, new_overlap)
 
     is_price_level = factor.spec.adjustment is Adjustment.PRICE_LEVEL
     notes: list[str] = []
     recolumned: tuple[str, ...] = ()
+
+    if filled:
+        # NOT a revision: a stored NaN asserts no value (D4c fill footprint or an
+        # honestly under-warmed row), so it cannot be contradicted. The combined
+        # assembly below already replaces those cells with the recomputed values.
+        notes.append(
+            f"filled_after_footprint: {len(filled)} symbol(s) had stored NaN "
+            f"cells (fill footprint / under-warm) recompute to finite values — "
+            f"absorbing the recomputed values; this is NOT an upstream data "
+            f"revision."
+        )
 
     # assemble: untouched history + recomputed overlap/tail for normal symbols.
     head = stored[_dates(stored) < emit_start]
@@ -266,6 +335,7 @@ def tail_recompute(
 __all__ = [
     "CacheHorizonConfig",
     "IncrementalResult",
+    "IntermediatePayloadNotWiredError",
     "RecomputeFn",
     "endpoint_horizons",
     "factor_lookback_depth",

@@ -54,7 +54,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from analytics.eval import (
@@ -86,6 +85,9 @@ from factors.compute.intraday_derived import ValleyRidgeVwapRatioFactor
 from factors.spec import FactorSpec
 from qt.config import RootConfig, load_config
 from qt.exec_basis_eval import ExecBasisEvaluation, run_exec_basis_evaluation
+# The ridge-scarcity disclosure MOVED to qt.factor_eval_disclosures (the single
+# home, D5 C4); re-exported here so historical import paths keep working.
+from qt.factor_eval_disclosures import RidgeCoverage, summarize_ridge_coverage
 from qt.pipeline import (
     _build_cache,
     _build_universe,
@@ -99,138 +101,6 @@ from qt.pipeline import (
 
 _LOGGER_NAME = "qt.eval_valley_ridge_vwap_ratio"
 _REPORT_STEM = "eval_valley_ridge_vwap_ratio"
-
-# Percentiles reported for the realized ridge-bar distribution (the scarcity disclosure).
-_RIDGE_PCTL = (0, 10, 25, 50, 75, 90, 100)
-
-
-# --------------------------------------------------------------------------- #
-# Ridge-scarcity coverage (measured, never assumed)
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class RidgeCoverage:
-    """Realized ridge-bar distribution + day-validity rate over the whole universe.
-
-    Built from the per-day diagnostics the factor emits, so the numbers describe the
-    days the factor actually saw. ``symbol_days`` counts EVERY symbol-day with visible
-    bars, including the leading warm-up days that have no same-slot baseline yet;
-    ``classifiable_days`` counts those that clear PR-F's classifiable floor. The
-    headline ``validity_rate`` is taken over ``classifiable_days``, because a day with
-    no baseline fails for a PR-F warm-up reason rather than a ridge-scarcity one and
-    would otherwise make the ridge gate look worse than it is — both denominators are
-    reported so the reader can check that framing. The gate-failure counts are NOT
-    mutually exclusive (a thin day can fail several gates at once) and are reported for
-    shape, not as a partition.
-    """
-
-    symbol_days: int
-    classifiable_days: int
-    valid_days: int
-    ridge_percentiles: tuple[tuple[int, float], ...]
-    ridge_mean: float
-    valley_median: float
-    days_below_ridge_gate: int
-    days_below_valley_gate: int
-    days_below_classifiable_gate: int
-    # Counterfactual: how many days would survive if the ridge leg were held to the
-    # VALLEY floor. Quantifies exactly what the lowered threshold buys.
-    valid_days_at_valley_floor: int
-    # The gates this run actually applied, so the disclosure can never describe the
-    # module defaults while the run used something else.
-    min_ridge_bars: int = VALLEY_RIDGE_MIN_RIDGE_BARS
-    min_valley_bars: int = VALLEY_RIDGE_MIN_VALLEY_BARS
-    min_classifiable: int = VOLUME_PRV_MIN_CLASSIFIABLE
-
-    @property
-    def validity_rate(self) -> float:
-        """Valid days as a share of CLASSIFIABLE days (see the class docstring)."""
-        if not self.classifiable_days:
-            return float("nan")
-        return self.valid_days / self.classifiable_days
-
-    def render(self) -> str:
-        """One-line, secret-free summary for the run log and the CLI."""
-        pctl = " ".join(f"p{p}={v:.0f}" for p, v in self.ridge_percentiles)
-        return (
-            f"ridge scarcity: symbol_days={self.symbol_days} "
-            f"classifiable_days={self.classifiable_days} "
-            f"valid_days={self.valid_days} ({self.validity_rate:.1%} of classifiable) "
-            f"ridge_bars[{pctl} mean={self.ridge_mean:.1f}] "
-            f"valley_bars_median={self.valley_median:.0f} "
-            f"below_ridge_gate({self.min_ridge_bars})="
-            f"{self.days_below_ridge_gate} "
-            f"below_valley_gate({self.min_valley_bars})="
-            f"{self.days_below_valley_gate} "
-            f"below_classifiable_gate({self.min_classifiable})="
-            f"{self.days_below_classifiable_gate} "
-            f"valid_if_ridge_floor_were_{self.min_valley_bars}="
-            f"{self.valid_days_at_valley_floor}"
-        )
-
-
-def summarize_ridge_coverage(
-    frames: list[pd.DataFrame],
-    *,
-    min_ridge_bars: int = VALLEY_RIDGE_MIN_RIDGE_BARS,
-    min_valley_bars: int = VALLEY_RIDGE_MIN_VALLEY_BARS,
-    min_classifiable: int = VOLUME_PRV_MIN_CLASSIFIABLE,
-) -> RidgeCoverage:
-    """Reduce the per-symbol day-level diagnostics to the scarcity disclosure.
-
-    The three floors must be the ones the RUN applied, not the module defaults —
-    otherwise the disclosure would describe gates that were never enforced.
-    """
-    gates = dict(
-        min_ridge_bars=min_ridge_bars,
-        min_valley_bars=min_valley_bars,
-        min_classifiable=min_classifiable,
-    )
-    empty = tuple((p, float("nan")) for p in _RIDGE_PCTL)
-    if not frames:
-        return RidgeCoverage(
-            symbol_days=0,
-            classifiable_days=0,
-            valid_days=0,
-            ridge_percentiles=empty,
-            ridge_mean=float("nan"),
-            valley_median=float("nan"),
-            days_below_ridge_gate=0,
-            days_below_valley_gate=0,
-            days_below_classifiable_gate=0,
-            valid_days_at_valley_floor=0,
-            **gates,
-        )
-    diag = pd.concat(frames, ignore_index=True)
-    classifiable = diag["classifiable_bars"].to_numpy(dtype=float)
-    valid = diag["valid"].to_numpy(dtype=bool)
-    # The bar-count distributions describe the days that had a fair chance: a warm-up day
-    # with no same-slot baseline has zero of everything and would only drag the
-    # percentiles towards zero for a reason that has nothing to do with ridge scarcity.
-    scored = classifiable >= min_classifiable
-    ridge = diag.loc[scored, "ridge_bars"].to_numpy(dtype=float)
-    valley = diag.loc[scored, "valley_bars"].to_numpy(dtype=float)
-    # The counterfactual holds the ridge leg to the valley floor, leaving every other
-    # gate exactly as it was.
-    at_valley_floor = valid & (
-        diag["ridge_bars"].to_numpy(dtype=float) >= min_valley_bars
-    )
-    return RidgeCoverage(
-        symbol_days=int(len(diag)),
-        classifiable_days=int(scored.sum()),
-        valid_days=int(valid.sum()),
-        ridge_percentiles=(
-            tuple((p, float(np.percentile(ridge, p))) for p in _RIDGE_PCTL)
-            if ridge.size
-            else empty
-        ),
-        ridge_mean=float(ridge.mean()) if ridge.size else float("nan"),
-        valley_median=float(np.median(valley)) if valley.size else float("nan"),
-        days_below_ridge_gate=int((ridge < min_ridge_bars).sum()),
-        days_below_valley_gate=int((valley < min_valley_bars).sum()),
-        days_below_classifiable_gate=int((~scored).sum()),
-        valid_days_at_valley_floor=int(at_valley_floor.sum()),
-        **gates,
-    )
 
 
 # --------------------------------------------------------------------------- #

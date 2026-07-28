@@ -332,3 +332,107 @@ def test_schema_version_change_triggers_full_recompute_not_a_revision(tmp_path, 
     # the store now carries the new schema and the full column
     assert store.stored_fingerprint(_key())["schema_version"] == "SCHEMA_NEW"
     assert len(store.read(_key())) == len(full)
+
+
+# --------------------------------------------------------------------------- #
+# D4c footprint fills: stored NaN -> finite is NOT an upstream revision (D5 C4)
+# --------------------------------------------------------------------------- #
+def _seed_with_footprint_nans(tmp_path, nan_symbol="AAA", nan_tail_days=3):
+    """Seed a store whose overlap carries explicit NaN FOOTPRINT rows.
+
+    Mirrors ``factors.service._record_fill_footprint``: a fill covered these
+    cells and the factor produced nothing, so the store holds NaN. After the
+    upstream cache warms, the same recompute returns FINITE values there.
+    """
+    dates = _business_dates(30)
+    raw = _raw_panel(dates)
+    clean = _make_recompute(raw)
+    today = dates[-1]
+    full = clean(None, today, _TRANSITIVE_DEPTH)
+    cutoff = dates[-6]
+    seeded = full[full.index.get_level_values("date") <= cutoff].copy()
+    d = seeded.index.get_level_values("date")
+    s = seeded.index.get_level_values("symbol")
+    footprint = (s == nan_symbol) & (d > cutoff - pd.Timedelta(days=nan_tail_days))
+    assert footprint.any()
+    seeded[footprint] = np.nan
+    store = FactorValueStore(tmp_path)
+    store.write(_key(), seeded, fingerprint=_fp())
+    return store, clean, full, today
+
+
+def test_stored_nan_refilled_is_a_footprint_fill_not_a_revision(tmp_path, caplog):
+    store, clean, full, today = _seed_with_footprint_nans(tmp_path)
+    factor = _make_factor(lookback_depth=_TRANSITIVE_DEPTH, adjustment="returns_invariant")
+    logger = logging.getLogger("test.tailrecompute")
+    with caplog.at_level(logging.WARNING):
+        result = tail_recompute(
+            store, _key(), factor, recompute=clean, today=today,
+            horizon_cfg=CacheHorizonConfig(refresh_recent_days=1), fingerprint=_fp(),
+            logger=logger,
+        )
+    # a stored NaN asserts no value, so refilling it is NOT a revision ...
+    assert result.revision_detected is False
+    assert result.mismatched_symbols == ()
+    assert result.recolumned_symbols == ()
+    # ... it is counted as a footprint fill ...
+    assert any("filled_after_footprint: 1 symbol(s)" in n for n in result.notes)
+    assert not any("REVISION detected" in r.message for r in caplog.records)
+    # ... and the recomputed values are absorbed (the store now matches batch).
+    assert _nan_aware_equal(store.read(_key()), full)
+
+
+def test_finite_to_nan_is_still_a_loud_revision(tmp_path, caplog):
+    dates = _business_dates(30)
+    raw = _raw_panel(dates)
+    clean = _make_recompute(raw)
+    today = dates[-1]
+    full = clean(None, today, _TRANSITIVE_DEPTH)
+    store = FactorValueStore(tmp_path)
+    cutoff = dates[-6]
+    store.write(_key(), full[full.index.get_level_values("date") <= cutoff], fingerprint=_fp())
+
+    def nan_out(emit_start, end, warmup):
+        s = clean(emit_start, end, warmup).copy()
+        s[s.index.get_level_values("symbol") == "AAA"] = np.nan
+        return s
+
+    factor = _make_factor(lookback_depth=_TRANSITIVE_DEPTH, adjustment="returns_invariant")
+    with caplog.at_level(logging.WARNING):
+        result = tail_recompute(
+            store, _key(), factor, recompute=nan_out, today=today,
+            horizon_cfg=CacheHorizonConfig(refresh_recent_days=1), fingerprint=_fp(),
+            logger=logging.getLogger("test.tailrecompute"),
+        )
+    # a stored FINITE value contradicted (here: erased to NaN) IS a revision.
+    assert "AAA" in result.mismatched_symbols
+    assert result.revision_detected is True
+    assert any("REVISION detected" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# cross-sectional intermediate payload: explicitly NOT WIRED (D5 C4 deferral)
+# --------------------------------------------------------------------------- #
+def test_intermediate_payload_raises_the_named_not_wired_error(tmp_path):
+    from factors.store.incremental import IntermediatePayloadNotWiredError
+
+    dates = _business_dates(10)
+    idx = pd.MultiIndex.from_product([dates, ["AAA", "BBB"]], names=["date", "symbol"])
+    frame = pd.DataFrame(
+        {"stat_a": np.arange(len(idx), dtype=float), "stat_b": 1.0}, index=idx
+    )
+    store = FactorValueStore(tmp_path)
+    store.write_frame(_key(), frame, fingerprint=_fp())
+
+    factor = _make_factor(lookback_depth=_TRANSITIVE_DEPTH)
+    recompute = _make_recompute(_raw_panel(dates))
+    with pytest.raises(IntermediatePayloadNotWiredError, match="NOT") as excinfo:
+        tail_recompute(
+            store, _key(), factor, recompute=recompute, today=dates[-1],
+            horizon_cfg=CacheHorizonConfig(refresh_recent_days=1), fingerprint=_fp(),
+        )
+    msg = str(excinfo.value)
+    assert "per-symbol INTERMEDIATE" in msg
+    assert "deliberate deferral" in msg
+    # a ValueError subclass, so any legacy ``except ValueError`` still catches it.
+    assert isinstance(excinfo.value, ValueError)

@@ -829,6 +829,15 @@ def make_recompute_fn(
     (``emit_start is None`` -> from ``data_start``). The same trailing-trim floor
     as ``materialize_range`` keeps the incremental overlap bit-identical to a full
     column (the D3 batch=incremental invariant).
+
+    CROSS-SECTIONAL FACTORS (``stores_intermediate``) are NOT WIRED here: this
+    fn returns the VALUE Series, while the store persists the per-symbol
+    intermediate for them, so ``tail_recompute`` refuses their payload up front
+    with ``factors.store.incremental.IntermediatePayloadNotWiredError`` — a
+    deliberate D5 C4 deferral, not an oversight. Wiring it (an
+    intermediate-returning recompute fn, footprint semantics in the overlap
+    validation, and a post-combine value-level check) is its own engine work,
+    tracked for the 21:00-update story.
     """
 
     def _recompute(emit_start, end, warmup) -> pd.Series:

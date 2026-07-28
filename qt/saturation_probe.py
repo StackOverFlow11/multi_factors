@@ -63,7 +63,7 @@ from data.clean.intraday_schema import RAW_INTRADAY_FREQ
 from factors import registry as factor_registry
 from factors.compute.minute.binding import minute_raw_from_bars
 from factors.materialize import MaterializeSources, materialize_range
-from qt.factor_hotpath_smoke import CACHE_MINUTE_DATA_START, CacheMinuteProvider
+from qt.factor_eval_providers import CACHE_MINUTE_DATA_START, CacheMinuteProvider
 
 DEFAULT_CACHE_ROOT = "artifacts/cache/tushare/v1"
 #: The frozen D1 panel is on the exact evaluation data plane, so its symbol list

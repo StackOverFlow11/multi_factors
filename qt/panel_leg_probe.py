@@ -49,7 +49,7 @@ import pandas as pd
 from data.availability_policy import View
 from factors import registry as factor_registry
 from factors.materialize import MaterializeSources, materialize_range
-from qt.factor_hotpath_smoke import CacheMinuteProvider
+from qt.factor_eval_providers import CacheMinuteProvider
 
 DEFAULT_CACHE_ROOT = "artifacts/cache/tushare/v1"
 DEFAULT_PANEL_DIR = "artifacts/refactor_baseline/panels"

@@ -317,3 +317,64 @@ unknown-never-convicts / N_eff CI / exploratory 封顶 Watch 的全部规则。�
 ⚠️ 因此 C5 对账在**逐字节**层面对 22 份 md/json 一定不成立，能成立的是 **IC / ICIR /
 分位价差 / verdict 的值级对账**加上「JSON 差异恰为上表三项 + §七 的 spec 四键」这个
 **结构性**断言。把「逐字节相同」当作 C5 的通过条件会让人在这里误判为回归。
+
+### 七之三、C4 首轮对账（3 因子 × 3 模式）暴露的判据缺口 —— 补登记（2026-07-27）
+
+C4 harness（`qt/factor_eval_reconcile.py`）首轮对账 minute_ideal_amp_10 / jump_amount_corr_20 /
+volume_peak_count_20 三模式全红。独立调查（证据脚本 `/tmp/q1_dump.py` / `/tmp/q1_twogeom.py` /
+`/tmp/q1b_tail.py`，首轮日志 `/tmp/c4_reconcile_run.log`）把**全部**差异归到两个根因，均为
+**加载几何/浮点层面、非取值 bug**。本节把判据补全为具名类，每条都有边界与反例约束
+（类外差异仍非零退出——未编目的差异算失败）。
+
+**认知修正（本节最重要的一条）**：C4 handoff §3 ① 曾预测「bounded 因子 vs D1 baseline 预期
+**零差异**，因为旧 runner 也逐票读全窗口」。**这个预测错了**：旧 runner 的「全窗口」左端同样
+锚在 `data.start`（2021-07-01）——即 **anchor 截断**；新 materializer 的饱和加载左延到分钟缓存
+真实起点（2015-01-05）。首轮「预期全绿却没绿」的源头是这个预测，**不是引擎 bug**。
+
+**根因一：warmup 左延漂移（设计内）**，具名类 `warmup_left_extension`，bounded 与 pooled 通用，
+覆盖**全部三个方向**（frozen-NaN→new-finite、finite→finite 即 partial pool→full pool、
+new-only finite 行——旧 runner 网格根本没发射的那些行）：
+
+| 形态 | 边界（实测精确） | 首轮实测 |
+|---|---|---|
+| bounded（minute_ideal_amp_10 / jump_amount_corr_20） | 冻结网格**前 w−1 个交易日**（w=该因子 `lookback_depth`；第 w 日已完全 warmup）。边界取**网格左端**而非 per-symbol 首日：旧 runner 对每个 symbol 的加载都锚在 `data.start`，只有评估窗左端欠 warmup；晚上市/停牌票的首日两种几何看到同一批 bar，不可能有差异 | NaN→finite 3644 + 180；finite→finite 4554 + 17109 |
+| pooled（valid-day 池化，volume_peak_count_20） | 早区窗 [2021-07-01, 2021-10-31]，且**按月计数非递增**（违反即失败） | NaN→finite 8189；finite→finite 17193（07-01..08-24 按月衰减）；new-only finite 9059（07-01..07-14，旧网格未发射） |
+
+anchors 腿同判据：hand 侧按旧几何算、service 侧按新几何算，失败行全在 warmup 区。原 harness
+只给 pooled 备了早区类、bounded 没有 → **判据不对称**（minute_ideal_amp 与 jump 的首轮 anchors
+失败即此）。bounded 的 warmup 边界与 panels 腿相同（冻结网格前 w−1 个交易日）；jump 的
+**非** warmup 行仍必须 reconcile（它证明 service 携带截断定义，首轮 3 个 random 行 rel ~1e-15
+已绿），warmup 区外的 jump mismatch 仍 FAIL。
+
+**根因二：两个浮点/阈值尾部（非 bug）**，各带**双边界**（不调大全局容差，保住对真回归的牙）：
+
+| 类 | 机制 | 边界 | 实测 |
+|---|---|---|---|
+| `float_reordering_tail` | rolling 相关求和顺序差异（JC1 已裁 1e-12 为可归因浮点重排地板，这是地板之上的实测尾部） | rel ≤ **5e-12** 且 cell 数 ≤ **101**（超任一即失败） | jump 101 cell，5 票散在，rel 1.0e-12–2.9e-12 |
+| `threshold_flip_tail` | rolling σ 浮点噪声（~4e-10）× 整数成交量恰压阈值 → 计数翻转 | 幅度**恰 ±1 count**、rel ≤ 1e-2、cell 数 ≤ **25**（超任一即失败） | volume_peak 20 cell，600623.SH 2023-06-15..07-14 每天恰 −1（整数成交量 13300.0） |
+
+**reports 腿两处口径修正 + 三个 JSON 登记项**：
+
+1. **MD 按 key 配对成行级 change 再分类**。裸行集合差把每个值变化报成一对（一条 removal +
+   一条同 `- key:` 头的 addition）——首轮 83–96 条「removal」全是这种幻影。配对后跟随与 JSON
+   相同的数值归因梯。配对变化的分类：**数字承载**（任一侧含数字，散文行的数字可能在冒号
+   **之前**）才进 `warmup_aggregate_effect`；纯标签翻转（verdict PASS→FAIL 不含数字）仍
+   unregistered 失败。**配对是两遍的**：先按精确 `- key:` 头配对，再对剩余行按**数字归一化**
+   的头配对（实测必要：incremental 轴理由行的变化数字在首个冒号之前，精确头永远配不上；
+   且该行头长 ~103 字符，配对 key 上限须 ≥200——改了散文**词**而非数字的行归一化后仍配不上，
+   照失败，有反向测试锁定）。
+2. `warmup_aggregate_effect`（JSON 与 MD 共用）：聚合指标叶子（`sections[*]` /
+   `verdict.reasons[*]` / `verdict.axes.*`）的数值/散文变化是 panels 腿已登记 warmup 差异的
+   **下游**（聚合一个 warmup cell 变了的面板；panels 腿才是值级闸门）。**牙仍在**：聚合路径
+   之外（verdict 标签、spec、eval_config、criteria）任何变化仍失败；无数字的标签翻转仍失败。
+3. `spec.requires[0..n]` 由精确匹配改**前缀**匹配（§七 已登记 spec 16→20 键，`requires` 是
+   repr 字符串**列表**，展平后是索引叶子）。
+4. `registered_sanity_stem_rename`：`sections[5].payload.sanity_report`（及 MD 同名行）的值从
+   `eval_<name>_exec_basis_sanity.md` 改为 `factor_eval_<factor_id>_exec_basis_sanity.md`——
+   runner 有意的防碰撞改名，双侧都以 `_exec_basis_sanity.md` 收尾才认。
+5. `registered_run_order_artifact`：`sections[5].payload.exec_price_artifact_reused`
+   False→True——同会话 run-order 产物（首个 run 建 exec 价格 artifact，后续 run 复用）。
+   **反向（True→False）不登记，仍失败**。
+6. jump 的 `spec.description` 与 `sections[7].payload.factor_version`（连同原已特判的
+   `spec.version`）纳入 `registered_correction_effect`——仅当新 JSON 带 `corrections`
+   结构化更正承载（契约 v1.1）时成立。

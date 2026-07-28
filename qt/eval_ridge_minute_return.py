@@ -61,7 +61,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from analytics.eval import (
@@ -92,6 +91,12 @@ from factors.compute.intraday_derived import RidgeMinuteReturnFactor
 from factors.spec import FactorSpec
 from qt.config import RootConfig, load_config
 from qt.exec_basis_eval import ExecBasisEvaluation, run_exec_basis_evaluation
+# The ridge-scarcity disclosure MOVED to qt.factor_eval_disclosures (the single
+# home, D5 C4); re-exported here so historical import paths keep working.
+from qt.factor_eval_disclosures import (
+    RidgeReturnCoverage,
+    summarize_ridge_return_coverage,
+)
 from qt.pipeline import (
     _build_cache,
     _build_universe,
@@ -105,153 +110,6 @@ from qt.pipeline import (
 
 _LOGGER_NAME = "qt.eval_ridge_minute_return"
 _REPORT_STEM = "eval_ridge_minute_return"
-
-# Percentiles reported for the realized ridge-bar distribution (the scarcity disclosure).
-_RIDGE_PCTL = (0, 10, 25, 50, 75, 90, 100)
-
-# The counterfactual floor the coverage disclosure also reports, so PR-K's ridge coverage
-# is directly comparable to PR-J's (which used 20 for its VALLEY leg).
-_COMPARISON_FLOOR = 20
-
-
-# --------------------------------------------------------------------------- #
-# Ridge-scarcity coverage (measured, never assumed)
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class RidgeReturnCoverage:
-    """Realized ridge-bar distribution + day-validity rate over the whole universe.
-
-    Built from the per-day diagnostics the factor emits, so the numbers describe the days
-    the factor actually saw. ``symbol_days`` counts EVERY symbol-day with visible bars,
-    including the leading warm-up days that have no same-slot baseline yet;
-    ``classifiable_days`` counts those that clear PR-F's classifiable floor. The headline
-    ``validity_rate`` is taken over ``classifiable_days``, because a day with no baseline
-    fails for a PR-F warm-up reason rather than a ridge-scarcity one and would otherwise
-    make the ridge gate look worse than it is — both denominators are reported so the
-    reader can check that framing.
-
-    TWO ridge counts are tracked, because this factor gates on the narrower one: total
-    ``ridge_bars`` and the ``ridge_return_bars`` subset that carries a valid minute return
-    (the day's first visible bar is excluded by the within-day lag even when it is a
-    ridge). Reporting both makes the return-guard attrition visible instead of implicit.
-    The gate-failure counts are NOT mutually exclusive and are reported for shape, not as
-    a partition.
-    """
-
-    symbol_days: int
-    classifiable_days: int
-    valid_days: int
-    ridge_return_percentiles: tuple[tuple[int, float], ...]
-    ridge_return_mean: float
-    ridge_bars_mean: float
-    ridge_bars_median: float
-    days_below_ridge_gate: int
-    days_below_classifiable_gate: int
-    # Counterfactual: how many days would survive at the higher floor PR-J used for its
-    # VALLEY leg. Quantifies exactly what the scarcity-driven threshold buys.
-    valid_days_at_comparison_floor: int
-    # The gates this run actually applied, so the disclosure can never describe the module
-    # defaults while the run used something else.
-    min_ridge_bars: int = RIDGE_RETURN_MIN_RIDGE_BARS
-    min_classifiable: int = VOLUME_PRV_MIN_CLASSIFIABLE
-    comparison_floor: int = _COMPARISON_FLOOR
-
-    @property
-    def validity_rate(self) -> float:
-        """Valid days as a share of CLASSIFIABLE days (see the class docstring)."""
-        if not self.classifiable_days:
-            return float("nan")
-        return self.valid_days / self.classifiable_days
-
-    @property
-    def return_guard_attrition(self) -> float:
-        """Share of ridge bars LOST to the return guard (mean over classifiable days)."""
-        if not np.isfinite(self.ridge_bars_mean) or self.ridge_bars_mean <= 0.0:
-            return float("nan")
-        return 1.0 - self.ridge_return_mean / self.ridge_bars_mean
-
-    def render(self) -> str:
-        """One-line, secret-free summary for the run log and the CLI."""
-        pctl = " ".join(f"p{p}={v:.0f}" for p, v in self.ridge_return_percentiles)
-        return (
-            f"ridge scarcity: symbol_days={self.symbol_days} "
-            f"classifiable_days={self.classifiable_days} "
-            f"valid_days={self.valid_days} ({self.validity_rate:.1%} of classifiable) "
-            f"ridge_return_bars[{pctl} mean={self.ridge_return_mean:.1f}] "
-            f"ridge_bars_mean={self.ridge_bars_mean:.1f} "
-            f"ridge_bars_median={self.ridge_bars_median:.0f} "
-            f"return_guard_attrition={self.return_guard_attrition:.1%} "
-            f"below_ridge_gate({self.min_ridge_bars})={self.days_below_ridge_gate} "
-            f"below_classifiable_gate({self.min_classifiable})="
-            f"{self.days_below_classifiable_gate} "
-            f"valid_if_floor_were_{self.comparison_floor}="
-            f"{self.valid_days_at_comparison_floor}"
-        )
-
-
-def summarize_ridge_return_coverage(
-    frames: list[pd.DataFrame],
-    *,
-    min_ridge_bars: int = RIDGE_RETURN_MIN_RIDGE_BARS,
-    min_classifiable: int = VOLUME_PRV_MIN_CLASSIFIABLE,
-    comparison_floor: int = _COMPARISON_FLOOR,
-) -> RidgeReturnCoverage:
-    """Reduce the per-symbol day-level diagnostics to the scarcity disclosure.
-
-    The floors must be the ones the RUN applied, not the module defaults — otherwise the
-    disclosure would describe gates that were never enforced.
-    """
-    gates = dict(
-        min_ridge_bars=min_ridge_bars,
-        min_classifiable=min_classifiable,
-        comparison_floor=comparison_floor,
-    )
-    empty = tuple((p, float("nan")) for p in _RIDGE_PCTL)
-    if not frames:
-        return RidgeReturnCoverage(
-            symbol_days=0,
-            classifiable_days=0,
-            valid_days=0,
-            ridge_return_percentiles=empty,
-            ridge_return_mean=float("nan"),
-            ridge_bars_mean=float("nan"),
-            ridge_bars_median=float("nan"),
-            days_below_ridge_gate=0,
-            days_below_classifiable_gate=0,
-            valid_days_at_comparison_floor=0,
-            **gates,
-        )
-    diag = pd.concat(frames, ignore_index=True)
-    classifiable = diag["classifiable_bars"].to_numpy(dtype=float)
-    valid = diag["valid"].to_numpy(dtype=bool)
-    # The bar-count distributions describe the days that had a fair chance: a warm-up day
-    # with no same-slot baseline has zero of everything and would only drag the
-    # percentiles towards zero for a reason that has nothing to do with ridge scarcity.
-    scored = classifiable >= min_classifiable
-    ridge_ret = diag.loc[scored, "ridge_return_bars"].to_numpy(dtype=float)
-    ridge_all = diag.loc[scored, "ridge_bars"].to_numpy(dtype=float)
-    # The counterfactual raises the ridge floor, leaving every other gate exactly as it was.
-    at_comparison = valid & (
-        diag["ridge_return_bars"].to_numpy(dtype=float) >= comparison_floor
-    )
-    return RidgeReturnCoverage(
-        symbol_days=int(len(diag)),
-        classifiable_days=int(scored.sum()),
-        valid_days=int(valid.sum()),
-        ridge_return_percentiles=(
-            tuple((p, float(np.percentile(ridge_ret, p))) for p in _RIDGE_PCTL)
-            if ridge_ret.size
-            else empty
-        ),
-        ridge_return_mean=float(ridge_ret.mean()) if ridge_ret.size else float("nan"),
-        ridge_bars_mean=float(ridge_all.mean()) if ridge_all.size else float("nan"),
-        ridge_bars_median=float(np.median(ridge_all)) if ridge_all.size else float("nan"),
-        days_below_ridge_gate=int((ridge_ret < min_ridge_bars).sum()),
-        days_below_classifiable_gate=int((~scored).sum()),
-        valid_days_at_comparison_floor=int(at_comparison.sum()),
-        **gates,
-    )
-
 
 # --------------------------------------------------------------------------- #
 # Minute loading (cache-only, per-symbol -> memory-bounded)
