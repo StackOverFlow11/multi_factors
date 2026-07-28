@@ -432,4 +432,51 @@ def cross_section(
     )
 
 
-__all__ = ["DecisionPoint", "cross_section", "panel"]
+def stored_payload(
+    factor_id: str,
+    universe: Iterable[str],
+    decisions: list[DecisionPoint],
+    *,
+    store: FactorValueStore,
+    sources: MaterializeSources,
+    view: object = View.DECISION,
+    basis: object = ReturnBasis.EXEC_TO_EXEC,
+    params_by_id: Mapping[str, Mapping[str, object]] | None = None,
+) -> pd.DataFrame:
+    """The factor's STORED payload over ``decisions`` x ``universe`` (read-through).
+
+    For most factors the payload IS the value; for a cross-sectional factor it is
+    the per-symbol INTERMEDIATE whose combine runs at read-assembly (D4c). A
+    disclosure that is reduced from the raw intermediate alongside the served
+    value (valley_price_quantile's NeutralizationCoverage — catalogue §三
+    mechanism B) reads the intermediate HERE: the same key + fingerprint +
+    coverage engine as :func:`panel`, sliced to exactly this request, so the
+    disclosure can never be computed from a payload the value read did not also
+    see, and never from a superset a wider earlier request happened to leave in
+    the store.
+    """
+    resolved_view, _ = require_legal_pairing(view, basis)
+    symbols = requested_universe(universe)
+    if not decisions:
+        raise ValueError("stored_payload() needs at least one DecisionPoint.")
+    cutoff = _uniform_cutoff(decisions)
+    dates = pd.DatetimeIndex(
+        sorted({pd.Timestamp(d.date).normalize() for d in decisions})
+    )
+    factor = _build_factor(factor_id, params_by_id)
+    fp = _fingerprint(factor)
+    key = store_key(
+        factor, view=resolved_view.value, params=(params_by_id or {}).get(factor_id)
+    )
+    payload = _ensure_coverage(
+        factor, key, fp, dates=dates, symbols=symbols, store=store,
+        sources=sources, view=resolved_view, cutoff=cutoff, diagnostics=None,
+    )
+    if payload.empty:
+        return payload
+    d = payload.index.get_level_values(DATE_LEVEL)
+    sym = payload.index.get_level_values(SYMBOL_LEVEL)
+    return payload[d.isin(dates) & pd.Index(sym).isin(set(map(str, symbols)))]
+
+
+__all__ = ["DecisionPoint", "cross_section", "panel", "stored_payload"]

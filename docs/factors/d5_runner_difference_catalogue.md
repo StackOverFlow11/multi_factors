@@ -378,3 +378,20 @@ anchors 腿同判据：hand 侧按旧几何算、service 侧按新几何算，�
 6. jump 的 `spec.description` 与 `sections[7].payload.factor_version`（连同原已特判的
    `spec.version`）纳入 `registered_correction_effect`——仅当新 JSON 带 `corrections`
    结构化更正承载（契约 v1.1）时成立。
+
+### 七之四、C4b（vpq 绑定 + runner 启用）引入的 artifact 漂移 —— 预登记（2026-07-28）
+
+1. **`valley_price_quantile_20` 的 reports 腿：新增 add-Section `neutralization_coverage`**。
+   旧 runner 对 NeutralizationCoverage 只 **log + 进 result dataclass**（§三 机制 B），从未
+   add-Section；统一 runner 把它经 §3.6 扩展点装配进报告。冻结 exec artifact 没有这一节，
+   故新 artifact 的 JSON `sections[8].*` 全部叶子与 MD 的整节渲染行（`## + neutralization_coverage`
+   标题、note 行、9 个 payload `- key:` 行及分节空行）是**新增**。登记方式：按 section **名字**
+   匹配（`qt/factor_eval_reconcile.py::REGISTERED_EXTRA_SECTIONS`，JSON 侧读新 JSON 该下标
+   section 的 `name` 字段核对，**绝不按裸下标放行**；MD 侧前缀从 dataclass 字段派生，改名即红）。
+   任何其他新增 section 不登记、仍失败。
+2. **vpq 的 panels 腿预期差异类**：与 pooled 因子同口径——`warmup_left_extension`（旧 runner
+   左端锚 `data.start` 的 anchor 截断 vs materializer 饱和左延到 2015-01-05；早区
+   [2021-07-01, 2021-10-31] 三方向 + 按月非递增）。vpq 的反转中性化在旧几何是
+   `reversal_20`（未滞后面板）、新几何是 `reversal_20_shifted`（决策滞后面板），两者
+   **逐位等价**（C4b 双侧钉死），故平移面板本身**不产生**类外差异；左端 22 个交易日窗口的
+   零 NaN 差异已在 fixture 层钉死。若真实缓存对账出现类外差异，如实全报。

@@ -14,7 +14,10 @@ identical; §二/§三 list the four extension points this runner parameterizes)
 3. the add-Section coverage disclosures — ``qt.factor_eval_disclosures``
    (mechanism A diagnostics sink through ``factors.service.panel``'s
    ``diagnostics=``; the sink re-materializes the request so a warm store can
-   still serve the disclosure — see ``factors.service._ensure_coverage``).
+   still serve the disclosure — see ``factors.service._ensure_coverage``;
+   mechanism B — valley_price_quantile's NeutralizationCoverage — is reduced
+   from the stored intermediate + the reversal + the served residual AFTER the
+   panel read, see ``_summarize_subject_neutralization``).
 4. metric keys — ``qt.exec_basis_eval``'s extraction.
 
 The subject factor's VALUES come from the factor SERVICE
@@ -54,9 +57,14 @@ the with-book artifacts gain a ``_bookclose`` suffix for the same reason.
 RunRegistry appends are a DELIBERATE DEFERRAL to D7's governance surface: this
 runner writes its artifacts but does not register runs.
 
-``valley_price_quantile`` is NOT served: its raw compute also needs the DAILY
-close panel (reversal neutralization), so it has no minute binding yet — that
-lands in PR-C4b. Asking for it is a readable error, never a silent mis-compute.
+``valley_price_quantile`` IS served (PR-C4b): its per-symbol ``raw_qbar``
+intermediate rides the same store read-through as every other factor, and its
+cross-sectional reversal neutralization runs at the service's read-assembly
+over exactly the requested universe (the binding's DECLARED daily combine
+input). Its NeutralizationCoverage disclosure is catalogue §三 mechanism B —
+no diagnostics sink — so the runner reduces it from the STORED intermediate +
+the reversal + the served residual AFTER the panel read
+(:func:`_summarize_subject_neutralization`), never from a second engine.
 """
 
 from __future__ import annotations
@@ -73,12 +81,26 @@ from data.availability_policy import ReturnBasis, View
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from factors import registry as factor_registry
 from factors import service as factor_service
-from factors.compute.minute.binding import has_minute_diagnostics, is_minute_bound
-from factors.compute.minute.valley_price_quantile import ValleyPriceQuantileFactor
+from factors.compute.minute.binding import (
+    RAW_QBAR_COL,
+    has_minute_diagnostics,
+    is_minute_bound,
+)
+from factors.compute.minute.valley_price_quantile import (
+    VALLEY_QUANTILE_MIN_CROSS_SECTION,
+    VALLEY_QUANTILE_REVERSAL_DAYS,
+    reversal_20,
+)
 from factors.spec import FactorSpec
 from qt.config import RootConfig, load_config
 from qt.exec_basis_eval import ExecBasisEvaluation, run_exec_basis_evaluation
-from qt.factor_eval_disclosures import disclosure_binding_for, to_section
+from qt.factor_eval_disclosures import (
+    NEUTRALIZATION_SECTION_NAME,
+    disclosure_binding_for,
+    publishes_neutralization_disclosure,
+    summarize_neutralization,
+    to_section,
+)
 from qt.factor_eval_providers import EvalServiceBundle, build_eval_service
 from qt.pipeline import _make_logger, _process_factors
 
@@ -208,18 +230,6 @@ def _build_eval_config(cfg: RootConfig) -> EvalConfig:
     )
 
 
-def _check_subject_supported(factor) -> None:
-    """The one subject this runner cannot serve yet (PR-C4b), as a readable error."""
-    if isinstance(factor, ValleyPriceQuantileFactor):
-        raise ValueError(
-            f"run-factor-eval cannot serve {factor.name!r} yet: its raw compute "
-            "also needs the DAILY close panel (its reversal neutralization), so "
-            "it has no minute binding in factors.compute.minute.binding — the "
-            "binding lands in PR-C4b. Asking for it here must fail loudly, never "
-            "silently mis-compute."
-        )
-
-
 # --------------------------------------------------------------------------- #
 # The evaluation flow
 # --------------------------------------------------------------------------- #
@@ -254,6 +264,48 @@ def _load_subject_raw(
         view=View.DECISION,
         basis=ReturnBasis.EXEC_TO_EXEC,
         diagnostics=diagnostics,
+    )
+
+
+def _summarize_subject_neutralization(
+    bundle: EvalServiceBundle,
+    factor,
+    subject_raw: pd.DataFrame,
+    decisions: list[factor_service.DecisionPoint],
+):
+    """valley_price_quantile's NeutralizationCoverage (catalogue §三 mechanism B).
+
+    No diagnostics sink exists for this disclosure: it is reduced AFTER the
+    panel read from the three panels the legacy runner also used —
+
+    * raw      — the STORED per-symbol ``raw_qbar`` intermediate, read back
+      through :func:`factors.service.stored_payload` (the same store the value
+      read just came from, sliced to exactly this request — never a second
+      engine, never a recomputation);
+    * rev      — ``reversal_20`` on the bundle's close-view daily panel (NO new
+      data source). This is the legacy runner's exact computation, and the C4b
+      binding pins it bit-for-bit equal to what the service's read-assembly
+      combine actually applied (``reversal_20_shifted`` on the decision-lagged
+      panel);
+    * residual — the served subject values (pre-processing), i.e. the combine's
+      output over exactly this universe.
+    """
+    payload = factor_service.stored_payload(
+        factor.name,
+        bundle.symbols,
+        decisions,
+        store=bundle.store,
+        sources=bundle.sources,
+        view=View.DECISION,
+        basis=ReturnBasis.EXEC_TO_EXEC,
+    )
+    raw = payload[RAW_QBAR_COL]
+    rev = reversal_20(bundle.panel[["close"]], days=VALLEY_QUANTILE_REVERSAL_DAYS)
+    return summarize_neutralization(
+        raw,
+        rev,
+        subject_raw[factor.name],
+        min_cross_section=VALLEY_QUANTILE_MIN_CROSS_SECTION,
     )
 
 
@@ -350,7 +402,6 @@ def run_factor_eval(
     _check_preconditions(cfg)
     _check_config_book(cfg)
     factor = factor_registry.build(factor_id)
-    _check_subject_supported(factor)
     spec = factor.spec
     eval_cfg = _build_eval_config(cfg)
 
@@ -389,6 +440,21 @@ def run_factor_eval(
         coverage = binding.summarize(sink)
         logger.info("%s", coverage.render())
         extra_sections.append(to_section(binding.section_name, coverage))
+    elif publishes_neutralization_disclosure(factor):
+        # Catalogue §三 mechanism B: no sink — reduce the disclosure from the
+        # stored intermediate + the reversal + the served residual, AFTER the
+        # panel read. The cost is the store re-read of a payload already
+        # materialized by the subject read (a warm-store read, zero minute
+        # bars); the COLD fill behind that payload is vpq's real cost — it is
+        # pooled + cross-sectional + daily-bound, so a cold store means the
+        # saturation load (the declared 2015-01-05 floor), disclosed here and
+        # visible in the run log's elapsed time, same as every other factor's
+        # cold fill.
+        coverage = _summarize_subject_neutralization(
+            bundle, factor, subject_raw, decisions
+        )
+        logger.info("%s", coverage.render())
+        extra_sections.append(to_section(NEUTRALIZATION_SECTION_NAME, coverage))
 
     subject_processed = _process_factors(
         cfg, subject_raw[[spec.factor_id]], bundle.panel

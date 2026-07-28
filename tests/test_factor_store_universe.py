@@ -426,12 +426,21 @@ def _probe_combine_daily_panel(universe):
     )
 
 
+def _probe_stored_payload(universe):
+    with tempfile.TemporaryDirectory() as td:
+        return service_mod.stored_payload(
+            PURE_MINUTE_ID, universe, [DecisionPoint(date=d) for d in EMIT],
+            store=FactorValueStore(td), sources=_sources(PURE_MINUTE_ID),
+        )
+
+
 #: entry point -> how to call it with a caller list. A new entry point without a
 #: recipe fails the surface test below; the recipes cannot be derived (each
 #: signature differs), but WHICH ones must exist is.
 _ENTRY_PROBES = {
     "factors.service.panel": _probe_panel,
     "factors.service.cross_section": _probe_cross_section,
+    "factors.service.stored_payload": _probe_stored_payload,
     "factors.materialize.materialize_range": _probe_materialize_range,
     "factors.materialize.materialize_intermediate_range": _probe_materialize_intermediate_range,
     "factors.materialize.make_recompute_fn": _probe_make_recompute_fn,

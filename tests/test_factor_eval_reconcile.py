@@ -397,6 +397,134 @@ def test_md_prose_WORD_change_does_not_pair_and_fails():
 
 
 # --------------------------------------------------------------------------- #
+# reports mode — registered add-Section additions (§七之四, D5 C4b vpq)
+# --------------------------------------------------------------------------- #
+def _with_neutralization_section(new: dict) -> dict:
+    """The unified runner's vpq artifact: one extra add-Section the frozen lacks."""
+    new = dict(new)
+    new["sections"] = [
+        *new["sections"],
+        {
+            "name": "neutralization_coverage",
+            "note": "neutralization (T-1 rev20): raw_rows=100 rev_paired=90 "
+            "residual_rows=80 dates=10/10 cross_section min/med/max=11/12.0/13 "
+            "mean_spearman(raw,rev20)=-0.1234",
+            "payload": {
+                "raw_rows": 100,
+                "rev_rows": 90,
+                "residual_rows": 80,
+                "dates_total": 10,
+                "dates_residualized": 10,
+                "cross_section_min": 11,
+                "cross_section_median": 12.0,
+                "cross_section_max": 13,
+                "raw_rev_spearman_mean": -0.1234,
+            },
+        },
+    ]
+    return new
+
+
+def test_json_registered_section_addition_passes_for_vpq():
+    new = _with_neutralization_section(_frozen_like())
+    result = diff_report_json(
+        _frozen_like(), new, name="t", strict=True, correction_expected=False,
+        registered_sections=("neutralization_coverage",),
+    )
+    assert result.ok, result.diffs
+    classes = {d.classification for d in result.diffs}
+    assert classes == {"registered_section_addition"}
+    assert all(d.path.startswith("sections[1]") for d in result.diffs)
+
+
+def test_json_extra_section_without_registration_fails():
+    new = _with_neutralization_section(_frozen_like())
+    result = diff_report_json(
+        _frozen_like(), new, name="t", strict=True, correction_expected=False
+    )
+    assert not result.ok
+    assert result.by_class("unregistered_addition")
+
+
+def test_json_section_addition_is_matched_by_NAME_not_index():
+    """A DIFFERENT section at the registered index stays unregistered."""
+    new = _with_neutralization_section(_frozen_like())
+    new["sections"][1]["name"] = "some_other_coverage"
+    result = diff_report_json(
+        _frozen_like(), new, name="t", strict=True, correction_expected=False,
+        registered_sections=("neutralization_coverage",),
+    )
+    assert not result.ok
+    # every leaf of the foreign section is unregistered, incl. the payload
+    assert len(result.by_class("unregistered_addition")) >= 10
+
+
+_NEUTRALIZATION_MD = (
+    "## + neutralization_coverage\n"
+    "\n"
+    "neutralization (T-1 rev20): raw_rows=100 rev_paired=90 residual_rows=80 "
+    "dates=10/10 cross_section min/med/max=11/12.0/13 "
+    "mean_spearman(raw,rev20)=-0.1234\n"
+    "\n"
+    "- cross_section_max: 13\n"
+    "- cross_section_median: 12.0\n"
+    "- cross_section_min: 11\n"
+    "- dates_residualized: 10\n"
+    "- dates_total: 10\n"
+    "- raw_rev_spearman_mean: -0.1234\n"
+    "- raw_rows: 100\n"
+    "- residual_rows: 80\n"
+    "- rev_rows: 90\n"
+)
+
+
+def test_md_registered_section_lines_pass_for_vpq():
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    prefixes = _registered_section_md_prefixes(("neutralization_coverage",))
+    result = diff_report_md(
+        _MD_OLD, _MD_OLD + _NEUTRALIZATION_MD, name="t", correction_expected=False,
+        registered_section_lines=prefixes,
+    )
+    assert result.ok, result.diffs
+    assert {d.classification for d in result.diffs} == {"registered_section_addition"}
+
+
+def test_md_section_lines_without_registration_fail():
+    result = diff_report_md(
+        _MD_OLD, _MD_OLD + _NEUTRALIZATION_MD, name="t", correction_expected=False
+    )
+    assert not result.ok
+    assert result.by_class("unregistered_addition")
+
+
+def test_md_section_prefixes_are_derived_from_the_dataclass_fields():
+    """A NeutralizationCoverage field rename breaks the registration loudly."""
+    from dataclasses import fields as dc_fields
+
+    from qt.factor_eval_disclosures import NeutralizationCoverage
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    prefixes = _registered_section_md_prefixes(("neutralization_coverage",))
+    for f in dc_fields(NeutralizationCoverage):
+        assert f"- {f.name}:" in prefixes
+    # the note prefix really is the render() format's head (not a stale copy)
+    cov = NeutralizationCoverage(
+        raw_rows=1, rev_rows=1, residual_rows=1, dates_total=1,
+        dates_residualized=1, cross_section_min=1, cross_section_median=1.0,
+        cross_section_max=1, raw_rev_spearman_mean=0.0,
+    )
+    assert cov.render().startswith("neutralization (T-1 rev20):")
+
+
+def test_md_section_prefixes_reject_an_unknown_section():
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    with pytest.raises(ValueError, match="no MD rendering is registered"):
+        _registered_section_md_prefixes(("bogus_coverage",))
+
+
+# --------------------------------------------------------------------------- #
 # panels mode — cell classification
 # --------------------------------------------------------------------------- #
 def _frozen_panel(rows: list[tuple[str, str, float]], fid: str) -> pd.DataFrame:

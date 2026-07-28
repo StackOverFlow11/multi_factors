@@ -374,3 +374,34 @@ def test_an_extra_section_may_never_shadow_a_mandatory_name():
         FactorEvalReport.assemble(
             base.spec, base.cfg, [*base.sections, bad], thresholds=base.thresholds
         )
+
+
+def test_neutralization_disclosure_is_class_keyed_mechanism_b():
+    """Mechanism B (catalogue §三): vpq publishes the NeutralizationCoverage —
+    with NO sink binding — and the two mechanisms never both claim one factor."""
+    from factors.compute.minute.peak_ridge_amount_ratio import (
+        PeakRidgeAmountRatioFactor,
+    )
+    from factors.compute.minute.ridge_minute_return import RidgeMinuteReturnFactor
+    from factors.compute.minute.valley_price_quantile import (
+        ValleyPriceQuantileFactor,
+    )
+    from factors.compute.minute.valley_ridge_vwap_ratio import (
+        ValleyRidgeVwapRatioFactor,
+    )
+    from qt.factor_eval_disclosures import (
+        NEUTRALIZATION_SECTION_NAME,
+        disclosure_binding_for,
+        publishes_neutralization_disclosure,
+    )
+
+    vpq = ValleyPriceQuantileFactor()
+    assert publishes_neutralization_disclosure(vpq) is True
+    assert disclosure_binding_for(vpq) is None  # mechanism B has no sink
+    assert NEUTRALIZATION_SECTION_NAME == "neutralization_coverage"
+    for cls in (
+        ValleyRidgeVwapRatioFactor,
+        RidgeMinuteReturnFactor,
+        PeakRidgeAmountRatioFactor,
+    ):
+        assert publishes_neutralization_disclosure(cls()) is False

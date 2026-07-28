@@ -75,6 +75,12 @@ gate that runs at every mode's entry:
     new JSON carries the ``corrections`` block (contract v1.1); without it
     they fail. Jump's value-level verification lives in the panels leg
     (cutoff reference) and in the post-fix restated numbers, not here.
+  * ``valley_price_quantile_20`` (§七之四): the unified runner publishes the
+    NeutralizationCoverage disclosure as an add-Section; the legacy runner
+    only LOGGED it (catalogue §三 mechanism B), so the frozen artifact has no
+    such section. The whole ``neutralization_coverage`` subtree (JSON leaves +
+    the section's MD lines) is a registered addition, matched by section NAME
+    (``REGISTERED_EXTRA_SECTIONS``), never by index.
 
   Markdown is diffed as a line set, then same-key lines are PAIRED into
   row-level changes before classification (a bare set diff reports every
@@ -207,6 +213,73 @@ ALLOWED_ADDED_MD_PREFIXES: tuple[str, ...] = (
     "- lookback depth (trailing trading days):",
     "- ⚠️ CORRECTION (",
 )
+
+#: factor_id -> the add-Sections the unified runner publishes that the frozen
+#: artifact does NOT carry (§七之四, D5 C4b). valley_price_quantile's
+#: NeutralizationCoverage was only LOGGED by the legacy runner (catalogue §三
+#: mechanism B — never an add-Section), so the unified runner's new section is
+#: an ADDITION against the frozen artifact, registered here per factor; any
+#: other added section stays unregistered and fails.
+REGISTERED_EXTRA_SECTIONS: dict[str, tuple[str, ...]] = {
+    "valley_price_quantile_20": ("neutralization_coverage",),
+}
+
+#: The MD note-line prefix of ``NeutralizationCoverage.render()`` — the
+#: disclosure's one-line summary, rendered as the section's note. Kept as a
+#: constant with a pinning test (the alternative — re-rendering a zero
+#: instance — would couple the reconcile gate to the renderer's format by
+#: construction instead of by assertion).
+_NEUTRALIZATION_NOTE_PREFIX = "neutralization (T-1 rev20):"
+
+
+def _registered_section_md_prefixes(section_names: tuple[str, ...]) -> tuple[str, ...]:
+    """The MD line prefixes belonging to a registered add-Section's rendering.
+
+    An extra section renders (``analytics/eval/render.py._render_section``) as
+    an unnumbered ``## + <name>`` heading, the note line, and one
+    ``- <field>:`` payload line per dataclass field (derived from the
+    dataclass, so a field rename breaks the pinning test instead of silently
+    unregistering). An unknown section name is a readable error — registering
+    a section whose MD rendering is not catalogued would be a guess.
+    """
+    from dataclasses import fields as dc_fields
+
+    from qt.factor_eval_disclosures import (
+        NEUTRALIZATION_SECTION_NAME,
+        NeutralizationCoverage,
+    )
+
+    prefixes: list[str] = []
+    for name in section_names:
+        if name == NEUTRALIZATION_SECTION_NAME:
+            prefixes.append(f"## + {NEUTRALIZATION_SECTION_NAME}")
+            prefixes.append(_NEUTRALIZATION_NOTE_PREFIX)
+            prefixes.extend(f"- {f.name}:" for f in dc_fields(NeutralizationCoverage))
+        else:
+            raise ValueError(
+                f"no MD rendering is registered for added section {name!r}."
+            )
+    return tuple(prefixes)
+
+
+def _is_registered_section_addition(
+    path: str, new: dict, section_names: tuple[str, ...]
+) -> bool:
+    """True iff ``path`` is a leaf of one of ``section_names`` in ``new``.
+
+    The check reads the NEW JSON's section at the path's index and matches its
+    NAME — never the index alone — so a different extra section landing at the
+    same index stays unregistered.
+    """
+    match = re.match(r"sections\[(\d+)\]", path)
+    if match is None or not section_names:
+        return False
+    sections = new.get("sections") or []
+    idx = int(match.group(1))
+    if idx >= len(sections) or not isinstance(sections[idx], dict):
+        return False
+    return sections[idx].get("name") in section_names
+
 
 MAX_EXAMPLES = 10
 
@@ -354,7 +427,13 @@ def _classify_value_change(
 
 
 def diff_report_json(
-    old: dict, new: dict, *, name: str, strict: bool, correction_expected: bool
+    old: dict,
+    new: dict,
+    *,
+    name: str,
+    strict: bool,
+    correction_expected: bool,
+    registered_sections: tuple[str, ...] = (),
 ) -> ReportDiff:
     """Diff one (frozen, new) JSON pair leaf by leaf against the registered list.
 
@@ -364,6 +443,8 @@ def diff_report_json(
     registered; hiding it would be, gating it would false-positive.
     ``correction_expected`` (jump): value differences are the declared
     correction — accepted ONLY if the new JSON carries a ``corrections`` block.
+    ``registered_sections``: add-Section names whose whole subtree is a
+    registered addition (§七之四 — the frozen artifact predates the section).
     """
     result = ReportDiff(name=name, strict=strict)
     old_flat, new_flat = _flatten(old), _flatten(new)
@@ -387,11 +468,12 @@ def diff_report_json(
             )
             result.diffs.append(LeafDiff(path, old_v, new_v, cls))
         elif in_new:
-            cls = (
-                "registered_addition"
-                if _is_registered_addition(path)
-                else "unregistered_addition"
-            )
+            if _is_registered_addition(path):
+                cls = "registered_addition"
+            elif _is_registered_section_addition(path, new, registered_sections):
+                cls = "registered_section_addition"
+            else:
+                cls = "unregistered_addition"
             result.diffs.append(LeafDiff(path, None, new_flat[path], cls))
         else:
             result.diffs.append(LeafDiff(path, old_flat[path], None, "unregistered_removal"))
@@ -482,7 +564,13 @@ def _classify_md_change(
 
 
 def diff_report_md(
-    old_text: str, new_text: str, *, name: str, strict: bool = True, correction_expected: bool
+    old_text: str,
+    new_text: str,
+    *,
+    name: str,
+    strict: bool = True,
+    correction_expected: bool,
+    registered_section_lines: tuple[str, ...] = (),
 ) -> ReportDiff:
     """Markdown: line-set diff, then pair same-key lines into row-level CHANGES.
 
@@ -492,6 +580,8 @@ def diff_report_md(
     the numeric-attribution ladder (the same one as the JSON leg), keeps the
     teeth where they belong: UNPAIRED additions must be registered additions,
     UNPAIRED removals are never registered (except jump's correction prose).
+    ``registered_section_lines``: the line prefixes of a registered
+    add-Section's rendering (§七之四).
     """
     result = ReportDiff(name=name, strict=strict)
     old_counts = Counter(old_text.splitlines())
@@ -510,11 +600,19 @@ def diff_report_md(
         cls = "registered_correction_effect" if correction_expected else "unregistered_removal"
         result.diffs.append(LeafDiff("<md>", line, None, cls))
     for line in unpaired_additions:
-        cls = (
-            "registered_addition"
-            if line.startswith(ALLOWED_ADDED_MD_PREFIXES)
-            else ("registered_correction_effect" if correction_expected else "unregistered_addition")
-        )
+        if line.startswith(ALLOWED_ADDED_MD_PREFIXES):
+            cls = "registered_addition"
+        elif registered_section_lines and (
+            line == "" or line.startswith(registered_section_lines)
+        ):
+            # the section's rendering includes its blank separators; blank-line
+            # additions register ONLY alongside a registered section (they are
+            # unregistered everywhere else).
+            cls = "registered_section_addition"
+        elif correction_expected:
+            cls = "registered_correction_effect"
+        else:
+            cls = "unregistered_addition"
         result.diffs.append(LeafDiff("<md>", None, line, cls))
     result.ok = not any(d.classification.startswith("unregistered") for d in result.diffs)
     return result
@@ -898,6 +996,8 @@ def run_reports_mode(
     report_dir = report_dir or Path(cfg.output.report_dir)
     report_name = _report_name(factor_id)
     correction_expected = factor_id == "jump_amount_corr_20"
+    registered_sections = REGISTERED_EXTRA_SECTIONS.get(factor_id, ())
+    section_md_prefixes = _registered_section_md_prefixes(registered_sections)
     stem = f"factor_eval_{factor_id}"
 
     results: list[ReportDiff] = []
@@ -921,6 +1021,7 @@ def run_reports_mode(
             diff_report_json(
                 frozen_json, new_json, name=f"{stem}_exec_{book}.json[{label}]",
                 strict=strict, correction_expected=correction_expected,
+                registered_sections=registered_sections,
             )
         )
         new_md = (report_dir / f"{stem}_exec_{book}{'_bookclose' if 'bookclose' in label else ''}.md").read_text()
@@ -929,6 +1030,7 @@ def run_reports_mode(
             diff_report_md(
                 frozen_md, new_md, name=f"{stem}_exec_{book}.md[{label}]",
                 strict=strict, correction_expected=correction_expected,
+                registered_section_lines=section_md_prefixes,
             )
         )
     problems = check_new_pair_consistency(new_no_book, new_with_book)
@@ -1029,6 +1131,7 @@ __all__ = [
     "METRIC_REL_TOL",
     "PANEL_REL_TOL",
     "PanelDiff",
+    "REGISTERED_EXTRA_SECTIONS",
     "ReconciliationError",
     "ReportDiff",
     "THRESHOLD_FLIP_MAX_CELLS",

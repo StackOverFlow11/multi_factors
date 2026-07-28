@@ -6,11 +6,13 @@ stub that captures its kwargs (the exec tail is qt.exec_basis_eval's own tested
 code). What THESE tests pin is the runner's own logic: the config gates
 (catalogue C1/C2 collapse), the BUG 5 config-book closure, the exec identity
 on the EvalConfig, the two book modes' ``book_view`` derivation, the
-add-Section passthrough, the artifact stem isolation (incl. the ``_bookclose``
-suffix), and the readable refusal of the deferred ``valley_price_quantile``.
+add-Section passthrough (mechanism A sink AND mechanism B neutralization),
+and the artifact stem isolation (incl. the ``_bookclose`` suffix).
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import pandas as pd
@@ -203,16 +205,107 @@ def test_invalid_book_mode_is_rejected_before_any_work(tmp_path):
         run_factor_eval("ignored.yaml", "jump_amount_corr_20", book_mode="bogus")
 
 
-def test_valley_price_quantile_is_a_readable_deferral(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "qt.factor_eval_runner.load_config", lambda path: _min_config(tmp_path)
+def test_valley_price_quantile_runs_end_to_end_with_neutralization_section(
+    monkeypatch, tmp_path
+):
+    """vpq is SERVED (PR-C4b): mechanism-B disclosure -> exactly one add-Section.
+
+    The service seams are faked (``panel`` returns a finite grid;
+    ``stored_payload`` returns a synthetic raw_qbar intermediate); the expected
+    coverage is recomputed INDEPENDENTLY from the same fakes via the real
+    ``summarize_neutralization`` + ``reversal_20``, so a wrong wiring (wrong
+    raw, wrong residual, wrong floor) fails the equality, not a tautology.
+    """
+    from dataclasses import asdict
+
+    import factors.service as service_mod
+    from factors.compute.minute.binding import RAW_QBAR_COL
+    from factors.compute.minute.valley_price_quantile import (
+        VALLEY_QUANTILE_MIN_CROSS_SECTION,
+        VALLEY_QUANTILE_REVERSAL_DAYS,
+        reversal_20,
     )
-    monkeypatch.setattr(
-        "qt.factor_eval_runner.build_eval_service",
-        lambda *a, **k: pytest.fail("service must not be built for a deferred factor"),
+    from qt.factor_eval_disclosures import (
+        NEUTRALIZATION_SECTION_NAME,
+        NeutralizationCoverage,
+        summarize_neutralization,
     )
-    with pytest.raises(ValueError, match="PR-C4b"):
-        run_factor_eval("ignored.yaml", "valley_price_quantile_20")
+
+    captured: dict = {}
+    bundle = _wire(monkeypatch, tmp_path, captured)
+
+    idx = pd.MultiIndex.from_product(
+        [pd.DatetimeIndex(DATES), SYMS], names=["date", "symbol"]
+    )
+
+    def fake_panel(factor_ids, universe, decisions, **kwargs):
+        return pd.DataFrame(
+            {fid: np.arange(len(idx), dtype=float) + 1.0 for fid in factor_ids},
+            index=idx,
+        )
+
+    payload_frame = pd.DataFrame(
+        {RAW_QBAR_COL: np.linspace(-0.5, 0.5, len(idx))}, index=idx
+    )
+    payload_calls: dict = {}
+
+    def fake_stored_payload(factor_id, universe, decisions, **kwargs):
+        payload_calls.update(
+            factor_id=factor_id, universe=list(universe), decisions=decisions,
+            kwargs=kwargs,
+        )
+        return payload_frame
+
+    monkeypatch.setattr(service_mod, "panel", fake_panel)
+    monkeypatch.setattr(service_mod, "stored_payload", fake_stored_payload)
+
+    result = run_factor_eval("ignored.yaml", "valley_price_quantile_20")
+
+    # the mechanism-B inputs were requested for THIS factor / universe / decisions
+    assert payload_calls["factor_id"] == "valley_price_quantile_20"
+    assert payload_calls["universe"] == SYMS
+    assert payload_calls["kwargs"]["store"] is bundle.store
+    assert payload_calls["kwargs"]["sources"] is bundle.sources
+
+    # the coverage equals the INDEPENDENTLY recomputed one
+    residual = fake_panel(["valley_price_quantile_20"], SYMS, None)[
+        "valley_price_quantile_20"
+    ]
+    rev = reversal_20(
+        bundle.panel[["close"]], days=VALLEY_QUANTILE_REVERSAL_DAYS
+    )
+    expected = summarize_neutralization(
+        payload_frame[RAW_QBAR_COL],
+        rev,
+        residual,
+        min_cross_section=VALLEY_QUANTILE_MIN_CROSS_SECTION,
+    )
+    assert isinstance(result.coverage, NeutralizationCoverage)
+    # field-wise with NaN tolerance: the 2-symbol fixture is below
+    # min_cross_section, so raw_rev_spearman_mean is legitimately NaN on BOTH
+    # sides (and NaN != NaN); every count field is an exact check.
+    got, want = asdict(result.coverage), asdict(expected)
+    assert got.keys() == want.keys()
+    for key in got:
+        g, w = got[key], want[key]
+        if isinstance(g, float) and isinstance(w, float) and math.isnan(g) and math.isnan(w):
+            continue
+        assert g == w, key
+
+    # ...and it reached the exec tail as exactly one add-Section
+    extras = captured["extra_sections"]
+    assert extras is not None and len(extras) == 1
+    section = extras[0]
+    assert isinstance(section, Section)
+    assert section.name == NEUTRALIZATION_SECTION_NAME
+    assert section.payload.keys() == got.keys()  # no derived props on this coverage
+    for key in section.payload:
+        g, w = section.payload[key], got[key]
+        if isinstance(g, float) and isinstance(w, float) and math.isnan(g) and math.isnan(w):
+            continue
+        assert g == w, key
+    assert section.note == expected.render()
+    assert captured["stem"] == "factor_eval_valley_price_quantile_20"
 
 
 # --------------------------------------------------------------------------- #
