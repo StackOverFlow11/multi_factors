@@ -23,7 +23,18 @@ gate that runs at every mode's entry:
      * bounded factor: the differing row sits in the grid's first
        ``lookback_depth - 1`` trading dates — ALL THREE directions allowed
        (frozen-NaN -> new-finite, finite -> finite as a partial pool fills,
-       and a finite value on a row the frozen panel does not have);
+       and a finite value on a row the frozen panel does not have). The
+       class is CEILED at ``(lookback_depth - 1) x |frozen symbols|`` cells
+       (D5 C4a review LOW-1): a structural bound, not a calibrated one —
+       every warmup cell is a distinct (date, symbol) pair with the date in
+       the warmup boundary and the symbol known to the frozen panel (the
+       ``new_only_finite`` direction requires ``frozen_symbols`` membership),
+       so the class cannot exceed it by construction and an overshoot means
+       the boundary/counting logic itself is broken -> FAIL. AMPLITUDE stays
+       unbounded inside the region by the standing ruling: for C5's purpose
+       (geometry reconciliation) that is acceptable, because the two loading
+       geometries legitimately differ on exactly those cells — the value gate
+       for the rest of the grid is the 1e-12 tolerance outside the boundary;
      * valid-day-POOLED factor: the early region [2021-07-01, 2021-10-31],
        same three directions, and the per-month counts must be
        non-increasing ("按月递减至零"; a violation fails the mode) with ONE
@@ -731,6 +742,11 @@ class PanelDiff:
     warmup_by_direction: dict[str, int] = field(default_factory=dict)
     warmup_monotonic: bool = True
     warmup_exempt_month: str | None = None
+    #: Structural cell ceiling of the bounded ``warmup_left_extension``
+    #: class — ``(lookback_depth - 1) x |frozen symbols|`` (None for pooled
+    #: factors, whose class is gated by the monthly monotonicity machinery
+    #: instead). See ``classify_panel_differences``.
+    warmup_max_cells: int | None = None
     ok: bool = True
 
     def by_class(self, classification: str) -> list[PanelCellDiff]:
@@ -771,6 +787,20 @@ def classify_panel_differences(
     where diffs land; a frozen panel with no finite value gets no
     exemption (conservative). Later months stay gated.
 
+    Bounded warmup class CELL CEILING (D5 C4a review LOW-1): the class is
+    capped at ``(lookback_depth - 1) x |frozen symbols|`` cells. This is a
+    STRUCTURAL bound, not a calibrated one: every cell the classifier can
+    place in the class is a distinct (date, symbol) pair whose date sits in
+    the warmup boundary and whose symbol is known to the frozen panel (the
+    ``new_only_finite`` direction explicitly requires frozen-symbol
+    membership), so the class cannot exceed the ceiling by construction —
+    an overshoot means the boundary/counting logic itself is broken and
+    fails the mode. AMPLITUDE inside the region stays UNBOUNDED by the
+    standing ruling: for C5's geometry-reconciliation purpose that is
+    acceptable, because the two loading geometries legitimately differ on
+    exactly those cells (the old runner's partial pool vs the saturated
+    one); everything outside the boundary is still gated at 1e-12.
+
     ``is_cross_sectional`` (D4c ``stores_intermediate`` factors — the served
     value is a per-date cross-sectional combine): enables the
     ``threshold_flip_contamination`` class and the wider float-tail cap
@@ -800,6 +830,18 @@ def classify_panel_differences(
     grid_dates = sorted(frozen["date"].unique())
     n_warm = max(int(lookback_depth) - 1, 0)
     warmup_dates = set(grid_dates[:n_warm])
+
+    # Structural cell ceiling of the bounded warmup class (D5 C4a review
+    # LOW-1): every warmup cell the classifier can emit is a distinct
+    # (date, symbol) pair with the date in ``warmup_dates`` and the symbol
+    # in the frozen panel's symbol set (the ``new_only_finite`` direction
+    # requires frozen-symbol membership), so the class cannot exceed
+    # ``n_warm x |frozen symbols|`` by construction — an overshoot means
+    # the boundary/counting logic is broken and fails the mode. Pooled
+    # factors get NO count ceiling: their class is gated by the monthly
+    # monotonicity + exempt-month machinery instead.
+    if not is_pooled:
+        result.warmup_max_cells = n_warm * len(frozen["symbol"].unique())
 
     def _in_warmup(date: pd.Timestamp, symbol: str) -> bool:
         if is_pooled:
@@ -944,6 +986,11 @@ def classify_panel_differences(
         not any(d.classification.startswith("unclassified") or
                 d.classification.startswith("unregistered") for d in result.diffs)
         and result.warmup_monotonic
+        and (
+            result.warmup_max_cells is None
+            or len(result.by_class("warmup_left_extension"))
+            <= result.warmup_max_cells
+        )
         and len(result.by_class("float_reordering_tail")) <= float_tail_max
         and len(result.by_class("threshold_flip_tail")) <= flip_max
         and len(result.by_class("threshold_flip_contamination"))
@@ -1120,12 +1167,13 @@ def run_panels_mode(config_path: str, factor_id: str, repo_root: Path) -> PanelD
     )
     logger.info(
         "panels %s: rows frozen=%d new=%d equal=%d tol=%d warmup=%d(%s) "
-        "exempt_month=%s "
+        "warmup_ceiling=%s exempt_month=%s "
         "float_tail=%d threshold_flip=%d flip_contamination=%d footprint=%d "
         "unclassified=%d max_rel=%.3e live_calls=%d ok=%s",
         factor_id, result.rows_frozen, result.rows_new, result.equal,
         result.within_tolerance, len(result.by_class("warmup_left_extension")),
         result.warmup_by_direction,
+        result.warmup_max_cells,
         result.warmup_exempt_month,
         len(result.by_class("float_reordering_tail")),
         len(result.by_class("threshold_flip_tail")),
