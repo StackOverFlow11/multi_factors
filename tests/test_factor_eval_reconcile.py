@@ -665,6 +665,101 @@ def test_panels_bounded_new_only_finite_row_outside_warmup_fails():
     assert len(result.by_class("unregistered_new_finite_row")) == 1
 
 
+# --------------------------------------------------------------------------- #
+# Bounded warmup CELL CEILING (D5 C4a review LOW-1): the class is capped at
+# (lookback_depth - 1) x |frozen symbols| — a structural bound (every class
+# cell is a distinct (date, symbol) pair in warmup_dates x frozen_symbols),
+# so an overshoot means the boundary/counting logic itself is broken.
+# --------------------------------------------------------------------------- #
+def test_panels_bounded_warmup_ceiling_is_the_structural_derivation():
+    # 3 symbols, lookback_depth=4 -> ceiling = 3 warmup dates x 3 symbols = 9.
+    frozen = _frozen_panel(
+        [(f"2021-07-0{d}", s, 1.0) for d in (1, 2, 3, 4, 5) for s in ("A", "B", "C")],
+        "f",
+    )
+    new = _new_series(
+        [(f"2021-07-0{d}", s, 1.0) for d in (1, 2, 3, 4, 5) for s in ("A", "B", "C")]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=4
+    )
+    assert result.ok, result.diffs
+    assert result.warmup_max_cells == 3 * 3
+
+
+def test_panels_bounded_warmup_cells_exactly_at_the_ceiling_pass():
+    # lookback_depth=3 -> 2 warmup dates; 2 symbols -> ceiling 4. All four
+    # warmup cells move (finite -> finite): AT the ceiling, still registered.
+    frozen = _frozen_panel(
+        [
+            ("2021-07-01", "A", 0.10), ("2021-07-01", "B", 0.50),
+            ("2021-07-02", "A", 0.20), ("2021-07-02", "B", 0.60),
+            ("2021-07-03", "A", 0.30), ("2021-07-03", "B", 0.70),
+        ],
+        "f",
+    )
+    new = _new_series(
+        [
+            ("2021-07-01", "A", 0.11), ("2021-07-01", "B", 0.55),
+            ("2021-07-02", "A", 0.25), ("2021-07-02", "B", 0.65),
+            ("2021-07-03", "A", 0.30), ("2021-07-03", "B", 0.70),
+        ]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_left_extension")) == 4
+    assert result.warmup_max_cells == 4
+
+
+def test_panels_bounded_warmup_cells_beyond_the_ceiling_fail():
+    # REVERSE (LOW-1): a frozen panel with DUPLICATE (date, symbol) rows
+    # emits one warmup cell per duplicate — 4 cells against the structural
+    # ceiling of 2 warmup dates x 1 symbol = 2. An overshoot of a bound the
+    # class cannot structurally exceed means the counting is broken -> FAIL.
+    # The individual cells still classify as warmup (the ceiling is a COUNT
+    # gate on the class, not a per-cell reclassification).
+    frozen = _frozen_panel(
+        [
+            ("2021-07-01", "A", 0.10), ("2021-07-01", "A", 0.10),  # duplicate
+            ("2021-07-02", "A", 0.20), ("2021-07-02", "A", 0.20),  # duplicate
+            ("2021-07-03", "A", 0.30),
+        ],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-01", "A", 0.15), ("2021-07-02", "A", 0.25), ("2021-07-03", "A", 0.30)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert len(result.by_class("warmup_left_extension")) == 4
+    assert result.warmup_max_cells == 2
+    assert not result.ok
+
+
+def test_panels_pooled_warmup_class_has_no_cell_ceiling():
+    # Pooled factors: NO count ceiling — the monthly monotonicity gate is
+    # the mechanism (a large but non-increasing count still passes).
+    frozen = _frozen_panel(
+        [
+            ("2021-07-01", "A", 1.0), ("2021-07-01", "B", 1.0),
+            ("2021-08-02", "A", 1.0),
+        ],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-01", "A", 2.0), ("2021-07-01", "B", 2.0), ("2021-08-02", "A", 2.0)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=20
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_left_extension")) == 3
+    assert result.warmup_max_cells is None
+
+
 def test_panels_pooled_warmup_class_all_directions_with_monthly_decrease():
     frozen = _frozen_panel(
         [
