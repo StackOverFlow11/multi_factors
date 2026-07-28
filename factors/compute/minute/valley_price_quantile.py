@@ -432,6 +432,73 @@ def reversal_20(
     return rev.rename(name)
 
 
+def reversal_20_shifted(
+    closes: pd.DataFrame | pd.Series,
+    *,
+    days: int = VALLEY_QUANTILE_REVERSAL_DAYS,
+    close_col: str = "close",
+    name: str = "rev20",
+) -> pd.Series:
+    """``days``-day reversal on an ALREADY decision-lagged close panel (T-1 shift OFF).
+
+    The decision view makes the previous day's close the legal same-day input
+    (availability policy: every daily field except ``open`` is visible at
+    ``<= d-1``), so the materializer hands the factor a panel whose row ``d``
+    already carries ``close_{d-1}`` (``factors.view_lag.daily_decision_lag``).
+    Applying :func:`reversal_20`'s internal T-1 shift on top of that would lag
+    TWICE (``close_{d-2}``) — the defect the shifted-panel construction exists to
+    avoid. This variant therefore takes the ratio WITHOUT the internal shift:
+
+        rev(d) = -(p_d / p_{d-days} - 1)   where p_d = close_{d-1}
+               = -(close_{d-1} / close_{d-(days+1)} - 1)  == reversal_20(closes)
+
+    The two constructions are ALGEBRAICALLY IDENTICAL (measured bit-for-bit:
+    ``max|diff| = 0.0``, ``Series.equals`` True — the D5b review's third path),
+    and that equivalence is pinned on BOTH sides by
+    ``tests/test_minute_binding_vpq.py`` (including a sabotage control showing the
+    un-lagged panel passed here differs materially, so the equivalence cannot
+    pass vacuously). The shifted panel must carry one extra leading day of
+    history so the shift's first-row NaN lands before the needed window; the
+    engine's declared warmup (``binding.DailyCombineInput.warmup_days``) covers it.
+
+    The cleaning order matters and is preserved: non-positive / non-finite closes
+    are blanked on the panel AS HANDED IN (post-lag), so a bad print poisons
+    exactly the same output rows as the un-lagged construction (blanked pre-shift
+    there, post-shift here — the same (date, symbol) cells either way).
+
+    Args:
+        closes: ``MultiIndex(date, symbol)`` DECISION-LAGGED daily panel
+            (DataFrame with ``close_col``, or a Series of lagged closes).
+        days: reversal span in trading days (definition, not a tuned knob).
+        close_col: the close column name when ``closes`` is a DataFrame.
+        name: the returned Series name.
+
+    Returns:
+        ``MultiIndex(date, symbol)`` Series over the SAME rows as the input.
+        Pure: never mutates ``closes``.
+    """
+    if days < 1:
+        raise ValueError(f"days must be >= 1; got {days!r}.")
+    if isinstance(closes, pd.DataFrame):
+        if close_col not in closes.columns:
+            raise ValueError(
+                f"reversal_20_shifted needs a '{close_col}' column; got "
+                f"{list(closes.columns)}."
+            )
+        series = closes[close_col]
+    else:
+        series = closes
+    if series.empty:
+        return empty_factor_series(name)
+
+    s = series.astype(float).sort_index()
+    clean = s.where(np.isfinite(s.to_numpy(dtype=float)) & (s.to_numpy(dtype=float) > 0.0))
+    by_symbol = clean.groupby(level=SYMBOL_LEVEL, sort=False)
+    base = by_symbol.shift(days)  # p_{d-days} = close_{d-(days+1)}
+    rev = -(clean / base - 1.0)
+    return rev.rename(name)
+
+
 def residualize_on_reversal(
     qbar: pd.Series,
     rev: pd.Series,
@@ -733,5 +800,6 @@ __all__ = [
     "compute_valley_price_quantile_stats",
     "residualize_on_reversal",
     "reversal_20",
+    "reversal_20_shifted",
     "valley_price_quantile_by_day",
 ]

@@ -69,8 +69,9 @@ from factors.base import Factor
 from factors.compute.minute.binding import (
     combine_minute_stats,
     is_cross_sectional_minute,
-    is_minute_bound,
+    is_minute_stream_bound,
     is_valid_day_pooled,
+    minute_combine_daily_spec,
     minute_diagnostics_from_bars,
     minute_intermediate_columns,
     minute_raw_from_bars,
@@ -453,14 +454,19 @@ def _materialize_minute(
     which its ``AMP_CUT_MIN_CROSS_SECTION`` gate turns entirely into NaN —
     measured, and never worked around by relaxing that definition constant).
 
+    A factor whose combine declares a DAILY input (valley_price_quantile's
+    reversal neutralization) is handed the view-lagged, trailing-trimmed daily
+    panel from :func:`combine_daily_panel` — the shifted-panel third path,
+    bit-identical to the legacy un-lagged construction by pinned test.
+
     Two load geometries, unchanged in meaning from the single-frame engine:
     bounded factors keep the fixed trailing-trading-day trim; valid-day-POOLED
     factors expand to saturation. Both are now decided PER SYMBOL — see
     :func:`_pooled_symbol_stats` for why that is the same terminal, not a
     weakening.
     """
-    if not is_minute_bound(factor):
-        # Readable error (e.g. valley_price_quantile needs the daily panel too).
+    if not is_minute_stream_bound(factor):
+        # Readable error for a factor with no minute binding at all.
         if sources.minute is None:
             raise ValueError(
                 f"{factor.name} is a minute factor but no MinuteBarProvider was injected."
@@ -472,7 +478,74 @@ def _materialize_minute(
     )
     if stats.empty:
         return _empty_series(factor.name)
-    return combine_minute_stats(factor, stats)
+    daily = None
+    if minute_combine_daily_spec(factor) is not None:
+        daily = combine_daily_panel(
+            factor, view=view, symbols=symbols, emit_start=emit_start,
+            emit_end=emit_end, sources=sources,
+        )
+    return combine_minute_stats(factor, stats, daily=daily)
+
+
+def combine_daily_panel(
+    factor: Factor,
+    *,
+    view: object,
+    symbols: list[str],
+    emit_start: pd.Timestamp,
+    emit_end: pd.Timestamp,
+    sources: MaterializeSources,
+) -> pd.DataFrame:
+    """The daily panel a factor's DECLARED ``combine_daily`` combine consumes.
+
+    Loads the declared columns from the injected daily provider with the same
+    generous calendar buffer the factor-input path uses, applies the (source,
+    view) availability lag (decision view: the prev-day shift — so the panel's
+    row d carries ``close_{d-1}``, the shifted panel of the third path), then
+    trims to EXACTLY the declared ``warmup_days`` trailing trading days before
+    ``emit_start`` — the same trailing-trim discipline as the factor-input path
+    (design §3.5 P8), so a single-date fill and a batch fill hand the combine
+    bit-identical daily inputs. The warmup depth is the binding's DECLARATION
+    (never inferred): for valley_price_quantile it is ``reversal_days + 2`` —
+    the reversal consumes ``reversal_days + 1`` lagged rows and the decision
+    lag's own leading NaN row must land one day before that window (§六.18:
+    an under-deep panel would fabricate edge NaNs the legacy path never had).
+
+    A missing daily provider or a factor with no declared daily combine input
+    is a readable error.
+    """
+    spec = minute_combine_daily_spec(factor)
+    if spec is None:
+        raise ValueError(
+            f"{factor.name}: its combine declares no daily-panel input, so there "
+            f"is no combine daily panel to build."
+        )
+    if sources.daily is None:
+        raise ValueError(
+            f"{factor.name}: its combine declares a daily-panel input "
+            f"(columns {list(spec.columns)}) but no DailyPanelProvider was injected."
+        )
+    resolved_view = View(view)
+    symbols = requested_universe(symbols)  # idempotent: callers normalize too
+    emit_start = pd.Timestamp(emit_start).normalize()
+    emit_end = pd.Timestamp(emit_end).normalize()
+    w = int(spec.warmup_days)
+    if w < 1:
+        raise ValueError(f"{factor.name}: combine daily warmup must be >= 1; got {w}.")
+    load_start = emit_start - pd.Timedelta(days=_load_buffer_calendar_days(w))
+    panel = sources.daily.daily_panel(list(symbols), load_start, emit_end)
+    if panel.empty:
+        return panel
+    missing = [c for c in spec.columns if c not in panel.columns]
+    if missing:
+        raise ValueError(
+            f"{factor.name}: its combine declares daily columns {list(spec.columns)} "
+            f"but the injected daily panel lacks {missing}; got {list(panel.columns)}."
+        )
+    panel = panel[list(spec.columns)]
+    if resolved_view is View.DECISION:
+        panel = daily_decision_lag(panel)  # prev-day shift; 'close' is not same-day
+    return _trim_daily(panel, emit_start, w)
 
 
 def _minute_intermediate(
@@ -659,8 +732,20 @@ def _pooled_symbol_stats(
         if view is View.DECISION:
             work = minute_decision_cutoff(work, decision_time=decision_cutoff)
         stats = minute_stats_from_bars(factor, work)
+        # The saturation criterion reads the value's OUTPUT DATES. A factor whose
+        # combine declares a DAILY input cannot run its combine here (the daily
+        # panel is deliberately NOT loaded inside the per-symbol saturation loop);
+        # its declared combine contract returns EXACTLY the intermediate's rows,
+        # so the intermediate's dates ARE the value's output dates. Every other
+        # factor reads the combined single-symbol value exactly as before (zero
+        # behaviour change for the ten bars-only factors and intraday_amp_cut).
+        saturation_output = (
+            stats
+            if minute_combine_daily_spec(factor) is not None
+            else combine_minute_stats(factor, stats)
+        )
         if at_floor or _pooled_pool_saturated(
-            combine_minute_stats(factor, stats), work, emit_start,
+            saturation_output, work, emit_start,
             baseline_days=baseline_days, lookback_days=lookback_days,
             symbols=[symbol],
         ):
@@ -698,7 +783,7 @@ def _provider_earliest(provider, symbols, factor) -> pd.Timestamp:
 
 
 def _pooled_pool_saturated(
-    full: pd.Series,
+    full: pd.Series | pd.DataFrame,
     bars: pd.DataFrame,
     emit_start: pd.Timestamp,
     *,
@@ -711,7 +796,11 @@ def _pooled_pool_saturated(
     True iff, for EVERY REQUESTED symbol, the LOCKED sub-window (the loaded
     trading days after dropping the first ``baseline_days``) holds at least
     ``lookback_days`` valid days at or before ``emit_start`` — valid days being
-    the factor's own output dates.
+    the factor's own output dates. Only ``full``'s INDEX is read (dates and
+    symbols), so the caller may pass either the combined value Series or — for a
+    factor whose combine needs the daily panel, which this loop does not load —
+    the per-symbol intermediate frame, whose rows its declared combine preserves
+    exactly.
 
     ITERATING THE REQUESTED SYMBOLS, NOT THE OUTPUT SYMBOLS, IS LOAD-BEARING
     (review HIGH): a symbol that produces ZERO rows in the current load window (a
@@ -862,6 +951,7 @@ __all__ = [
     "MaterializeSources",
     "MinuteBarProvider",
     "build_horizon_config",
+    "combine_daily_panel",
     "is_minute_factor",
     "make_recompute_fn",
     "materialize_intermediate_range",

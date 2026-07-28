@@ -15,11 +15,15 @@ whether the value moves. This is the "perturb the future -> value unchanged" sha
 the project already uses, aimed at the WITHIN-DAY boundary rather than the
 across-day one.
 
-RESULT, ENCODED RATHER THAN DESCRIBED. All ten bars-bound minute factors are now
-clean. ``jump_amount_corr_20`` was NOT when this file was written: its compute was
-the ONLY one of the eleven that applied no decision-time truncation of its own
-(grep: zero ``decision_time`` / ``prepare_visible_minute_bars`` references in its
-module), so under the old runners it saw 09:30-15:00 of day d.
+RESULT, ENCODED RATHER THAN DESCRIBED. All eleven stream-bound minute factors
+are now clean — the ten bars-bound ones measured through their whole-factor
+call, valley_price_quantile (stream-bound with a declared daily combine input,
+D5 C4b) measured through its per-symbol qbar stage, which carries its entire
+minute-bar dependence. ``jump_amount_corr_20`` was NOT when this file was
+written: its compute was the ONLY one of the eleven that applied no
+decision-time truncation of its own (grep: zero ``decision_time`` /
+``prepare_visible_minute_bars`` references in its module), so under the old
+runners it saw 09:30-15:00 of day d.
 
 It was recorded here as a KNOWN, NAMED exception rather than fixed, because
 truncating it changes a published factor's values and could move its verdict — a
@@ -63,7 +67,10 @@ from factors import registry as factor_registry
 from factors.compute.minute.binding import (
     _MINUTE_STREAM_BINDINGS,
     NOT_DECISION_CUTOFF_SAFE,
+    RAW_QBAR_COL,
+    is_minute_bound,
     minute_raw_from_bars,
+    minute_stats_from_bars,
 )
 
 CUTOFF = "14:50:00"
@@ -137,8 +144,17 @@ def _poison(bars: pd.DataFrame) -> pd.DataFrame:
 
 def _moved_cells(factor_id: str) -> tuple[int, int, float]:
     factor = factor_registry.build(factor_id)
-    before = minute_raw_from_bars(factor, BARS)
-    after = minute_raw_from_bars(factor, _poison(BARS))
+    if is_minute_bound(factor):
+        before = minute_raw_from_bars(factor, BARS)
+        after = minute_raw_from_bars(factor, _poison(BARS))
+    else:
+        # valley_price_quantile has no bars-only whole-factor form (its combine
+        # declares a daily-panel input, D5 C4b). Its ENTIRE minute-bar dependence
+        # lives in the per-symbol qbar stage — the combine reads only the daily
+        # panel — so that stage is exactly what gets measured here. Routed by the
+        # binding tables, not by isinstance.
+        before = minute_stats_from_bars(factor, BARS)[RAW_QBAR_COL]
+        after = minute_stats_from_bars(factor, _poison(BARS))[RAW_QBAR_COL]
     joined = pd.DataFrame({"a": before, "b": after}).dropna()
     if joined.empty:
         return 0, 0, 0.0
@@ -184,7 +200,7 @@ def test_the_deny_list_is_empty_and_that_emptiness_is_a_measurement():
     """
     assert KNOWN_POST_CUTOFF_DEPENDENT_IDS == frozenset()
     assert set(CLEAN_FACTOR_IDS) == set(BOUND_FACTOR_IDS)
-    assert len(BOUND_FACTOR_IDS) == 10, (
+    assert len(BOUND_FACTOR_IDS) == 11, (
         "the bound minute-factor set changed; the emptiness above only covers "
         "what this file measures, so re-check the new one before trusting it"
     )

@@ -62,9 +62,10 @@ from data.clean.intraday_schema import DEFAULT_DECISION_TIME
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from factors import registry as factor_registry
 from factors.base import Factor
-from factors.compute.minute.binding import combine_minute_stats
+from factors.compute.minute.binding import combine_minute_stats, minute_combine_daily_spec
 from factors.materialize import (
     MaterializeSources,
+    combine_daily_panel,
     materialize_intermediate_range,
     materialize_range,
     payload_columns,
@@ -305,6 +306,9 @@ def _assemble(
     payload_by_id: dict[str, pd.DataFrame],
     dates: pd.DatetimeIndex,
     symbols: list[str],
+    *,
+    sources: MaterializeSources,
+    view: View,
 ) -> pd.DataFrame:
     """Slice each stored payload to (dates x universe) and stack the values.
 
@@ -314,6 +318,11 @@ def _assemble(
     universe standardizes them" is a property of the READ, not of the artifact —
     so the same store serves a 12-name and a 24-name request correctly, and
     neither can pollute the other (D4c / design revision A2).
+
+    A factor whose combine DECLARES a daily input (valley_price_quantile's
+    reversal neutralization) is handed the view-lagged, trailing-trimmed daily
+    panel built by ``materialize.combine_daily_panel`` from the injected sources
+    — the declaration is consulted, never an isinstance dispatch (red line #5).
     """
     symbol_set = set(map(str, symbols))
     columns: dict[str, pd.Series] = {}
@@ -326,7 +335,16 @@ def _assemble(
             sym = payload.index.get_level_values(SYMBOL_LEVEL)
             sliced = payload[d.isin(dates) & pd.Index(sym).isin(symbol_set)]
         if stores_intermediate(factor):
-            columns[fid] = combine_minute_stats(factor, sliced)
+            if sliced.empty:
+                columns[fid] = pd.Series([], index=_empty_index(), dtype=float, name=fid)
+            elif minute_combine_daily_spec(factor) is not None:
+                daily = combine_daily_panel(
+                    factor, view=view, symbols=symbols, emit_start=dates.min(),
+                    emit_end=dates.max(), sources=sources,
+                )
+                columns[fid] = combine_minute_stats(factor, sliced, daily=daily)
+            else:
+                columns[fid] = combine_minute_stats(factor, sliced)
         elif sliced.empty:
             columns[fid] = pd.Series([], index=_empty_index(), dtype=float, name=fid)
         else:
@@ -389,7 +407,7 @@ def panel(
             sources=sources, view=resolved_view, cutoff=cutoff,
             diagnostics=diagnostics,
         )
-    return _assemble(factors, payload_by_id, dates, symbols)
+    return _assemble(factors, payload_by_id, dates, symbols, sources=sources, view=resolved_view)
 
 
 def cross_section(

@@ -41,6 +41,8 @@ from factors import registry as factor_registry
 from factors import service as service_mod
 from factors.compute.minute.binding import (
     _MINUTE_STREAM_BINDINGS,
+    CROSS_SECTIONAL_MINUTE_FACTORS,
+    is_cross_sectional_minute,
     minute_intermediate_columns,
     minute_stats_from_bars,
 )
@@ -50,8 +52,10 @@ from factors.compute.minute.intraday_amp_cut import (
     V_STD_COL,
     IntradayAmpCutFactor,
 )
+from factors.compute.minute.valley_price_quantile import ValleyPriceQuantileFactor
 from factors.materialize import (
     MaterializeSources,
+    combine_daily_panel,
     make_recompute_fn,
     materialize_intermediate_range,
     materialize_range,
@@ -414,6 +418,14 @@ def _probe_requested_universe(universe):
     return pd.Series(0.0, index=pd.Index(requested_universe(universe), name="symbol"))
 
 
+def _probe_combine_daily_panel(universe):
+    return combine_daily_panel(
+        factor_registry.build("valley_price_quantile_20"), view=View.DECISION,
+        symbols=universe, emit_start=EMIT[0], emit_end=EMIT[-1],
+        sources=MaterializeSources(daily=DailyProv()),
+    )
+
+
 #: entry point -> how to call it with a caller list. A new entry point without a
 #: recipe fails the surface test below; the recipes cannot be derived (each
 #: signature differs), but WHICH ones must exist is.
@@ -424,6 +436,7 @@ _ENTRY_PROBES = {
     "factors.materialize.materialize_intermediate_range": _probe_materialize_intermediate_range,
     "factors.materialize.make_recompute_fn": _probe_make_recompute_fn,
     "factors.materialize.requested_universe": _probe_requested_universe,
+    "factors.materialize.combine_daily_panel": _probe_combine_daily_panel,
 }
 
 
@@ -735,15 +748,22 @@ def test_the_cross_sectional_combine_runs_once_per_request():
 # Payload shape: what each kind of factor stores
 # --------------------------------------------------------------------------- #
 def test_only_the_cross_sectional_factor_stores_an_intermediate():
-    """The other ten minute factors and the daily factors are NOT dragged into the
-    two-stage form — their values are universe-free, so they store their value."""
+    """The other nine minute factors and the daily factors are NOT dragged into
+    the two-stage form — their values are universe-free, so they store their
+    value. Derived from the DECLARED set (``is_cross_sectional_minute``), so a
+    third cross-sectional factor cannot sneak in untested; today the set is
+    intraday_amp_cut (v_mean/v_std) + valley_price_quantile (raw_qbar, D5 C4b)."""
     for cls in _MINUTE_STREAM_BINDINGS:
         factor = factor_registry.build(cls().name)
-        expect = cls is IntradayAmpCutFactor
+        expect = is_cross_sectional_minute(factor)
         assert stores_intermediate(factor) is expect, factor.name
         assert payload_columns(factor) == (
-            (V_MEAN_COL, V_STD_COL) if expect else (factor.name,)
+            minute_intermediate_columns(factor) if expect else (factor.name,)
         ), factor.name
+    assert set(CROSS_SECTIONAL_MINUTE_FACTORS) == {
+        IntradayAmpCutFactor,
+        ValleyPriceQuantileFactor,
+    }
     for fid in (DAILY_ID, "volatility_20", "value_ep"):
         factor = factor_registry.build(fid)
         assert stores_intermediate(factor) is False, fid
