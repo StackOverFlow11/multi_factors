@@ -29,10 +29,18 @@
   sha256 manifest 入 git），**绝不读 live 路径**——新 runner 写同名文件，跑一次就毁掉
   唯一基线。
 - **cache-only**：每次 service 取数后断言 `stk_mins_live_calls == 0`，非零即 ABORT。
-- **harness 加固（本准备步）**：bounded `warmup_left_extension` 类加**结构性 cell 数
-  ceiling** =（w−1 个 warmup 交易日）×（冻结面板 symbol 数）——该类按定义不可能超过
-  此界，越界即 FAIL（C4a 评审 LOW-1；类内**幅度仍不设限**的既有裁定不变，理由：两种
-  加载几何在该区本来就合法地不同，区外仍由 1e-12 把门）。
+- **bounded `warmup_left_extension` 的 cell ceiling 是 backstop，不是主闸门（措辞已修正）**：
+  ceiling =（w−1 个 warmup 交易日）×（冻结面板 symbol 数）是该判据下 warmup 格数的
+  **结构上限**——只要 `_in_warmup` 的**日期边界判据本身**没坏，它在**数学上就不可能被
+  超过**。所以它**既不是量级闸门也不是密度闸门**，而是"日期边界判据自身有没有坏"的
+  **兜底**；**只有在另一个守卫已经失效时它才会响**。
+  实测占用率 91.4%–91.5%（8198/8955、17289/18905、17272/18905）**不是"还有 8.5% 余量"
+  的意思**：占用率 =（warmup 区内真有差异的票数）/（全部票数），结构上本就该接近 1，
+  它既不是警报也不是头寸。
+  ⚠️ **C4a 评审 LOW-1 的量级缺口仍然敞着**：bounded `warmup_left_extension` 类**至今
+  没有任何量级上限**，本轮实测落在 warmup 类里的 max rel 高达 **1.996**（符号翻转）。
+  区外仍由 1e-12 把门，区内不设限是既有裁定（两种加载几何在该区本来就合法地不同）——
+  **但读者不许把上面那个 ceiling 当成填补了这个缺口**。
 
 ## 二、预登记漂移清单（对账白名单）
 
@@ -57,6 +65,56 @@ unclassified → FAIL。**
 | 12 | vpq `neutralization_coverage` add-Section | 整个 subtree 为新增；按 section **名字**匹配（`REGISTERED_EXTRA_SECTIONS`），绝不按裸下标 | 编目 §七之四 #1 |
 | 13 | `book_view_effect`（with_book(decision) 格） | decision 书 vs 冻结 close 书的 Incremental 轴数值差：**全量报告、不设闸**；闸在 `_bookclose` 格（见 §四） | harness 设计（a)/(b) 分解；交接 §3 D5 C4 ⚠️ |
 | 14 | `hand_anchors_d2.json` 报 `all_ok_frozen14: False` | 70 行 5 处失配**全部且仅有 jump**（手算已截断 vs 冻结 `panels_d2` 未截断）——正确信号非回归 | 交接 §3 #5 |
+
+## 二之二、C5 首轮全量跑的原始结果（pre-fix）—— 誊自日志，**耐久化**
+
+> **为什么誊在这里**：这些数字原本只存在于 `artifacts/logs/`（gitignored、只在本机），
+> 而 C5 的重跑会把同名日志**全部覆盖**——`qt.pipeline._make_logger` 以 truncate 模式打开。
+> 本项目已经因为 `/tmp` 被清理丢过一次全量跑的总日志。**报告是耐久载体，日志不是。**
+> 下表是 F1/F2/F3/F4/F5 全部修复**之前**的状态，B 阶段的结果表（§三）与它对照阅读。
+
+**运行环境**：11 因子 × {panels, reports, anchors}，2026-07-28 01:50→05:52 一轮 sweep，
+cache-only（每行 `live_calls=0`）。**⚠️ 该轮跑在 PR #109 之前的判据上**（见 §六.6）。
+
+### panels 腿（`unclassified` 与 `ok` 为判定值，其余为分类计数）
+
+| 因子 | frozen / new | warmup | float_tail | flip | contam | footprint | **unclassified** | max_rel | **ok** |
+|---|---|---|---|---|---|---|---|---|---|
+| minute_ideal_amp_10 | 1159263 / 1205160 | 8198 | 0 | 0 | 0 | 45897 | **0** | 1.996e+00 | **True** |
+| jump_amount_corr_20 | 1159263 / 1205160 | 17289 | 101 | 0 | 0 | 45897 | **0** | 1.787e+00 | **True** |
+| volume_peak_count_20 | 1149313 / 1205160 | 34441 | 0 | 20 | 0 | 46788 | **0** | 8.453e-01 | **True** |
+| valley_price_quantile_20 | 1146878 / 1205160 | 24568 | 883 | 0 | 19177 | 58282 | **0** | 1.999e+00 | **True** |
+| amp_marginal_anomaly_vol_20 | 1159263 / — | — | — | — | — | — | **729029** | — | **False** (F1) |
+| peak_interval_kurtosis_20 | 1149313 / 1205160 | 35152 | 0 | 0 | 0 | 46790 | **20** | 1.233e+00 | **False** (F2) |
+| valley_relative_vwap_20 | 1146878 / 1205160 | 35205 | 0 | 0 | 0 | 49235 | **20** | 8.041e-03 | **False** (F2) |
+| valley_ridge_vwap_ratio_20 | 591524 / 1205160 | 28161 | 0 | 0 | 0 | 608309 | **20** | 1.293e-02 | **False** (F3) |
+| ridge_minute_return_20 | 588536 / 1205160 | 27811 | 0 | 0 | 0 | 611318 | **20** | 1.999e+00 | **False** (F3) |
+| intraday_amp_cut_10 | 1154288 / 1158842 | 8221 | 758 | 0 | 17 | 0 | **0** | 1.976e+00 | **False** (F4，按月计数非单调) |
+| peak_ridge_amount_ratio_20 | 579030 / 1205160 | 27896 | 0 | 0 | 0 | 620916 | **30** | 7.360e-01 | **False** (F3 第三个因子) |
+
+**出处（逐条）**：8 行誊自幸存日志原文（快照 `tmp/context/cc_c5_audit/c5_run_logs_preserved/`，
+mtime 保留）；`peak_interval_kurtosis_20` 与 `intraday_amp_cut_10` 两行的日志**已被本轮
+判据验证重跑覆盖**，其值出自 ① 覆盖前的逐字抓取与 ② 用同一批 served 面板在 **main 判据**
+下的离线独立重算——两者一致；`amp_marginal_anomaly_vol_20` 一行的日志已被 F1 修复重跑
+覆盖，其值出自编目 §七之六（该行本就是 F1 的证据，非本轮新测）。
+
+**交叉印证**：离线独立重算（不读日志，直接对 dump 的 served 面板跑 main 判据）在 **9 个
+非 amp_marginal 因子上逐格复现上表**——这使离线重算可以独立当证据基用，而不必信任日志。
+
+### anchors 腿
+
+| 因子 | rows | ok | warmup | failed | 判定 |
+|---|---|---|---|---|---|
+| minute_ideal_amp_10 / jump / volume_peak / ridge / valley_ridge / peak_ridge | 5 | 3 | 2 | 0 | **True** |
+| valley_price_quantile_20 / valley_relative_vwap_20 / intraday_amp_cut_10 | 5 | 4 | 1 | 0 | **True** |
+| peak_interval_kurtosis_20 | 5 | 2 | 3 | 0 | **True** |
+| amp_marginal_anomaly_vol_20 | 5 | — | — | **3** | **False** (F1；出处编目 §七之六) |
+
+### reports 腿
+
+**11/11 全部 rc=1，且每一个都是 F5**——`{stem}_exec_with_book.json` 被 close 模式的
+事后改名销毁，`run_reports_mode` 抛 `FileNotFoundError`。**这不是判定结果**：该腿在 C5
+首轮**没有对任何因子产生过一个判定**（详见 §六.7）。
 
 ## 三、每因子结果表（TBD）
 
@@ -90,6 +148,11 @@ unregistered 计数（strict 格必须为 0）；anchors = ok/warmup/failed 行�
   的登记类差异——引擎在带书条件下的效应，与 A 同口径可比。
 - **C−B = 书视图修正**：`with_book(decision)` 格的 `book_view_effect` 叶子（decision 书
   vs close 书的预期差异，全量列出不设闸）——即 §1.1 活缺陷（close(d) 书）的修正幅度。
+
+> ⚠️ **参照物只有冻结 exec 基线，没有"上一轮 C5"可比**。A/B/C 三列全部是**新 artifact
+> vs `artifacts/refactor_baseline/exec_baseline/` 的 77 份冻结产物**的比较。C5 首轮的
+> reports 腿对 11 个因子**一个判定都没产生过**（全是 F5 抛异常，见 §二之二与 §六.7），
+> 所以本表**不是**与前一轮 C5 的对比——**读者不许这么读**。
 
 | 因子 | A（no_book 各类计数） | B（bookclose 各类计数） | C−B（book_view_effect 叶子数 / 涉及轴） | 分解闭合？（B 超 A 的部分是否全部具名） |
 |---|---|---|---|---|
@@ -129,3 +192,23 @@ unregistered 计数（strict 格必须为 0）；anchors = ok/warmup/failed 行�
    （限行 + 省略标记已落地，C5 重渲染后残留形态需目视确认）。
 5. **census 守卫 cwd 陷阱**：读真实语料的 census 测试在无语料的 worktree 里静默
    skip——全量对账的 gate 行必须报「语料可达/不可达」两组数字，别只看总数。
+6. **C5 首轮全量跑执行在 PR #109 之前的判据上 ⇒ cell ceiling 一次都没上过场**（登记，
+   不补跑）。`warmup_ceiling=` 字段由 `35de346`（2026-07-28 **02:08**）引入，而 sweep 跑在
+   **01:50→05:52**；**幸存的 8 条日志行没有一条带这个字段**（带的三条全是 07-30 的重跑）
+   ⇒ 整轮 sweep 用的是 #109 之前的分类器。**影响已结清**：ceiling 只对 bounded 因子有效，
+   在当前 HEAD（ceiling 生效）上重算，三个 bounded 因子全过——8198/8955、17289/18905、
+   17272/18905。**没有藏住任何失败。** 不补跑的理由：B 阶段本来就在当前 HEAD 上重跑全部
+   11 个因子，ceiling 届时真正上场。但**首轮那一列 panels 结果是另一套判据产出的**，
+   §二之二 的表要这么读。
+7. **reports 腿在 C5 首轮零观测**（登记）：11 个 `rc=1` **全部是 F5**（缺输入文件抛异常），
+   没有一个是判定结果。⇒ 该腿至今只被真正观测过**一个**因子（`amp_marginal_anomaly_vol_20`，
+   F1 修复后重跑 rc=0，六格差异全落在已登记类内）。**B 阶段是这一腿的首次观测**；§四的
+   A/B/C 分解因此**只有冻结基线一个参照物**（见 §四的告示）。B 中若 reports 出现类外差异：
+   **停下上报，不扩类**。
+8. **`_make_logger` 是 truncate 模式 —— 重跑会静默销毁同名日志的唯一副本**（登记为已知
+   运维风险，**本 PR 不改**：那是行为改动，属另一个 PR）。本轮已被它咬过一次：为验证判据
+   改动而重跑 `intraday_amp_cut_10` / `peak_interval_kurtosis_20` 的 panels 腿，覆盖掉了这
+   两条 C5 原始日志行（值经"覆盖前逐字抓取 + 离线独立重算"双路复原，见 §二之二 出处）。
+   与 D5a 抓到的"跑一次就毁掉唯一冻结基线"是**同一族失效模式**：**产物是唯一副本，而写它
+   的动作没有意识到这一点**。缓解：`tmp/context/cc_c5_audit/c5_run_logs_preserved/` 存了
+   B 之前的快照，且 §二之二 已把数字誊进**被提交的**报告。
