@@ -1,31 +1,36 @@
-"""D1 end-of-stage RAW factor-value panel freeze (the pre-D2 baseline for D5).
+"""D1 RAW factor-value panel baseline — VERIFY-ONLY since D5 C6.
 
-Freezes the closing 14 factors' RAW daily factor-value panels (11 minute-derived
-factors + the 3 confirmed book factors) on the eleven-factor evaluation data
-plane (CSI500 ``000905.SH``, 2021-07-01 .. 2026-06-30, CACHE-ONLY). ``main`` at
-the producing SHA still carries the pre-refactor factor math bit-for-bit (the D1
-registry PR was dispatch-only), so these panels are the ONLY baseline the D5
-cell-by-cell reconciliation can compare against once D2 rewrites the math.
+The 14 closing factors' RAW daily factor-value panels (11 minute-derived + 3
+confirmed book factors) were frozen once, on the eleven-factor evaluation data
+plane (CSI500 ``000905.SH``, 2021-07-01 .. 2026-06-30, CACHE-ONLY), from ``main``
+at the producing SHA recorded in ``docs/factors/d1_panel_freeze_manifest.md``.
+They are the ONLY baseline the D5 cell-by-cell reconciliation compares against.
 
-NO FACTOR MATH IS REIMPLEMENTED HERE. Every panel is produced by calling the
-SAME loader chain the ``qt/eval_*.py`` runners call, with the SAME constants,
-imported FROM the runner modules themselves (identity with the runner call
-sites, not a transcription of them):
+REGENERATION IS RETIRED (owner ruling 2026-07-28, D5 C6)
+---------------------------------------------------------
+This module used to rebuild those panels by calling the eleven legacy
+``qt/eval_*.py`` runners' private ``_load_*_panel`` loaders. C6 deletes those
+runners, so the rebuild could not work again; rather than leave a code path that
+breaks the moment it is used, the capability is retired outright and the
+baseline is **frozen-forever**. What remains is verification: read the frozen
+bytes and check them against the manifest.
 
-* minute factors — each runner's private ``_load_*_panel`` (per-symbol
-  cache-only 1min read -> ``data.clean`` ``compute_*`` -> daily aggregation),
-  then the runner's own restriction to the daily panel dates
-  (``load.factor[dates.isin(panel_dates)]``). The frozen value is the RAW
-  restricted series, BEFORE ``_process_factors`` (z-score / neutralization are
-  shared machinery, not factor math).
-* book factors — the runners' ``_build_book_factors()`` +
-  ``factor.compute(panel)`` on the enriched daily panel, frozen RAW.
+That direction is the safe one. The provenance rule (design v3.2 §5 leg 4) was
+always that regenerating this baseline is legitimate ONLY from a checkout of the
+pinned pre-D2 SHA — never from current code, because rebuilding the baseline
+from the tree being validated makes the D5 reconciliation structurally unable to
+fail (the ``compare_postmerge.py`` empty-reconciliation failure mode this repo
+committed once). Retiring the rebuild removes the only way to violate that rule
+by accident.
 
-PROVENANCE RULE (design v3.2 §5 leg 4): regenerating this baseline is only
-legitimate from a checkout of the pinned pre-D2 producing SHA recorded in the
-manifest — NEVER from current code. Rebuilding the baseline from the same tree
-that is being validated would make the D5 reconciliation structurally unable to
-fail (the ``compare_postmerge.py`` empty-reconciliation failure mode).
+Where the authority lives
+-------------------------
+The bulk panels are gitignored; **the hashes are in git**, in the manifest
+document's table. That split is what gives verification teeth: someone who
+regenerates the panels and their machine manifest cannot also silently move the
+expected hashes, because those show up in ``git diff``. The gitignored
+``manifest.json`` is checked too — as a second, richer witness (row counts,
+NaN counts, mean/std, file sha256) that must AGREE with the git-tracked table.
 
 Canonical content hash
 ----------------------
@@ -46,7 +51,14 @@ an error (the hash would otherwise be order-ambiguous). The column NAME is not
 hashed (content equality, not labelling). NaN payload bits are collapsed on
 purpose; +0.0 and -0.0 stay distinct (a real IEEE value difference).
 
-Run: ``python -m qt.panel_freeze`` (deliberately NOT registered in qt/cli).
+Run (deliberately NOT registered in qt/cli, as before)::
+
+    python -m qt.panel_freeze --verify
+
+There is no partial verification. A frozen-forever baseline verified in part is
+a baseline you believe more than you checked, so ``--verify`` always covers
+every panel in both frozen trees (the D1 baseline and the PR-C corrected
+``jump_amount_corr_20`` reference panel).
 """
 
 from __future__ import annotations
@@ -54,36 +66,37 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import logging
 import os
-import subprocess
-import time
-from collections.abc import Sequence
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import pandas as pd
 
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
+from qt.frozen_manifest_doc import (
+    DocManifestRow,
+    parse_doc_manifest,
+    parse_doc_producing_sha,
+)
 
 CANONICAL_HASH_VERSION = "qt.panel_freeze canonical v1"
 DEFAULT_CONFIG = "config/phase_c_jump_amount_corr.yaml"
 DEFAULT_OUTPUT_ROOT = "artifacts/refactor_baseline"
-#: PanelStore artifact name for THIS run — content-identical to the runners'
-#: per-run panel (same cache, same window), under a freeze-specific name so the
-#: freeze never clobbers an accepted eval run's ``artifacts/data`` artifact.
+#: PanelStore artifact name the freeze used — kept because the frozen
+#: ``manifest.json`` header records it and the verifier reads that header.
 PANEL_STORE_NAME = "d1_panel_freeze_daily"
-#: Determinism double-run subjects (task §2): two minute factors — including
-#: valley_price_quantile, the one loader that also consumes the daily panel —
-#: plus one book factor.
-DETERMINISM_FACTORS = ("jump_amount_corr_20", "valley_price_quantile_20", "value_ep")
-#: data_coverage payload fields reconciled against the shipped eval JSONs.
-#: They describe the PROCESSED series at the evaluator boundary (see
-#: ``analytics/eval/standard.py::data_coverage``), so the reconciliation
-#: re-derives that boundary from the frozen RAW panel via the runners' own
-#: ``_process_factors`` — the frozen artifact itself stays raw.
+#: The git-tracked authority for the D1 baseline (14 panels).
+D1_MANIFEST_DOC = "docs/factors/d1_panel_freeze_manifest.md"
+#: The git-tracked authority for the PR-C corrected jump reference panel (1).
+PR_C_MANIFEST_DOC = "docs/factors/pr_c_cutoff_fix_reference_panel.md"
+#: Sub-root of the PR-C reference panel, relative to the baseline root.
+PR_C_SUBDIR = "pr_c_cutoff_fix"
+#: data_coverage payload fields the freeze reconciled against the shipped eval
+#: JSONs BEFORE accepting each panel. The reconciliation itself is history; the
+#: field list is not, because ``manifest.json`` records the per-field outcome
+#: and verification re-reads that record.
 RECONCILE_INT_FIELDS = (
     "panel_rows",
     "evaluation_periods",
@@ -92,6 +105,42 @@ RECONCILE_INT_FIELDS = (
     "dropped_symbols_count",
 )
 RECONCILE_FLOAT_FIELDS = ("factor_nan_rate",)
+
+#: The single authored statement of what C6 retired. Every tool that retired a
+#: regeneration path COMPOSES this rather than restating it: a regex cannot
+#: assert that no other sentence says the same thing, but "there is no other
+#: sentence" can (CLAUDE.md methodology #2).
+RETIREMENT_RULING = "owner ruling 2026-07-28, D5 C6"
+
+
+class RegenerationRetiredError(RuntimeError):
+    """Raised when a retired regeneration entry point is invoked.
+
+    A retired capability must fail LOUDLY and READABLY (redline #9). Letting the
+    call succeed as a no-op, or die on a bare ``ImportError`` from a deleted
+    runner, both leave the caller guessing whether anything happened.
+    """
+
+
+def retirement_message(tool: str, product: str, why: str, verifies: str) -> str:
+    """The retirement error text, composed from one authored core plus two
+    per-tool clauses.
+
+    Only what is true of ALL THREE retired tools is shared: the ruling, the fact
+    that this repository no longer rebuilds the product, and the pointer to
+    ``--verify``. Both ``why`` (what the rebuild depended on) and ``verifies``
+    (what verification actually checks) are supplied by the caller, because the
+    three tools differ on both counts — they did not lean on the legacy runners
+    to the same degree, and they do not verify the same kind of thing. A single
+    shared sentence covering those would have to overstate one of them, which is
+    this repository's recurring defect: text that describes a check other than
+    the one performed.
+    """
+    return (
+        f"{tool}: regeneration is RETIRED ({RETIREMENT_RULING}). This repository "
+        f"no longer rebuilds {product}. {why} "
+        f"Run `{tool} --verify` instead: {verifies}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -169,6 +218,12 @@ def atomic_write_parquet(panel: pd.Series | pd.DataFrame, path: Path | str) -> s
     tmp-file + ``os.replace`` in the target directory: readers never observe a
     partial file, and a failed write leaves no tmp residue (and never touches an
     existing target).
+
+    This is the byte-layout contract the frozen panels were laid down with. No
+    production caller remains after C6 (the freeze that used it is retired); it
+    is kept because it DEFINES the on-disk form the verifier reads, and because
+    a verifier that cannot construct a valid frozen tree cannot be given a
+    negative test.
     """
     series = _as_single_series(panel).sort_index(kind="mergesort")
     target = Path(path)
@@ -231,7 +286,12 @@ def manifest_row(
     file_name: str,
 ) -> dict:
     """One manifest record. mean/std are float64 ``Series.mean()``/``std(ddof=1)``
-    with NaN skipped (pandas defaults), reported at full precision."""
+    with NaN skipped (pandas defaults), reported at full precision.
+
+    Still live after C6: verification RE-DERIVES each row from the frozen panel
+    and compares it field by field with the recorded one, so a manifest whose
+    hash was patched but whose statistics were not is caught as well.
+    """
     series = _as_single_series(panel)
     dates = series.index.get_level_values(DATE_LEVEL)
     return {
@@ -251,7 +311,12 @@ def manifest_row(
 
 
 def render_manifest_markdown(header: dict, rows: list[dict]) -> str:
-    """Deterministic Markdown manifest: a header block + one row per factor."""
+    """Deterministic Markdown manifest: a header block + one row per factor.
+
+    This is the format definition of the frozen ``manifest.md``; ``--verify
+    --show-manifest`` re-renders the table from the panels actually on disk so
+    it can be eyeballed (or diffed) against the frozen one.
+    """
     lines = ["# D1 panel freeze manifest", ""]
     for key in sorted(header):
         lines.append(f"- **{key}**: {header[key]}")
@@ -269,577 +334,393 @@ def render_manifest_markdown(header: dict, rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def atomic_write_text(text: str, path: Path | str) -> None:
-    """tmp + ``os.replace`` text write (same atomicity contract as the parquet)."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, target)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
 # --------------------------------------------------------------------------- #
-# Recipes: the runner call sites, referenced (not transcribed)
+# Verification
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
-class MinuteRecipe:
-    """One minute factor's runner-owned build chain.
-
-    ``build`` closes over the runner module's loader AND its constants, so the
-    call is identical to the runner's own call site by construction.
-    """
+class PanelVerification:
+    """One frozen panel's verification outcome (no secrets)."""
 
     factor_id: str
-    stem: str  # the runner's _REPORT_STEM (names the eval JSON artifacts)
-    spec: object
-    build: Callable[[object, list[str], pd.DataFrame, logging.Logger], object]
+    file: str
+    rows: int
+    canonical_sha256: str
+    problems: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
 
 
-def minute_recipes() -> list[MinuteRecipe]:
-    """The 11 minute factors, each bound to its runner's loader + constants.
-
-    Imports live inside the function so importing ``qt.panel_freeze`` for the
-    network-free unit tests stays light.
-    """
-    import qt.eval_amp_marginal_anomaly_vol as e
-    import qt.eval_intraday_amp_cut as g
-    import qt.eval_jump_amount_corr as c
-    import qt.eval_minute_ideal_amplitude as d
-    import qt.eval_peak_interval_kurtosis as h
-    import qt.eval_peak_ridge_amount_ratio as m
-    import qt.eval_ridge_minute_return as k
-    import qt.eval_valley_price_quantile as ell
-    import qt.eval_valley_relative_vwap as i
-    import qt.eval_valley_ridge_vwap_ratio as j
-    import qt.eval_volume_peak_count as f
-
-    recipes: list[MinuteRecipe] = []
-
-    def add(module, factor, build) -> None:
-        spec = factor.spec
-        recipes.append(
-            MinuteRecipe(
-                factor_id=spec.factor_id,
-                stem=module._REPORT_STEM,
-                spec=spec,
-                build=build,
-            )
-        )
-
-    jac = c.JumpAmountCorrFactor(lookback_days=c.JUMP_LOOKBACK_DAYS)
-    add(c, jac, lambda cfg, symbols, panel, logger, _s=jac.spec: c._load_jump_factor_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=c.JUMP_LOOKBACK_DAYS, min_pairs=c.JUMP_MIN_PAIRS,
-    ))
-
-    mia = d.MinuteIdealAmplitudeFactor(lookback_days=d.IDEAL_AMP_LOOKBACK_DAYS)
-    add(d, mia, lambda cfg, symbols, panel, logger, _s=mia.spec: d._load_minute_ideal_amp_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=d.IDEAL_AMP_LOOKBACK_DAYS, lam=d.IDEAL_AMP_LAMBDA,
-        min_minutes=d.IDEAL_AMP_MIN_MINUTES,
-    ))
-
-    amav = e.AmpMarginalAnomalyVolFactor(lookback_days=e.AMP_ANOMALY_LOOKBACK_DAYS)
-    add(e, amav, lambda cfg, symbols, panel, logger, _s=amav.spec: e._load_amp_anomaly_vol_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=e.AMP_ANOMALY_LOOKBACK_DAYS, min_pool=e.AMP_ANOMALY_MIN_POOL,
-        min_selected=e.AMP_ANOMALY_MIN_SELECTED, sigma_k=e.AMP_ANOMALY_SIGMA_K,
-    ))
-
-    vpc = f.VolumePeakCountFactor(lookback_days=f.VOLUME_PRV_LOOKBACK_DAYS)
-    add(f, vpc, lambda cfg, symbols, panel, logger, _s=vpc.spec: f._load_volume_peak_count_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=f.VOLUME_PRV_LOOKBACK_DAYS, baseline_days=f.VOLUME_PRV_BASELINE_DAYS,
-        baseline_min_obs=f.VOLUME_PRV_BASELINE_MIN_OBS, sigma_k=f.VOLUME_PRV_SIGMA_K,
-        min_valid_days=f.VOLUME_PRV_MIN_VALID_DAYS,
-        min_classifiable=f.VOLUME_PRV_MIN_CLASSIFIABLE,
-    ))
-
-    iac = g.IntradayAmpCutFactor(lookback_days=g.AMP_CUT_LOOKBACK_DAYS)
-    add(g, iac, lambda cfg, symbols, panel, logger, _s=iac.spec: g._load_amp_cut_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=g.AMP_CUT_LOOKBACK_DAYS, lam=g.AMP_CUT_LAMBDA,
-        min_day_minutes=g.AMP_CUT_MIN_DAY_MINUTES, min_valid_days=g.AMP_CUT_MIN_VALID_DAYS,
-        min_cross_section=g.AMP_CUT_MIN_CROSS_SECTION,
-    ))
-
-    pik = h.PeakIntervalKurtosisFactor(lookback_days=h.PEAK_INTERVAL_LOOKBACK_DAYS)
-    add(h, pik, lambda cfg, symbols, panel, logger, _s=pik.spec: h._load_peak_interval_kurtosis_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=h.PEAK_INTERVAL_LOOKBACK_DAYS, baseline_days=h.VOLUME_PRV_BASELINE_DAYS,
-        baseline_min_obs=h.VOLUME_PRV_BASELINE_MIN_OBS, sigma_k=h.VOLUME_PRV_SIGMA_K,
-        min_valid_days=h.VOLUME_PRV_MIN_VALID_DAYS,
-        min_classifiable=h.VOLUME_PRV_MIN_CLASSIFIABLE,
-        min_intervals=h.PEAK_INTERVAL_MIN_INTERVALS,
-    ))
-
-    vrv = i.ValleyRelativeVwapFactor(lookback_days=i.VALLEY_VWAP_LOOKBACK_DAYS)
-    add(i, vrv, lambda cfg, symbols, panel, logger, _s=vrv.spec: i._load_valley_relative_vwap_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=i.VALLEY_VWAP_LOOKBACK_DAYS, baseline_days=i.VOLUME_PRV_BASELINE_DAYS,
-        baseline_min_obs=i.VOLUME_PRV_BASELINE_MIN_OBS, sigma_k=i.VOLUME_PRV_SIGMA_K,
-        min_valid_days=i.VOLUME_PRV_MIN_VALID_DAYS,
-        min_classifiable=i.VOLUME_PRV_MIN_CLASSIFIABLE,
-        min_valley_bars=i.VALLEY_VWAP_MIN_VALLEY_BARS,
-    ))
-
-    vrr = j.ValleyRidgeVwapRatioFactor(lookback_days=j.VALLEY_RIDGE_LOOKBACK_DAYS)
-    add(j, vrr, lambda cfg, symbols, panel, logger, _s=vrr.spec: j._load_valley_ridge_vwap_ratio_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=j.VALLEY_RIDGE_LOOKBACK_DAYS, baseline_days=j.VOLUME_PRV_BASELINE_DAYS,
-        baseline_min_obs=j.VOLUME_PRV_BASELINE_MIN_OBS, sigma_k=j.VOLUME_PRV_SIGMA_K,
-        min_valid_days=j.VOLUME_PRV_MIN_VALID_DAYS,
-        min_classifiable=j.VOLUME_PRV_MIN_CLASSIFIABLE,
-        min_valley_bars=j.VALLEY_RIDGE_MIN_VALLEY_BARS,
-        min_ridge_bars=j.VALLEY_RIDGE_MIN_RIDGE_BARS,
-    ))
-
-    rmr = k.RidgeMinuteReturnFactor(lookback_days=k.RIDGE_RETURN_LOOKBACK_DAYS)
-    add(k, rmr, lambda cfg, symbols, panel, logger, _s=rmr.spec: k._load_ridge_minute_return_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=k.RIDGE_RETURN_LOOKBACK_DAYS, baseline_days=k.VOLUME_PRV_BASELINE_DAYS,
-        baseline_min_obs=k.VOLUME_PRV_BASELINE_MIN_OBS, sigma_k=k.VOLUME_PRV_SIGMA_K,
-        min_valid_days=k.VOLUME_PRV_MIN_VALID_DAYS,
-        min_classifiable=k.VOLUME_PRV_MIN_CLASSIFIABLE,
-        min_ridge_bars=k.RIDGE_RETURN_MIN_RIDGE_BARS,
-    ))
-
-    vpq = ell.ValleyPriceQuantileFactor(lookback_days=ell.VALLEY_QUANTILE_LOOKBACK_DAYS)
-    # The ONE loader that also consumes the daily panel (its reversal
-    # neutralization needs daily closes) — the runner passes it positionally.
-    add(ell, vpq, lambda cfg, symbols, panel, logger, _s=vpq.spec: ell._load_valley_price_quantile_panel(
-        cfg, symbols, _s, panel, logger,
-        lookback_days=ell.VALLEY_QUANTILE_LOOKBACK_DAYS,
-        baseline_days=ell.VOLUME_PRV_BASELINE_DAYS,
-        baseline_min_obs=ell.VOLUME_PRV_BASELINE_MIN_OBS, sigma_k=ell.VOLUME_PRV_SIGMA_K,
-        min_valid_days=ell.VOLUME_PRV_MIN_VALID_DAYS,
-        min_classifiable=ell.VOLUME_PRV_MIN_CLASSIFIABLE,
-        min_valley_bars=ell.VALLEY_QUANTILE_MIN_VALLEY_BARS,
-        min_cross_section=ell.VALLEY_QUANTILE_MIN_CROSS_SECTION,
-        reversal_days=ell.VALLEY_QUANTILE_REVERSAL_DAYS,
-    ))
-
-    pra = m.PeakRidgeAmountRatioFactor(lookback_days=m.PEAK_RIDGE_LOOKBACK_DAYS)
-    add(m, pra, lambda cfg, symbols, panel, logger, _s=pra.spec: m._load_peak_ridge_amount_ratio_panel(
-        cfg, symbols, _s, logger,
-        lookback_days=m.PEAK_RIDGE_LOOKBACK_DAYS, baseline_days=m.VOLUME_PRV_BASELINE_DAYS,
-        baseline_min_obs=m.VOLUME_PRV_BASELINE_MIN_OBS, sigma_k=m.VOLUME_PRV_SIGMA_K,
-        min_valid_days=m.VOLUME_PRV_MIN_VALID_DAYS,
-        min_classifiable=m.VOLUME_PRV_MIN_CLASSIFIABLE,
-        min_peak_bars=m.PEAK_RIDGE_MIN_PEAK_BARS,
-        min_ridge_bars=m.PEAK_RIDGE_MIN_RIDGE_BARS,
-    ))
-
-    return recipes
-
-
-def freezable_factor_ids() -> frozenset[str]:
-    """Every factor id this freeze can produce (3 book + 11 minute).
-
-    Derived from the recipes and the runners' own book builder, so it cannot
-    drift from what the freeze actually writes.
-    """
-    from qt.eval_jump_amount_corr import _build_book_factors
-
-    return frozenset(
-        {f.name for f in _build_book_factors()}
-        | {r.factor_id for r in minute_recipes()}
-    )
-
-
-def resolve_selection(only: Sequence[str] | None) -> tuple[str, ...] | None:
-    """Validate a ``--only`` selection against the ids the freeze can produce.
-
-    ``None`` (freeze everything) passes straight through — the default path is
-    untouched. A named id that this freeze does not produce is a readable error
-    rather than a silently empty output root: "froze 0 panels" reported as
-    success is how a correctness rerun quietly produces nothing.
-    """
-    if only is None:
-        return None
-    selected = tuple(only)
-    if not selected:
-        raise ValueError(
-            "--only was given an empty selection; omit it to freeze all factors."
-        )
-    known = freezable_factor_ids()
-    unknown = [fid for fid in selected if fid not in known]
-    if unknown:
-        raise ValueError(
-            f"--only names factor id(s) this freeze does not produce: {unknown}; "
-            f"known ids are {sorted(known)}."
-        )
-    return selected
-
-
-# --------------------------------------------------------------------------- #
-# Artifact reconciliation (against the shipped eval JSONs)
-# --------------------------------------------------------------------------- #
-def reconcile_with_eval_artifact(
-    stem: str,
-    processed: pd.Series,
-    declared_symbols: list[str],
-    reports_dir: Path,
-) -> dict:
-    """Check the frozen panel's coverage against ``{stem}_no_book.json``.
-
-    The JSON's ``data_coverage`` fields describe the PROCESSED factor series at
-    the evaluator boundary; ``processed`` here was re-derived from the frozen
-    RAW panel through the runners' own ``_process_factors``, so equality proves
-    the frozen panel is the same series the shipped evaluation consumed. Any
-    mismatch raises — a divergent panel must NOT be recorded (task: stop and
-    investigate, never freeze a discrepancy).
-    """
-    json_path = reports_dir / f"{stem}_no_book.json"
-    if not json_path.exists():
-        raise FileNotFoundError(
-            f"eval artifact {json_path.name} not found under {reports_dir} — the "
-            "reconciliation target is missing; refusing to freeze unreconciled."
-        )
-    document = json.loads(json_path.read_text(encoding="utf-8"))
-    coverage = None
-    for section in document.get("sections", []):
-        if section.get("name") == "data_coverage":
-            coverage = section.get("payload", {})
-    if not coverage:
-        raise ValueError(f"{json_path.name} carries no data_coverage payload.")
-
-    values = np.asarray(processed.to_numpy(), dtype=float)
-    finite = np.isfinite(values)
-    total = int(len(processed))
-    evaluated = pd.unique(processed.index.get_level_values(SYMBOL_LEVEL))
-    ours: dict[str, object] = {
-        "panel_rows": total,
-        "evaluation_periods": int(
-            pd.unique(processed.index.get_level_values(DATE_LEVEL)).size
-        ),
-        "symbols_evaluated": int(len(evaluated)),
-        "universe_symbols_declared": int(len(declared_symbols)),
-        "dropped_symbols_count": len(
-            set(map(str, declared_symbols)) - set(map(str, evaluated))
-        ),
-        # the eval JSON writer rounds floats to 6 decimals (data.quality clean_value)
-        "factor_nan_rate": round(1.0 - finite.sum() / total, 6) if total else None,
-    }
-    checks: dict[str, dict] = {}
-    mismatches: list[str] = []
-    for field in RECONCILE_INT_FIELDS + RECONCILE_FLOAT_FIELDS:
-        expected = coverage.get(field)
-        actual = ours[field]
-        ok = expected == actual
-        checks[field] = {"artifact": expected, "frozen": actual, "ok": bool(ok)}
-        if not ok:
-            mismatches.append(f"{field}: artifact={expected!r} frozen={actual!r}")
-    if mismatches:
-        raise ValueError(
-            f"frozen panel disagrees with {json_path.name} — NOT freezing: "
-            + "; ".join(mismatches)
-        )
-    return {"artifact": json_path.name, "checks": checks}
-
-
-# --------------------------------------------------------------------------- #
-# Freeze orchestration
-# --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
-class FreezeResult:
-    """Immutable summary of one panel-freeze run (no secrets)."""
+class VerifyResult:
+    """A whole frozen tree's verification outcome."""
 
-    output_root: Path
-    manifest_json: Path
-    manifest_md: Path
-    rows: tuple[dict, ...]
-    header: dict
-    elapsed: float
+    root: Path
+    doc: Path
+    panels: tuple[PanelVerification, ...]
+    problems: tuple[str, ...]
+    producing_git_sha: str | None
+    rendered_manifest: str | None = None
 
+    @property
+    def ok(self) -> bool:
+        return not self.problems and all(panel.ok for panel in self.panels)
 
-def _git_head_sha() -> str:
-    """Best-effort producing SHA (the manifest doc records the authoritative one)."""
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True, timeout=10,
-        )
-        return out.stdout.strip()
-    except Exception:  # noqa: BLE001 - provenance is best-effort here
-        return "UNKNOWN"
+    @property
+    def n_ok(self) -> int:
+        return sum(1 for panel in self.panels if panel.ok)
 
 
-def run_panel_freeze(
-    config_path: str = DEFAULT_CONFIG,
-    output_root: str | Path = DEFAULT_OUTPUT_ROOT,
-    *,
-    resume: bool = False,
-    only: Sequence[str] | None = None,
-) -> FreezeResult:
-    """Freeze all 14 RAW factor panels + verify determinism + reconcile artifacts.
+def _load_machine_manifest(root: Path) -> dict:
+    """The gitignored ``manifest.json`` document, or ``{}`` when absent."""
+    path = root / "manifest.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
-    ``only`` restricts the freeze to the named factor ids (default ``None`` =
-    all 14, byte-identical to before). It exists so a SINGLE factor whose
-    definition was corrected can be re-frozen into its OWN output root as a
-    reference panel, without a second freeze implementation and without
-    re-reading the 279M-row minute cache for the thirteen that did not change.
-    The shared data plane is built from the FULL book either way, so the daily
-    panel a filtered run computes on is identical to the full run's.
 
-    ``resume=True`` completes an interrupted freeze: a minute factor whose panel
-    file already exists is NOT rebuilt from the minute cache — its RAW series is
-    read back FROM the frozen file and then pushed through the SAME processing +
-    eval-artifact reconciliation before being accepted into the manifest (a
-    stale or corrupted file fails loudly; nothing is reused unverified). Its
-    canonical hash is therefore the hash of the file CONTENT. Book factors are
-    always recomputed (cheap). The determinism double-run still rebuilds its
-    subjects end-to-end via the runner loaders, so a resumed subject is compared
-    fresh-build-vs-frozen-file — a strictly stronger check than two in-process
-    builds. Resumed factor ids are disclosed in the manifest header.
+def _check_recorded_reconciliation(document: dict, problems: list[str]) -> None:
+    """The freeze reconciled each minute panel against its shipped eval JSON and
+    recorded the per-field outcome. Verification re-reads that record.
+
+    This is deliberately a check of the RECORD, not a re-run: re-running it
+    needs the processed series, which needs the data plane, which needs the
+    loaders C6 deletes. What can still be asserted is that the record says what
+    a passing reconciliation says — every declared field present, every check
+    ``ok`` — so a manifest edited to paper over a failure is caught.
     """
-    from qt.config import load_config
-    from qt.eval_jump_amount_corr import _build_book_factors, _check_preconditions
-    from qt.pipeline import (
-        _build_cache,
-        _build_universe,
-        _load_panel,
-        _log_run_cache_stats,
-        _make_logger,
-        _maybe_enrich_covariates,
-        _maybe_enrich_value,
-        _process_factors,
-    )
-
-    started = time.monotonic()
-    # Validate the selection BEFORE the expensive data plane: a typo must cost a
-    # readable error, not an hour of cache reads followed by an empty freeze.
-    selected = resolve_selection(only)
-    cfg = load_config(config_path)
-    _check_preconditions(cfg)  # tushare + cache-only + PIT index + neutralize, as the runners
-    # Freeze-specific PanelStore name: identical content, never clobbers an
-    # accepted eval run's per-run panel artifact.
-    cfg = cfg.model_copy(
-        update={"data": cfg.data.model_copy(update={"output_name": PANEL_STORE_NAME})}
-    )
-
-    out_root = Path(output_root)
-    panels_dir = out_root / "panels"
-    log_path = Path(cfg.output.log_dir) / "panel_freeze.log"
-    logger = _make_logger(log_path, name="qt.panel_freeze")
-    logger.info("panel freeze: config=%s output_root=%s", config_path, out_root)
-
-    # -- shared data plane, the runners' exact preamble --------------------- #
-    cache = _build_cache(cfg)
-    universe, symbols = _build_universe(cfg, logger, cache)
-    panel = _load_panel(cfg, symbols, logger, cache)
-    book_factors = _build_book_factors()
-    panel = _maybe_enrich_value(cfg, panel, symbols, book_factors, logger, cache)
-    panel = _maybe_enrich_covariates(cfg, panel, symbols, logger, cache)
-    _log_run_cache_stats(cache, logger)
-    panel_dates = pd.Index(
-        pd.unique(panel.index.get_level_values(DATE_LEVEL)), name=DATE_LEVEL
-    )
-
-    rows: list[dict] = []
-    reconciliations: dict[str, dict] = {}
-    canonical_by_id: dict[str, str] = {}
-    live_calls_total = 0
-
-    def _keep(factor_id: str) -> bool:
-        return selected is None or factor_id in selected
-
-    # -- book factors (raw, pre-processing) --------------------------------- #
-    kept_book = [factor for factor in book_factors if _keep(factor.name)]
-    book_raw = (
-        pd.concat(
-            [factor.compute(panel).rename(factor.name) for factor in kept_book], axis=1
+    recorded = document.get("reconciliation", {})
+    if not recorded:
+        problems.append(
+            "manifest.json carries no reconciliation block; the frozen panels' "
+            "agreement with the shipped eval artifacts is unwitnessed."
         )
-        if kept_book
-        else pd.DataFrame()
-    )
-    for factor in kept_book:
-        raw = book_raw[factor.name].rename(factor.name)
-        canonical = canonical_content_hash(raw)
-        target = panels_dir / f"{factor.name}.parquet"
-        sha = atomic_write_parquet(raw, target)
-        rows.append(manifest_row(factor.name, "book", raw, canonical, sha, target.name))
-        canonical_by_id[factor.name] = canonical
-        logger.info("frozen book %s: rows=%d canonical=%s", factor.name, len(raw), canonical)
-
-    # -- minute factors (raw, the runners' own loader chains) ---------------- #
-    resumed: list[str] = []
-    kept_recipes = [r for r in minute_recipes() if _keep(r.factor_id)]
-    for recipe in kept_recipes:
-        target = panels_dir / f"{recipe.factor_id}.parquet"
-        if resume and target.exists():
-            raw = read_frozen_panel(target, recipe.factor_id)
-            resumed.append(recipe.factor_id)
-            covered_note = "resumed-from-file"
-        else:
-            load = recipe.build(cfg, symbols, panel, logger)
-            live_calls = int(load.live_calls)
-            live_calls_total += live_calls
-            if live_calls != 0:
-                raise RuntimeError(
-                    f"{recipe.factor_id}: stk_mins_live_calls={live_calls} != 0 — the "
-                    "freeze is cache-only by contract."
+        return
+    for factor_id in sorted(recorded):
+        entry = recorded[factor_id] or {}
+        artifact = entry.get("artifact")
+        if not artifact:
+            problems.append(f"reconciliation[{factor_id}] names no eval artifact")
+        checks = entry.get("checks", {})
+        for field in RECONCILE_INT_FIELDS + RECONCILE_FLOAT_FIELDS:
+            check = checks.get(field)
+            if check is None:
+                problems.append(
+                    f"reconciliation[{factor_id}] is missing the {field!r} check"
                 )
-            raw = load.factor[
-                load.factor.index.get_level_values(DATE_LEVEL).isin(panel_dates)
-            ].rename(recipe.factor_id)
-            covered_note = f"covered={len(load.covered)}/{load.requested}"
-        # reconcile BEFORE accepting (a divergent panel is never frozen/kept)
-        processed = _process_factors(
-            cfg, raw.to_frame(recipe.factor_id), panel
-        )[recipe.factor_id]
-        reconciliations[recipe.factor_id] = reconcile_with_eval_artifact(
-            recipe.stem, processed, symbols, Path(cfg.output.report_dir)
-        )
-        canonical = canonical_content_hash(raw)
-        if recipe.factor_id in resumed:
-            sha = file_sha256(target)
-        else:
-            sha = atomic_write_parquet(raw, target)
-        rows.append(
-            manifest_row(recipe.factor_id, "minute", raw, canonical, sha, target.name)
-        )
-        canonical_by_id[recipe.factor_id] = canonical
-        logger.info(
-            "frozen minute %s: rows=%d %s canonical=%s (reconciled vs %s)",
-            recipe.factor_id, len(raw), covered_note, canonical,
-            reconciliations[recipe.factor_id]["artifact"],
-        )
-
-    # -- determinism double-run (2 minute + 1 book) -------------------------- #
-    determinism: dict[str, dict] = {}
-    determinism_subjects = tuple(fid for fid in DETERMINISM_FACTORS if _keep(fid))
-    for factor_id in determinism_subjects:
-        rebuilt = _rebuild_for_determinism(
-            factor_id, cfg, symbols, panel, panel_dates, logger
-        )
-        second = canonical_content_hash(rebuilt)
-        first = canonical_by_id[factor_id]
-        determinism[factor_id] = {"first": first, "second": second, "ok": second == first}
-        if second != first:
-            raise RuntimeError(
-                f"determinism double-run FAILED for {factor_id}: {first} != {second}"
-            )
-        logger.info("determinism double-run ok: %s %s", factor_id, first)
-
-    header = {
-        "producing_git_sha": _git_head_sha(),
-        "config": str(config_path),
-        "universe": f"{cfg.universe.type}:{cfg.universe.index_code}",
-        "window": f"{cfg.data.start}..{cfg.data.end}",
-        "cache_root": str(cfg.data.cache.root_dir),
-        "panel_store_name": PANEL_STORE_NAME,
-        "panel_rows": int(len(panel)),
-        "panel_dates": int(len(panel_dates)),
-        "universe_symbols": int(len(symbols)),
-        "stk_mins_live_calls": int(live_calls_total),
-        "resumed_factors": ",".join(resumed) if resumed else "none",
-        "selected_factors": "all" if selected is None else ",".join(selected),
-        "elapsed_seconds": round(time.monotonic() - started, 1),
-        "generated_utc": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M:%S"),
-        "canonical_hash_version": CANONICAL_HASH_VERSION,
-        "determinism_double_run": "; ".join(
-            f"{fid}:{'ok' if determinism[fid]['ok'] else 'FAIL'}"
-            for fid in determinism_subjects
-        )
-        or "none (no determinism subject selected)",
-        "artifact_reconciliation": (
-            f"{len(reconciliations)}/{len(kept_recipes)} minute factors reconciled "
-            "against eval_*_no_book.json data_coverage (book factors carry no "
-            "coverage fields in the eval artifacts — disclosed, not skipped silently)"
-        ),
-    }
-
-    manifest = {
-        "header": header,
-        "rows": rows,
-        "reconciliation": reconciliations,
-        "determinism": determinism,
-    }
-    manifest_json = out_root / "manifest.json"
-    manifest_md = out_root / "manifest.md"
-    atomic_write_text(json.dumps(manifest, indent=2, sort_keys=True), manifest_json)
-    atomic_write_text(render_manifest_markdown(header, rows), manifest_md)
-    logger.info(
-        "panel freeze complete: %d panels, %ss, manifest=%s",
-        len(rows), header["elapsed_seconds"], manifest_json,
-    )
-    return FreezeResult(
-        output_root=out_root,
-        manifest_json=manifest_json,
-        manifest_md=manifest_md,
-        rows=tuple(rows),
-        header=header,
-        elapsed=time.monotonic() - started,
-    )
+            elif not check.get("ok"):
+                problems.append(
+                    f"reconciliation[{factor_id}].{field} was recorded as NOT ok "
+                    f"({check.get('artifact')!r} vs {check.get('frozen')!r}) — a "
+                    "divergent panel must never have been frozen."
+                )
 
 
-def _rebuild_for_determinism(
-    factor_id: str,
-    cfg,
-    symbols: list[str],
-    panel: pd.DataFrame,
-    panel_dates: pd.Index,
-    logger: logging.Logger,
-) -> pd.Series:
-    """Second, independent build of one factor's RAW panel (same chains).
+def verify_frozen_panels(
+    root: Path | str,
+    doc_path: Path | str,
+    *,
+    show_manifest: bool = False,
+) -> VerifyResult:
+    """Check a frozen panel tree against its git-tracked manifest document.
 
-    Minute factors re-run the runner loader end-to-end (a fresh cache-store
-    read); book factors re-instantiate ``_build_book_factors()`` and recompute
-    from the shared enriched panel (the panel load itself is once-per-process,
-    exactly as in the runners; its own determinism is covered by the cache
-    equivalence suites).
+    Per panel, four independent statements must hold:
+
+    1. the recomputed canonical content hash equals the hash AUTHORED IN GIT;
+    2. it also equals the hash in the gitignored ``manifest.json`` (so a tree
+       regenerated together with its machine manifest is still caught: the two
+       witnesses would agree with each other and disagree with git);
+    3. the whole manifest row re-derived from the panel (rows / date range /
+       symbol count / NaN count / mean / std / file sha256) equals the recorded
+       one — a patched hash with stale statistics does not survive this;
+    4. the document's own columns (rows / n_symbols / n_nan / mean / std where
+       the document carries them) agree as well.
+
+    Plus tree-level statements: the set of ``*.parquet`` files equals the set of
+    factor ids in the document (an EXTRA panel is a problem, not a bonus), and
+    the recorded producing SHA equals the one the document pins.
     """
-    from qt.eval_jump_amount_corr import _build_book_factors
+    root = Path(root)
+    doc_path = Path(doc_path)
+    problems: list[str] = []
 
-    for factor in _build_book_factors():
-        if factor.name == factor_id:
-            return factor.compute(panel).rename(factor_id)
-    for recipe in minute_recipes():
-        if recipe.factor_id == factor_id:
-            load = recipe.build(cfg, symbols, panel, logger)
-            return load.factor[
-                load.factor.index.get_level_values(DATE_LEVEL).isin(panel_dates)
-            ].rename(factor_id)
-    raise KeyError(f"unknown determinism factor_id {factor_id!r}")
+    expected = parse_doc_manifest(doc_path)
+    document = _load_machine_manifest(root)
+    if not document:
+        problems.append(
+            f"machine manifest missing: {root / 'manifest.json'} — the frozen "
+            "tree is incomplete (the git-tracked document alone cannot witness "
+            "row counts, NaN counts, mean/std or the file hashes)."
+        )
+    else:
+        _check_recorded_reconciliation(document, problems)
+    machine_rows = {str(row["factor_id"]): row for row in document.get("rows", [])}
+    header = document.get("header", {})
+
+    doc_sha = parse_doc_producing_sha(doc_path)
+    recorded_sha = header.get("producing_git_sha")
+    if doc_sha and recorded_sha and doc_sha != recorded_sha:
+        problems.append(
+            f"producing SHA mismatch: {doc_path.name} pins {doc_sha} but "
+            f"manifest.json records {recorded_sha} — this tree was not produced "
+            "by the run the document describes."
+        )
+
+    panels_dir = root / "panels"
+    if not panels_dir.is_dir():
+        problems.append(f"frozen panels directory not found: {panels_dir}")
+        return VerifyResult(
+            root=root,
+            doc=doc_path,
+            panels=(),
+            problems=tuple(problems),
+            producing_git_sha=recorded_sha,
+        )
+
+    on_disk = {path.stem for path in panels_dir.glob("*.parquet")}
+    for extra in sorted(on_disk - set(expected)):
+        problems.append(
+            f"unregistered panel on disk: {extra}.parquet is not in "
+            f"{doc_path.name}; the frozen inventory is defined by the document."
+        )
+
+    verifications: list[PanelVerification] = []
+    rendered_rows: list[dict] = []
+    for factor_id in sorted(expected):
+        verification, rendered = _verify_one_panel(
+            factor_id, expected[factor_id], panels_dir, machine_rows
+        )
+        verifications.append(verification)
+        if rendered is not None:
+            rendered_rows.append(rendered)
+
+    rendered_manifest = (
+        render_manifest_markdown(dict(header), rendered_rows) if show_manifest else None
+    )
+    return VerifyResult(
+        root=root,
+        doc=doc_path,
+        panels=tuple(verifications),
+        problems=tuple(problems),
+        producing_git_sha=recorded_sha,
+        rendered_manifest=rendered_manifest,
+    )
+
+
+def _verify_one_panel(
+    factor_id: str,
+    expected: DocManifestRow,
+    panels_dir: Path,
+    machine_rows: dict[str, dict],
+) -> tuple[PanelVerification, dict | None]:
+    problems: list[str] = []
+    path = panels_dir / f"{factor_id}.parquet"
+    if not path.exists():
+        return (
+            PanelVerification(
+                factor_id=factor_id,
+                file=path.name,
+                rows=0,
+                canonical_sha256="",
+                problems=(f"frozen panel missing from disk: {path}",),
+            ),
+            None,
+        )
+    try:
+        panel = read_frozen_panel(path, factor_id)
+    except (ValueError, TypeError, OSError) as exc:
+        return (
+            PanelVerification(
+                factor_id=factor_id,
+                file=path.name,
+                rows=0,
+                canonical_sha256="",
+                problems=(f"frozen panel unreadable: {type(exc).__name__}: {exc}",),
+            ),
+            None,
+        )
+
+    canonical = canonical_content_hash(panel)
+    derived = manifest_row(
+        factor_id,
+        str(expected.kind or (machine_rows.get(factor_id, {}) or {}).get("kind", "")),
+        panel,
+        canonical,
+        file_sha256(path),
+        path.name,
+    )
+
+    if canonical != expected.canonical_sha256:
+        problems.append(
+            f"canonical content hash {canonical} != the git-tracked "
+            f"{expected.canonical_sha256} — these are NOT the frozen bytes."
+        )
+    for field, want in (
+        ("rows", expected.rows),
+        ("n_symbols", expected.n_symbols),
+        ("n_nan", expected.n_nan),
+        ("mean", expected.mean),
+        ("std", expected.std),
+    ):
+        if want is not None and derived[field] != want:
+            problems.append(
+                f"{field}: git-tracked document says {want!r}, panel gives "
+                f"{derived[field]!r}"
+            )
+    if expected.file_sha256 is not None and derived["file_sha256"] != expected.file_sha256:
+        problems.append(
+            f"file sha256 {derived['file_sha256']} != the git-tracked "
+            f"{expected.file_sha256} — the file was rewritten"
+            + (
+                " (its CONTENT still matches, so this is a re-write, not a value "
+                "change — but a frozen-forever file has no legitimate reason to "
+                "be rewritten)."
+                if canonical == expected.canonical_sha256
+                else "."
+            )
+        )
+
+    recorded = machine_rows.get(factor_id)
+    if recorded is None:
+        problems.append("no row for this factor in manifest.json")
+    else:
+        for field in MANIFEST_ROW_FIELDS:
+            if field not in recorded:
+                problems.append(f"manifest.json row is missing field {field!r}")
+                continue
+            if recorded[field] != derived[field]:
+                problems.append(
+                    f"manifest.json {field}: recorded {recorded[field]!r}, panel "
+                    f"gives {derived[field]!r}"
+                )
+
+    return (
+        PanelVerification(
+            factor_id=factor_id,
+            file=path.name,
+            rows=int(derived["rows"]),
+            canonical_sha256=canonical,
+            problems=tuple(problems),
+        ),
+        derived,
+    )
+
+
+def verify_all(
+    baseline_root: Path | str = DEFAULT_OUTPUT_ROOT,
+    *,
+    show_manifest: bool = False,
+) -> list[VerifyResult]:
+    """Verify BOTH frozen panel trees: the D1 baseline and the PR-C reference."""
+    baseline_root = Path(baseline_root)
+    repo_root = repo_root_for(baseline_root)
+    return [
+        verify_frozen_panels(
+            baseline_root, repo_root / D1_MANIFEST_DOC, show_manifest=show_manifest
+        ),
+        verify_frozen_panels(
+            baseline_root / PR_C_SUBDIR,
+            repo_root / PR_C_MANIFEST_DOC,
+            show_manifest=show_manifest,
+        ),
+    ]
+
+
+def repo_root_for(baseline_root: Path | str) -> Path:
+    """Where to look for the git-tracked manifest documents.
+
+    ``docs/`` sits next to the repository root, while the baseline root may be
+    an arbitrary directory (a copy under test, say). Walk up from the baseline
+    root looking for ``docs/factors``; fall back to this module's own repository
+    so a copied tree still verifies against the documents in git.
+    """
+    for candidate in (baseline_root, *baseline_root.parents):
+        if (candidate / D1_MANIFEST_DOC).exists():
+            return candidate
+    return Path(__file__).resolve().parent.parent
+
+
+# --------------------------------------------------------------------------- #
+# Retired regeneration entry point
+# --------------------------------------------------------------------------- #
+def run_panel_freeze(*args, **kwargs):
+    """RETIRED (D5 C6). Always raises :class:`RegenerationRetiredError`.
+
+    Kept as a stub rather than deleted outright so that a stale caller — a
+    script, a notebook, a copied command line — gets the retirement explanation
+    instead of an ``AttributeError`` that reads like a packaging accident.
+    """
+    raise RegenerationRetiredError(
+        retirement_message(
+            "python -m qt.panel_freeze",
+            "the D1 RAW factor-value panel baseline, which is frozen-forever",
+            "The rebuild called the eleven legacy eval runners' private "
+            "`_load_*_panel` loaders, which C6 deletes; and rebuilding this "
+            "baseline from the tree under validation is exactly the "
+            "empty-reconciliation failure mode the provenance rule forbids.",
+            "it recomputes every frozen panel's canonical content hash and "
+            "manifest row and checks them against the hashes authored in "
+            "`docs/factors/`.",
+        )
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI: ``python -m qt.panel_freeze [--config ...] [--output-root ...]``."""
+    """CLI: ``python -m qt.panel_freeze --verify``.
+
+    The retired flags are still ACCEPTED by the parser so that someone typing
+    the old documented command gets the retirement explanation rather than
+    ``unrecognized arguments: --resume``, which reads like a version mismatch.
+    """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--config", default=DEFAULT_CONFIG)
-    parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--config", default=DEFAULT_CONFIG, help=argparse.SUPPRESS)
+    parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT, help=argparse.SUPPRESS)
+    parser.add_argument("--resume", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--only", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
-        "--resume",
-        action="store_true",
-        help=(
-            "complete an interrupted freeze: existing minute panels are read back "
-            "from their frozen files and re-verified (processing + eval-artifact "
-            "reconciliation) instead of being rebuilt from the minute cache"
-        ),
+        "--baseline-root",
+        default=None,
+        help="frozen baseline root (default: the --output-root location)",
     )
     parser.add_argument(
-        "--only",
-        default=None,
-        help=(
-            "comma-separated factor ids to freeze (default: all 14). Used to "
-            "re-freeze a SINGLE corrected factor into its own --output-root; an "
-            "unknown id is a readable error, never a silently empty freeze"
-        ),
+        "--verify",
+        action="store_true",
+        help="verify the frozen panels against the git-tracked manifest documents",
+    )
+    parser.add_argument(
+        "--show-manifest",
+        action="store_true",
+        help="also print the manifest table re-derived from the panels on disk",
     )
     args = parser.parse_args(argv)
-    only = None if args.only is None else tuple(x for x in args.only.split(",") if x)
-    result = run_panel_freeze(
-        args.config, args.output_root, resume=args.resume, only=only
-    )
-    print(f"panels frozen: {len(result.rows)} -> {result.output_root / 'panels'}")
-    print(f"manifest: {result.manifest_json}")
-    print(f"stk_mins_live_calls: {result.header['stk_mins_live_calls']}")
-    print(f"elapsed_seconds: {result.header['elapsed_seconds']}")
-    return 0
+
+    if not args.verify:
+        try:
+            run_panel_freeze()
+        except RegenerationRetiredError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    root = Path(args.baseline_root or args.output_root)
+    results = verify_all(root, show_manifest=args.show_manifest)
+    failed = False
+    for result in results:
+        print(
+            f"{result.root}: verified {result.n_ok}/{len(result.panels)} panels "
+            f"against {result.doc.name} (producing sha "
+            f"{result.producing_git_sha or 'unrecorded'})"
+        )
+        for problem in result.problems:
+            print(f"  PROBLEM {problem}")
+        for panel in result.panels:
+            for problem in panel.problems:
+                print(f"  PROBLEM {panel.factor_id}: {problem}")
+        if result.rendered_manifest:
+            print(result.rendered_manifest)
+        failed = failed or not result.ok
+    print("panel freeze verification: " + ("FAILED" if failed else "OK"))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":  # pragma: no cover - thin CLI shim
