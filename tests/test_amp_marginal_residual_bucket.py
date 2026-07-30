@@ -214,9 +214,12 @@ def test_interior_gap_bucket_is_kept_because_its_window_still_closed():
     coarse = resample_intraday_bars(bars, AMP_ANOMALY_FREQ)
     kept = _complete_grid_bars(coarse, "5min")
     ends = set(pd.DatetimeIndex(kept["bar_end"]))
-    # PRECONDITION: the 14:40 bucket really is short two constituents here.
+    # PRECONDITION: the 14:40 bucket really is short two constituents -- its
+    # bar_start (min over the constituents) has moved from 14:35 to 14:37, so this
+    # bucket genuinely has a hole rather than merely existing.
     holed = coarse[pd.DatetimeIndex(coarse["bar_end"]) == pd.Timestamp("2021-07-01 14:40")]
     assert len(holed) == 1
+    assert holed["bar_start"].iloc[0] == pd.Timestamp("2021-07-01 14:37")
     assert pd.Timestamp("2021-07-01 14:40") in ends
 
 
