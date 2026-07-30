@@ -168,3 +168,41 @@ eval_peak_ridge_amount_ratio tests/` 无命中）。新套件在此是**净增**
 | 8 | `tests/test_factor_store_universe.py::test_min_cross_section_gate_still_bites_on_the_read_path` | ✅ |
 | 9 | `tests/test_exec_basis_eval.py::test_exec_basis_cli_line_survives_an_absent_metric` | ✅ |
 | 10 | `tests/test_factor_requires_spec_v1.py::test_shipped_factor_declarations_match_the_d0_table` | ✅ |
+
+## 十、C6 准入核销（2026-07-30，改造 PR 内实跑）
+
+R16 的门是"删旧 runner 测试文件之前，59 条逐条有映射"。本节是**在树上跑出来的**核销结果，
+不是对上面表格的复述。审计脚本 `tmp/context/cc_c6_verify_only/r16_audit.py`（gitignored，
+一次性）；**耐久的守卫是 `tests/test_property_test_migration_map.py`（7 条）**，它把同样三个
+问题变成常跑测试。
+
+| 问题 | 方法 | 结果 |
+|---|---|---|
+| 旧套件真的是 10 文件 / 59 条吗 | 逐文件 `grep "^def test"` | **10 / 59** ✅（4+4+4+4+4+10+14+4+7+4，与 §零 口径一致） |
+| 59 条**逐条**在本表有行吗 | 26 个 distinct 旧测试名 vs 表格第一列，再按文件展开 | **59 / 59** ✅，0 条无映射 |
+| 本表引用的新套件 node-ID 今天还在吗 | 解析全文引用 → 与 `pytest --collect-only`（2687 个 node-ID）比对 | **56 / 56 全部命中** ✅ |
+| 家族通配（`…_*（N 条）` 形式）的 N 属实吗 | 按前缀数实际测试数 | **3 / 3 家族数目吻合** ✅（ridge_return 3、valley_ridge 2、neutralization 2） |
+| 引用是否唯一解析 | 省略文件名的裸引用按**名字**在全套件查找 | **全部唯一** ✅（无重名歧义——本仓 `tests/` 无 `__init__.py`，重名会静默丢一条） |
+
+**结论：R16 覆盖数非降的前置条件成立，删除 PR 可以开始。**
+
+**两条如实记录（都不改变结论）**：
+
+- 审计脚本第一版把 `pytest --collect-only -q` 传成了 `-qq`（`pyproject.toml` 已含
+  `addopts="-q"`，见 handoff 陷阱 2），node-ID 列表被吞掉，于是报出一大批"引用了但没收集到"。
+  **是"与预期矛盾的观察"暴露的，不是被任何测试抓住的。**
+- 第二版用 `(?!\*)` 排除家族通配，被**回溯**绕过：正则把名字末尾的下划线让出来，改匹配一个更短
+  但同样错误的名字，于是三个家族 stem 仍被当成缺失的测试。改成 `(?![A-Za-z0-9_*])` 才成立。
+  守卫里保留了这条注释，因为下一个人写同样的正则会踩同样的坑。
+
+**守卫的射程（写进它自己的 docstring）**：它检查引用**能否解析**，不检查被引用的测试是否
+仍然断言本表声称的那条性质。**改名会被抓住，就地掏空不会。**
+
+**`test_no_legacy_runner_test_is_missing_from_the_map` 在旧文件被删后会变成空过**——这是设计
+如此：它的职责是"只要旧文件还在，就不许存在没被映射的旧测试"，而不是让旧文件活下去；一个会
+因为删除而变红的守卫，对本表要授权的那个 PR 就是个陷阱。
+
+**守卫立刻咬到了本节自己**：§十初稿在表格里用一个虚构的双冒号引用当占位符举例，守卫把它当成
+真引用、判定"引用了但不存在"。占位符已改成不含双冒号的描述。**这不是误报**——本表的引用格式
+就是双冒号加测试名，任何写成那个形状的东西都应该指向一个真实测试。写这一段本身又踩了一次
+（复述时把占位符原样抄了回来），第二次才改对。
