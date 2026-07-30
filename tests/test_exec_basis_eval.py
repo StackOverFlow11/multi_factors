@@ -317,3 +317,48 @@ def test_exec_basis_cli_line_survives_an_absent_metric(tmp_path):
     # the measured facts are still reported
     assert "stk_mins_live_calls=0" in line
     assert "no_bar=" in line
+
+
+def test_with_book_suffix_isolates_the_two_book_views_at_WRITE_time(tmp_path):
+    """D5 C5 F5: a second book view must not destroy the first one's artifacts.
+
+    The suffix used to be applied AFTER the write, by renaming files that had
+    already been written under the shared ``_exec_with_book`` stem — so a
+    close-book run silently overwrote and then moved away the decision-book
+    run's three artifacts, and the reconcile's reports leg died on files that
+    had existed minutes earlier. Two runs into ONE report dir, in the order
+    that used to be destructive; the first run's bytes must survive.
+    """
+    cfg, panel, factor, book, spec, eval_cfg, report_dir = _fixture(tmp_path)
+    first = run_exec_basis_evaluation(
+        factor, spec, eval_cfg, book,
+        cfg=cfg, panel=panel, symbols=list(SYMBOLS), logger=LOGGER,
+        report_dir=report_dir, stem="demo", book_view="decision",
+    )
+    assert first.with_book_md.name == "demo_exec_with_book.md"
+    before = {
+        p: p.read_bytes()
+        for p in (first.with_book_md, first.with_book_json, first.with_book_dashboard)
+    }
+
+    second = run_exec_basis_evaluation(
+        factor, spec, eval_cfg, book,
+        cfg=cfg, panel=panel, symbols=list(SYMBOLS), logger=LOGGER,
+        report_dir=report_dir, stem="demo", book_view="close",
+        with_book_suffix="_bookclose",
+    )
+
+    assert second.with_book_md.name == "demo_exec_with_book_bookclose.md"
+    assert second.with_book_json.name == "demo_exec_with_book_bookclose.json"
+    assert second.with_book_dashboard.name == "demo_exec_with_book_bookclose_dashboard.png"
+    for path in (second.with_book_md, second.with_book_json, second.with_book_dashboard):
+        assert path.exists()
+    # ... and the first run's artifacts are untouched, byte for byte.
+    for path, blob in before.items():
+        assert path.exists(), f"{path.name} was destroyed by the second run"
+        assert path.read_bytes() == blob
+    # The no-book artifacts and the sanity report carry no book and keep the
+    # shared stem in BOTH runs (they are rewritten, not renamed).
+    assert second.no_book_md.name == "demo_exec_no_book.md"
+    assert second.sanity_report_path.name == "demo_exec_basis_sanity.md"
+    assert second.no_book_md == first.no_book_md
