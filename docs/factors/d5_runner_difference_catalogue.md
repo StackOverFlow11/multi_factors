@@ -737,3 +737,78 @@ unclassified=0 monotonic=True`）、`peak_interval_kurtosis_20` **rc=0**
 （`warmup=35152 flip_contamination=20 unclassified=0`）。新的逐类 max 行同时给出
 `max_rel by class: float_reordering_tail=2.946e-09, warmup_left_extension=inf`——
 headline 的 `1.976e+00` 完全属于 warmup 类，闸门类只有 2.9e-09，这正是 NIT-1 要消除的误读。
+
+### 七之八、C5 phase B 首次观测 reports 腿暴露的两类漂移 —— 登记（2026-07-30）
+
+**为什么到现在才出现**：C5 首轮 reports 腿对**全部 11 个因子**都 rc=1，而每一个都是 F5
+（artifact 被 close 模式的事后改名销毁 → 抛 `FileNotFoundError`），**没有一个是判定结果**。
+也就是说这一腿在 phase B 之前**从未对这 10 个因子产生过任何观测**。下面两类漂移不是"新出现
+的"，是**第一次被人看见**——与 peak_ridge 同一形状：**登记表原本就不完整，因为它是在一个
+样本量为 1 的证据基上建的**。
+
+#### 成因 A：诊断 sink 的覆盖率披露作为**追加节**出现（`REGISTERED_EXTRA_SECTIONS` 补全）
+
+| 因子 | 新增节 |
+|---|---|
+| `valley_ridge_vwap_ratio_20` | `ridge_scarcity_coverage` |
+| `ridge_minute_return_20` | `ridge_scarcity_coverage` |
+| `peak_ridge_amount_ratio_20` | `peak_scarcity_coverage` |
+| （已登记的先例）`valley_price_quantile_20` | `neutralization_coverage` |
+
+与 §七之四 #1 的 vpq 完全同形：统一 runner 经 §3.6 扩展点把机制 A 的披露装配进报告，冻结
+artifact 早于它。**vpq 之所以是唯一一条，正因为 vpq 是唯一跑过 reports 腿的因子。**
+
+**逐因子 × 逐 grid 重新验证（裁定要求，实测非假定）**：
+
+| 检查 | 结果 |
+|---|---|
+| ① 追加下标的每个叶子都是 `old=None` 纯新增、无值改写 | **8/8 grid 全过，non_pure=0** |
+| ② verdict 标签与冻结基线一致 | **8/8 全过，label_diff=none** |
+| ③ **无索引位移** | **8/8：sections `8 → 9`，前 8 个名字逐位对齐，披露节追加在最后** |
+
+③ 的重要性：叶子路径是**按下标**展平比对的，中途插入一节会让其后每一节错位，"其余节全同"
+就成了假象。**位移是被检出而非被吸收的**——错位后 `sections[k].name` 会成为 unregistered
+**change** 而失败，有专测钉住（并有 mutation：把 `.name` 改动登记掉 → 该测试转红）。
+⚠️ 该测试初版只断言"有 unregistered 差异"，**mutation 实测它是靠尾部多出的下标过的、不是靠
+名字错位**——即**为错误的理由通过**；已改成断言存在 `sections[k].name` 的 unregistered
+change。这是本轮第 3 次"测试绿但理由不对"，同样不是被测试抓住的，是被 mutation 抓住的。
+
+#### 成因 B：`spec.description` 值改写（**逐对精确枚举，不用谓词**）
+
+**这与 §七 登记的 spec 漂移是不同的类**：那条覆盖**新增键**（16→20），这条是**已有键的值
+改写**，两者不合并进同一节。
+
+涉及 3 个因子（`peak_interval_kurtosis_20` / `valley_relative_vwap_20` /
+`valley_ridge_vwap_ratio_20`），登记方式是**按因子逐条写死确切的 (old, new) 字符串对**
+（`REGISTERED_SPEC_DESCRIPTION_REWRITES`）。**任何其它 description 改写——第四个因子，或这
+三个上的另一段新文本——一律不登记、照样 FAIL**（有正反向测试 + mutation：把精确对改成
+"description 改写一律放行"的谓词 → 反向测试转红）。*理由*：`spec.description` 正是读者用来
+知道这个因子算什么的字段；一个宽泛谓词会把**真正改了因子定义陈述**的那一天一起放行。
+**精确枚举在这里是优点，不是笨拙。**
+
+**语义判定：provenance 改写，不是语义改写** ⇒ 不触发 `spec.version` bump、不触发更正承载
+（与 §七之六 F1 同一判据）。成因是 **D2 迁移**把峰/谷/岭分类从
+`data.clean.intraday_volume_prv` 挪到 `factors.compute.minute.primitives`，三个因子的
+description 相应改名（`REUSED from ...` → `SHARED taxonomy in ...`）；而 **D2 本身实测逐位
+一致**（PR #89：14/14 面板 `max_rel_diff=0.0`），因子算的东西一个字节没变。
+
+登记的字符串是 artifact 里**已被报告写出层截断**的值（两侧各 214 字符、以截断标记收尾）——
+**故意如此**：登记必须匹配消费者真正打开的东西。截断上限若变，这些对就不再匹配、本腿**响亮
+失败**，这是正确方向。另有一条测试拿**盘上的冻结 artifact** 逐字符核对登记的 old 串
+（mutation：改一个字符 → 转红）。
+
+#### 两条共同约束
+
+- **正反向测试齐备**：登记项恰好命中 → 归类；未登记的 section 名 / 未登记的 description 对
+  / 别的因子的 section → **全部 FAIL 成类外**。
+- ⚠️ **反棘轮**：这两条**都不得再次放宽**。再有新成员出现，说明它在描述残差而非机制
+  （成因 A 的机制 = 诊断 sink 的纯新增节；成因 B 的机制 = D2 的一次性 provenance 改写）
+  ⇒ **停下上报，不要再打补丁。**
+
+#### 重跑范围（裁定要求：先确认是否触及共用代码）
+
+改动**只在 reports 腿**：AST 逐函数比对 phase B 那个 commit（`6beb8d8`）与本次 HEAD，变化的
+函数**恰为** `_classify_value_change` / `diff_report_json` / `run_reports_mode` 三个；
+`classify_panel_differences` / `classify_anchor_row` / `run_panels_mode` / `run_anchors_mode`
+/ `load_anchor_rows` / `frozen_panel_path` / `_build_bundle` **一个字节未变** ⇒ panels 与
+anchors 的结论不受影响，**只重跑 reports 腿**。

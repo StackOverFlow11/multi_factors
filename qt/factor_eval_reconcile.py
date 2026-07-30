@@ -406,45 +406,166 @@ ALLOWED_ADDED_MD_PREFIXES: tuple[str, ...] = (
 #: mechanism B — never an add-Section), so the unified runner's new section is
 #: an ADDITION against the frozen artifact, registered here per factor; any
 #: other added section stays unregistered and fails.
+#: ⚠️ THE ENUMERATION WAS INCOMPLETE, and for a reason worth stating: until the
+#: D5 C5 phase-B run, this leg had NEVER produced a judgement for ten of the
+#: eleven factors (every rc=1 was the F5 artifact destruction), so the four
+#: OTHER disclosure sections had simply never been seen by anyone. vpq was the
+#: only entry because vpq was the only factor whose reports leg had ever run.
+#: Registering them is not "widening": the map was fitted to a sample of one.
+#:
+#: Each addition below was RE-VERIFIED per factor and per grid, not assumed
+#: (lead ruling): (1) every leaf under the appended index is ``old=None``, a
+#: pure addition with no value rewrite; (2) the verdict labels are unchanged;
+#: (3) NO INDEX DISPLACEMENT — measured sections 8 -> 9 with the first eight
+#: names pairwise identical and the disclosure appended LAST. (3) matters
+#: because the leaf paths are indexed: a section inserted mid-list would shift
+#: every later one and "the rest of the sections match" would be an illusion.
+#: It is detected rather than assumed — a shifted ``sections[k].name`` shows up
+#: as an unregistered CHANGE and fails — and there is a test for that.
+#:
+#: ⚠️ ANTI-RATCHET (lead ruling): do NOT widen this map again. A further
+#: factor needing an entry is evidence that the registration is describing
+#: residuals rather than the diagnostics-sink mechanism: STOP AND REPORT.
 REGISTERED_EXTRA_SECTIONS: dict[str, tuple[str, ...]] = {
     "valley_price_quantile_20": ("neutralization_coverage",),
+    "valley_ridge_vwap_ratio_20": ("ridge_scarcity_coverage",),
+    "ridge_minute_return_20": ("ridge_scarcity_coverage",),
+    "peak_ridge_amount_ratio_20": ("peak_scarcity_coverage",),
 }
 
-#: The MD note-line prefix of ``NeutralizationCoverage.render()`` — the
-#: disclosure's one-line summary, rendered as the section's note. Kept as a
-#: constant with a pinning test (the alternative — re-rendering a zero
-#: instance — would couple the reconcile gate to the renderer's format by
-#: construction instead of by assertion).
-_NEUTRALIZATION_NOTE_PREFIX = "neutralization (T-1 rev20):"
+#: ``spec.description`` value rewrites — a DIFFERENT class from the §七
+#: registered spec drift, which covers ADDED KEYS only. This is an existing
+#: key whose VALUE changed, and `spec.description` is the field a reader uses
+#: to learn what the factor computes, so the registration is a per-factor
+#: EXACT PAIR rather than a predicate (lead ruling). A blanket "description
+#: rewrites are acceptable" rule would wave through the day someone really
+#: changes what a factor claims to compute; exact enumeration is the point,
+#: not clumsiness. ANY other rewrite — a fourth factor, or a different new
+#: text on these three — stays unregistered and fails.
+#:
+#: Cause: the D2 migration moved the peak/valley/ridge taxonomy out of
+#: ``data.clean.intraday_volume_prv`` into
+#: ``factors.compute.minute.primitives``, and each description was updated to
+#: name its new home. D2 itself was measured BITWISE identical (PR #89: 14/14
+#: panels at ``max_rel_diff=0.0``), so this is a PROVENANCE rewrite, not a
+#: semantic one — which is why it triggers no version bump and no correction
+#: carrier, by the same criterion applied to F1.
+#:
+#: The strings are the artifacts' stored values, i.e. already truncated by the
+#: report writer's value cap (both sides 214 chars, ending in the truncation
+#: marker). That is deliberate: the registration must match what a consumer
+#: opens. If the cap ever changes these pairs stop matching and this leg fails
+#: loudly, which is the correct direction.
+#:
+#: ⚠️ ANTI-RATCHET: do NOT add a fourth entry. See above.
+REGISTERED_SPEC_DESCRIPTION_REWRITES: dict[str, tuple[str, str]] = {
+    "peak_interval_kurtosis_20": (
+        "Volume-peak interval kurtosis (Kaiyuan microstructure series #27, "
+        "SECOND factor 量峰间隔峰度). SAME peak identification as PR-F "
+        "volume_peak_count (REUSED from data.clean.intraday_volume_prv, not "
+        "re-implemen...[truncated]",
+        "Volume-peak interval kurtosis (Kaiyuan microstructure series #27, "
+        "SECOND factor 量峰间隔峰度). SAME peak identification as PR-F "
+        "volume_peak_count (SHARED taxonomy in factors.compute.minute."
+        "primitives, not r...[truncated]",
+    ),
+    "valley_relative_vwap_20": (
+        "Valley-relative VWAP (Kaiyuan microstructure series #27, THIRD factor "
+        "量谷相对加权价格). SAME minute classification as PR-F volume_peak_count and "
+        "PR-H peak_interval_kurtosis (REUSED from data.clean.intraday_v..."
+        "[truncated]",
+        "Valley-relative VWAP (Kaiyuan microstructure series #27, THIRD factor "
+        "量谷相对加权价格). SAME minute classification as PR-F volume_peak_count and "
+        "PR-H peak_interval_kurtosis (SHARED taxonomy in factors.comput..."
+        "[truncated]",
+    ),
+    "valley_ridge_vwap_ratio_20": (
+        "Valley/ridge VWAP ratio (Kaiyuan microstructure series #27, FOURTH "
+        "factor 谷岭加权价格比). SAME minute classification as PR-F "
+        "volume_peak_count / PR-H peak_interval_kurtosis / PR-I "
+        "valley_relative_vwap (REUS...[truncated]",
+        "Valley/ridge VWAP ratio (Kaiyuan microstructure series #27, FOURTH "
+        "factor 谷岭加权价格比). SAME minute classification as PR-F "
+        "volume_peak_count / PR-H peak_interval_kurtosis / PR-I "
+        "valley_relative_vwap (SHAR...[truncated]",
+    ),
+}
+
+#: The MD note-line prefix of each registered disclosure's ``render()`` — the
+#: one-line summary rendered as the section's note. Kept as constants with a
+#: pinning test (the alternative — re-rendering a zero instance — would couple
+#: the reconcile gate to the renderer's format by construction instead of by
+#: assertion). An unlisted section name is a readable error, never a guess.
+_SECTION_NOTE_PREFIXES: dict[str, str] = {
+    "neutralization_coverage": "neutralization (T-1 rev20):",
+    "ridge_scarcity_coverage": "ridge scarcity:",
+    "peak_scarcity_coverage": "peak scarcity:",
+}
 
 
-def _registered_section_md_prefixes(section_names: tuple[str, ...]) -> tuple[str, ...]:
+def _registered_section_md_prefixes(
+    factor_id: str, section_names: tuple[str, ...]
+) -> tuple[str, ...]:
     """The MD line prefixes belonging to a registered add-Section's rendering.
 
     An extra section renders (``analytics/eval/render.py._render_section``) as
     an unnumbered ``## + <name>`` heading, the note line, and one
-    ``- <field>:`` payload line per dataclass field (derived from the
-    dataclass, so a field rename breaks the pinning test instead of silently
-    unregistering). An unknown section name is a readable error — registering
-    a section whose MD rendering is not catalogued would be a guess.
+    ``- <field>:`` payload line per dataclass field. The payload dataclass is
+    DERIVED, not listed again here: mechanism B is
+    ``NeutralizationCoverage``; mechanism A comes from the factor's own entry
+    in ``qt.factor_eval_disclosures._DISCLOSURE_BY_CLASS`` via its summarizer's
+    return annotation. That matters because ``ridge_scarcity_coverage`` is
+    published by TWO factors with DIFFERENT payloads (``RidgeCoverage`` vs
+    ``RidgeReturnCoverage``), so the prefixes are per FACTOR and a
+    section-name-only lookup would be wrong for one of them. A renamed field
+    or a summarizer returning something else breaks the pinning test instead
+    of silently unregistering.
+
+    An unknown section name is a readable error — registering a section whose
+    MD rendering is not catalogued would be a guess.
     """
-    from dataclasses import fields as dc_fields
+    from dataclasses import fields as dc_fields, is_dataclass
+    from typing import get_type_hints
 
     from qt.factor_eval_disclosures import (
+        DERIVED_PAYLOAD_PROPERTIES,
         NEUTRALIZATION_SECTION_NAME,
         NeutralizationCoverage,
+        disclosure_binding_for,
     )
 
     prefixes: list[str] = []
     for name in section_names:
-        if name == NEUTRALIZATION_SECTION_NAME:
-            prefixes.append(f"## + {NEUTRALIZATION_SECTION_NAME}")
-            prefixes.append(_NEUTRALIZATION_NOTE_PREFIX)
-            prefixes.extend(f"- {f.name}:" for f in dc_fields(NeutralizationCoverage))
-        else:
+        note = _SECTION_NOTE_PREFIXES.get(name)
+        if note is None:
             raise ValueError(
                 f"no MD rendering is registered for added section {name!r}."
             )
+        if name == NEUTRALIZATION_SECTION_NAME:
+            payload: type = NeutralizationCoverage
+        else:
+            binding = disclosure_binding_for(factor_registry.build(factor_id))
+            if binding is None or binding.section_name != name:
+                raise ValueError(
+                    f"{factor_id!r} does not publish the add-Section {name!r}; "
+                    "the registration and the disclosure table disagree."
+                )
+            payload = get_type_hints(binding.summarize)["return"]
+            if not is_dataclass(payload):
+                raise ValueError(
+                    f"the summarizer for {name!r} does not return a dataclass "
+                    f"({payload!r}), so its MD fields cannot be derived."
+                )
+        prefixes.append(f"## + {name}")
+        prefixes.append(note)
+        prefixes.extend(f"- {f.name}:" for f in dc_fields(payload))
+        # ... plus the payload's DERIVED properties, which asdict does not
+        # produce and which therefore have no dataclass field to be read from.
+        prefixes.extend(
+            f"- {prop}:"
+            for prop in DERIVED_PAYLOAD_PROPERTIES
+            if hasattr(payload, prop)
+        )
     return tuple(prefixes)
 
 
@@ -570,6 +691,7 @@ def _classify_value_change(
     correction_expected: bool,
     corrections_present: bool,
     strict: bool,
+    description_rewrite: tuple[str, str] | None = None,
 ) -> str:
     """Classify one changed leaf (both sides present, values differ).
 
@@ -601,6 +723,15 @@ def _classify_value_change(
         return "registered_sanity_stem_rename"
     if path.endswith(".exec_price_artifact_reused") and old_v is False and new_v is True:
         return "registered_run_order_artifact"
+    if (
+        path == "spec.description"
+        and description_rewrite is not None
+        and (old_v, new_v) == description_rewrite
+    ):
+        # The D2 provenance rewrite, matched as an EXACT PAIR. A different old
+        # or a different new on the same factor is a different fact and stays
+        # unregistered — which is the whole reason this is not a predicate.
+        return "registered_d2_provenance_rewrite"
     if correction_expected and corrections_present:
         return "registered_correction_effect"
     if not strict:
@@ -620,6 +751,7 @@ def diff_report_json(
     strict: bool,
     correction_expected: bool,
     registered_sections: tuple[str, ...] = (),
+    description_rewrite: tuple[str, str] | None = None,
 ) -> ReportDiff:
     """Diff one (frozen, new) JSON pair leaf by leaf against the registered list.
 
@@ -631,6 +763,8 @@ def diff_report_json(
     correction — accepted ONLY if the new JSON carries a ``corrections`` block.
     ``registered_sections``: add-Section names whose whole subtree is a
     registered addition (§七之四 — the frozen artifact predates the section).
+    ``description_rewrite``: this factor's registered EXACT (old, new)
+    ``spec.description`` pair (§七之八). Anything else on that path fails.
     """
     result = ReportDiff(name=name, strict=strict)
     old_flat, new_flat = _flatten(old), _flatten(new)
@@ -651,6 +785,7 @@ def diff_report_json(
                 correction_expected=correction_expected,
                 corrections_present=corrections_present,
                 strict=strict,
+                description_rewrite=description_rewrite,
             )
             result.diffs.append(LeafDiff(path, old_v, new_v, cls))
         elif in_new:
@@ -1465,7 +1600,10 @@ def run_reports_mode(
     require_report_inputs(report_dir, factor_id, config_path)
     correction_expected = factor_id == "jump_amount_corr_20"
     registered_sections = REGISTERED_EXTRA_SECTIONS.get(factor_id, ())
-    section_md_prefixes = _registered_section_md_prefixes(registered_sections)
+    section_md_prefixes = _registered_section_md_prefixes(
+        factor_id, registered_sections
+    )
+    description_rewrite = REGISTERED_SPEC_DESCRIPTION_REWRITES.get(factor_id)
     stem = f"factor_eval_{factor_id}"
 
     results: list[ReportDiff] = []
@@ -1490,6 +1628,7 @@ def run_reports_mode(
                 frozen_json, new_json, name=f"{stem}_exec_{book}.json[{label}]",
                 strict=strict, correction_expected=correction_expected,
                 registered_sections=registered_sections,
+                description_rewrite=description_rewrite,
             )
         )
         new_md = (report_dir / f"{stem}_exec_{book}{'_bookclose' if 'bookclose' in label else ''}.md").read_text()
@@ -1616,6 +1755,7 @@ __all__ = [
     "PANEL_REL_TOL",
     "PanelDiff",
     "REGISTERED_EXTRA_SECTIONS",
+    "REGISTERED_SPEC_DESCRIPTION_REWRITES",
     "ReconciliationError",
     "ReportDiff",
     "SPARSE_VALID_DAY_TAIL_HI",

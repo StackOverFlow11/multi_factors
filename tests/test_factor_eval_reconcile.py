@@ -15,6 +15,8 @@ import pandas as pd
 import pytest
 
 from qt.factor_eval_reconcile import (
+    REGISTERED_EXTRA_SECTIONS,
+    REGISTERED_SPEC_DESCRIPTION_REWRITES,
     SPARSE_VALID_DAY_TAIL_SYMBOLS,
     ReconciliationError,
     check_new_pair_consistency,
@@ -483,7 +485,9 @@ _NEUTRALIZATION_MD = (
 def test_md_registered_section_lines_pass_for_vpq():
     from qt.factor_eval_reconcile import _registered_section_md_prefixes
 
-    prefixes = _registered_section_md_prefixes(("neutralization_coverage",))
+    prefixes = _registered_section_md_prefixes(
+        "valley_price_quantile_20", ("neutralization_coverage",)
+    )
     result = diff_report_md(
         _MD_OLD, _MD_OLD + _NEUTRALIZATION_MD, name="t", correction_expected=False,
         registered_section_lines=prefixes,
@@ -507,7 +511,9 @@ def test_md_section_prefixes_are_derived_from_the_dataclass_fields():
     from qt.factor_eval_disclosures import NeutralizationCoverage
     from qt.factor_eval_reconcile import _registered_section_md_prefixes
 
-    prefixes = _registered_section_md_prefixes(("neutralization_coverage",))
+    prefixes = _registered_section_md_prefixes(
+        "valley_price_quantile_20", ("neutralization_coverage",)
+    )
     for f in dc_fields(NeutralizationCoverage):
         assert f"- {f.name}:" in prefixes
     # the note prefix really is the render() format's head (not a stale copy)
@@ -523,7 +529,9 @@ def test_md_section_prefixes_reject_an_unknown_section():
     from qt.factor_eval_reconcile import _registered_section_md_prefixes
 
     with pytest.raises(ValueError, match="no MD rendering is registered"):
-        _registered_section_md_prefixes(("bogus_coverage",))
+        _registered_section_md_prefixes(
+            "valley_price_quantile_20", ("bogus_coverage",)
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1803,3 +1811,305 @@ def test_the_density_criterion_predicts_where_600906_appears_and_where_it_does_n
     ridge_emitted, ridge_median = _emission_density("ridge_minute_return_20")
     assert peak_emitted["600906.SH"] < peak_median
     assert ridge_emitted["600906.SH"] >= ridge_median
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 phase B — the two drifts the reports leg had never shown anyone,
+# because until phase B it had never produced a judgement for these factors.
+#
+# A: the diagnostics-sink coverage disclosures arriving as an appended section.
+# B: the D2 provenance rewrite of spec.description, registered as EXACT PAIRS.
+# --------------------------------------------------------------------------- #
+def _json_with_sections(names: list[str]) -> dict:
+    doc = _frozen_like()
+    doc["sections"] = [{"name": n, "status": "ok", "payload": {"v": 1}} for n in names]
+    return doc
+
+
+def test_registered_disclosure_sections_are_additions_for_each_factor():
+    for factor_id, section in (
+        ("valley_ridge_vwap_ratio_20", "ridge_scarcity_coverage"),
+        ("ridge_minute_return_20", "ridge_scarcity_coverage"),
+        ("peak_ridge_amount_ratio_20", "peak_scarcity_coverage"),
+        ("valley_price_quantile_20", "neutralization_coverage"),
+    ):
+        old = _json_with_sections(["ic", "quantiles"])
+        new = _with_registered_additions(_json_with_sections(["ic", "quantiles", section]))
+        result = diff_report_json(
+            old, new, name=factor_id, strict=True, correction_expected=False,
+            registered_sections=REGISTERED_EXTRA_SECTIONS[factor_id],
+        )
+        assert result.ok, (factor_id, [d for d in result.diffs if "unregistered" in d.classification])
+        assert result.by_class("registered_section_addition")
+
+
+def test_an_unregistered_disclosure_section_still_fails():
+    # REVERSE: a section that is not in this factor's registered tuple.
+    old = _json_with_sections(["ic", "quantiles"])
+    new = _with_registered_additions(
+        _json_with_sections(["ic", "quantiles", "some_other_coverage"])
+    )
+    result = diff_report_json(
+        old, new, name="ridge_minute_return_20", strict=True, correction_expected=False,
+        registered_sections=REGISTERED_EXTRA_SECTIONS["ridge_minute_return_20"],
+    )
+    assert not result.ok
+    assert result.by_class("unregistered_addition")
+
+
+def test_a_section_registered_for_ANOTHER_factor_is_not_accepted_here():
+    # The map is per factor: ridge's disclosure must not pass for a factor
+    # whose registered tuple names a different section.
+    old = _json_with_sections(["ic", "quantiles"])
+    new = _with_registered_additions(
+        _json_with_sections(["ic", "quantiles", "ridge_scarcity_coverage"])
+    )
+    result = diff_report_json(
+        old, new, name="valley_price_quantile_20", strict=True,
+        correction_expected=False,
+        registered_sections=REGISTERED_EXTRA_SECTIONS["valley_price_quantile_20"],
+    )
+    assert not result.ok
+
+
+def test_a_section_INSERTED_mid_list_is_detected_not_absorbed():
+    """The check the lead asked for: index displacement must not pass silently.
+
+    Leaf paths are indexed, so a section inserted before the end shifts every
+    later one. If that were absorbed, "the other sections all match" would be
+    an illusion. Measured on the real artifacts the disclosures are APPENDED
+    (sections 8 -> 9, first eight names pairwise identical), and this test pins
+    what happens if that ever stops being true.
+    """
+    old = _json_with_sections(["ic", "quantiles", "verdict_inputs"])
+    new = _with_registered_additions(
+        _json_with_sections(["ic", "ridge_scarcity_coverage", "quantiles", "verdict_inputs"])
+    )
+    result = diff_report_json(
+        old, new, name="ridge_minute_return_20", strict=True, correction_expected=False,
+        registered_sections=REGISTERED_EXTRA_SECTIONS["ridge_minute_return_20"],
+    )
+    assert not result.ok
+    # Pin the MECHANISM, not just the failure: leaves are compared position by
+    # position, so a displaced section shows up as a changed `sections[k].name`.
+    # Asserting only "something was unregistered" passes for the wrong reason —
+    # the trailing extra index alone would satisfy it (measured: registering
+    # name changes left that weaker assertion green).
+    displaced_names = [
+        d for d in result.diffs
+        if d.path.endswith(".name")
+        and d.classification.startswith("unregistered")
+        and d.old is not None
+        and d.new is not None
+    ]
+    assert displaced_names, (
+        "a section inserted mid-list must surface as a changed sections[k].name; "
+        f"got {[(d.path, d.classification) for d in result.diffs]}"
+    )
+
+
+def test_registered_d2_description_rewrite_is_accepted_as_an_exact_pair():
+    for factor_id, (old_text, new_text) in REGISTERED_SPEC_DESCRIPTION_REWRITES.items():
+        old = _frozen_like()
+        old["spec"]["description"] = old_text
+        new = _with_registered_additions(_frozen_like())
+        new["spec"]["description"] = new_text
+        result = diff_report_json(
+            old, new, name=factor_id, strict=True, correction_expected=False,
+            description_rewrite=REGISTERED_SPEC_DESCRIPTION_REWRITES[factor_id],
+        )
+        assert result.ok, (factor_id, result.diffs)
+        assert len(result.by_class("registered_d2_provenance_rewrite")) == 1
+
+
+def test_a_DIFFERENT_description_rewrite_on_a_registered_factor_fails():
+    # REVERSE: the registered OLD text but some other new text. This is the
+    # case the exact pair exists for — the day a factor's stated meaning
+    # really changes must not ride in on a provenance registration.
+    factor_id = "peak_interval_kurtosis_20"
+    old_text, _ = REGISTERED_SPEC_DESCRIPTION_REWRITES[factor_id]
+    old = _frozen_like()
+    old["spec"]["description"] = old_text
+    new = _with_registered_additions(_frozen_like())
+    new["spec"]["description"] = "Now computes something else entirely."
+    result = diff_report_json(
+        old, new, name=factor_id, strict=True, correction_expected=False,
+        description_rewrite=REGISTERED_SPEC_DESCRIPTION_REWRITES[factor_id],
+    )
+    assert not result.ok
+    assert len(result.by_class("unregistered_change")) == 1
+
+
+def test_an_unregistered_factors_description_rewrite_fails():
+    # REVERSE: a factor with no registered pair at all (the default None).
+    old = _frozen_like()
+    old["spec"]["description"] = "A"
+    new = _with_registered_additions(_frozen_like())
+    new["spec"]["description"] = "B"
+    result = diff_report_json(
+        old, new, name="jump_amount_corr_20", strict=True, correction_expected=False,
+    )
+    assert not result.ok
+    assert len(result.by_class("unregistered_change")) == 1
+
+
+@requires_frozen_panels
+def test_the_registered_description_pairs_match_the_frozen_artifacts_exactly():
+    """The transcribed constants must equal the bytes on disk, character for
+    character. A pair that is one character off would leave the leg failing
+    while the registration looked right in review."""
+    from qt.exec_baseline_freeze import (
+        DEFAULT_FROZEN_ROOT,
+        DEFAULT_MANIFEST,
+        FrozenExecBaseline,
+    )
+    from qt.factor_eval_reconcile import _FACTOR_TO_REPORT_NAME
+
+    repo = Path(".").resolve()
+    baseline = FrozenExecBaseline(repo / DEFAULT_FROZEN_ROOT, repo / DEFAULT_MANIFEST)
+    for factor_id, (old_text, _new_text) in REGISTERED_SPEC_DESCRIPTION_REWRITES.items():
+        frozen = baseline.report_json(_FACTOR_TO_REPORT_NAME[factor_id], "no_book")
+        assert frozen["spec"]["description"] == old_text, factor_id
+
+
+def test_md_prefixes_are_derived_per_FACTOR_not_per_section_name():
+    """`ridge_scarcity_coverage` is published by two factors with DIFFERENT
+    payloads (RidgeCoverage vs RidgeReturnCoverage), so a section-name-only
+    lookup would hand one of them the other's field list."""
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    a = _registered_section_md_prefixes(
+        "valley_ridge_vwap_ratio_20", ("ridge_scarcity_coverage",)
+    )
+    b = _registered_section_md_prefixes(
+        "ridge_minute_return_20", ("ridge_scarcity_coverage",)
+    )
+    assert a[:2] == b[:2] == ("## + ridge_scarcity_coverage", "ridge scarcity:")
+    assert set(a) != set(b), "the two payloads must not produce the same fields"
+    assert "- valley_median:" in a and "- valley_median:" not in b
+    assert "- ridge_return_mean:" in b and "- ridge_return_mean:" not in a
+
+
+def test_md_prefixes_reject_a_factor_that_does_not_publish_that_section():
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    with pytest.raises(ValueError, match="does not publish the add-Section"):
+        _registered_section_md_prefixes(
+            "jump_amount_corr_20", ("ridge_scarcity_coverage",)
+        )
+
+
+@pytest.mark.parametrize(
+    "section_name, payload_factory",
+    [
+        ("ridge_scarcity_coverage", "ridge"),
+        ("peak_scarcity_coverage", "peak"),
+        ("neutralization_coverage", "neutralization"),
+    ],
+)
+def test_the_registered_note_prefix_matches_what_render_actually_emits(
+    section_name, payload_factory
+):
+    """Pin the note prefixes by ASSERTION against a real rendering.
+
+    The constants exist so the gate is not coupled to the renderer's format by
+    construction; that only works if something checks they still agree.
+    """
+    from qt.factor_eval_reconcile import _SECTION_NOTE_PREFIXES
+
+    frame = pd.DataFrame(
+        {
+            "classifiable_bars": [240, 240],
+            "valley_bars": [200, 200],
+            "ridge_bars": [25, 30],
+            "peak_bars": [12, 14],
+            "ridge_return_bars": [25, 30],
+            "valid": [True, True],
+        },
+        index=pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2021-07-01"), "A"), (pd.Timestamp("2021-07-02"), "A")],
+            names=["date", "symbol"],
+        ),
+    )
+    if payload_factory == "ridge":
+        from qt.factor_eval_disclosures import summarize_ridge_coverage as fn
+
+        coverage = fn([frame])
+    elif payload_factory == "peak":
+        from qt.factor_eval_disclosures import summarize_peak_coverage as fn
+
+        coverage = fn([frame])
+    else:
+        from qt.factor_eval_disclosures import summarize_neutralization as fn
+
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2021-07-01"), f"S{i}") for i in range(12)],
+            names=["date", "symbol"],
+        )
+        series = pd.Series(range(12), index=idx, dtype=float)
+        coverage = fn(series, series, series, min_cross_section=10)
+    assert coverage.render().startswith(_SECTION_NOTE_PREFIXES[section_name])
+
+
+@pytest.mark.parametrize(
+    "factor_id, section_name",
+    [
+        ("valley_ridge_vwap_ratio_20", "ridge_scarcity_coverage"),
+        ("ridge_minute_return_20", "ridge_scarcity_coverage"),
+        ("peak_ridge_amount_ratio_20", "peak_scarcity_coverage"),
+        ("valley_price_quantile_20", "neutralization_coverage"),
+    ],
+)
+def test_md_prefixes_cover_EVERY_key_the_real_section_payload_carries(
+    factor_id, section_name
+):
+    """The registration must cover the payload a real run writes, key for key.
+
+    Deriving the prefixes from ``dataclasses.fields`` alone missed the two
+    COMPUTED properties ``to_section`` adds on top of ``asdict``, so three
+    rendered Markdown lines stayed unregistered and the reports leg kept
+    failing with the JSON side already green. Comparing against the actual
+    payload keys is what closes that gap — a future payload key with no
+    dataclass field to be read from fails here instead of on a two-hour run.
+    """
+    from qt.factor_eval_disclosures import (
+        NEUTRALIZATION_SECTION_NAME,
+        disclosure_binding_for,
+        summarize_neutralization,
+        to_section,
+    )
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+    from factors import registry as factor_registry
+
+    frame = pd.DataFrame(
+        {
+            "classifiable_bars": [240, 240],
+            "valley_bars": [200, 200],
+            "ridge_bars": [25, 30],
+            "peak_bars": [12, 14],
+            "ridge_return_bars": [25, 30],
+            "valid": [True, True],
+        },
+        index=pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2021-07-01"), "A"), (pd.Timestamp("2021-07-02"), "A")],
+            names=["date", "symbol"],
+        ),
+    )
+    if section_name == NEUTRALIZATION_SECTION_NAME:
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2021-07-01"), f"S{i}") for i in range(12)],
+            names=["date", "symbol"],
+        )
+        series = pd.Series(range(12), index=idx, dtype=float)
+        coverage = summarize_neutralization(series, series, series, min_cross_section=10)
+    else:
+        binding = disclosure_binding_for(factor_registry.build(factor_id))
+        coverage = binding.summarize([frame])
+
+    payload_keys = set(to_section(section_name, coverage).payload)
+    prefixes = set(_registered_section_md_prefixes(factor_id, (section_name,)))
+    missing = {k for k in payload_keys if f"- {k}:" not in prefixes}
+    assert not missing, (
+        f"{factor_id}/{section_name}: payload keys with no registered Markdown "
+        f"prefix -> their rendered lines would fail the reports leg: {sorted(missing)}"
+    )
