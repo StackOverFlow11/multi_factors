@@ -26,9 +26,16 @@ whole-day / gapless case, that the filter is a NO-OP — the legacy path's value
 do not move.
 
 Definition note: the rule is about the WINDOW CLOSING, not about counting five
-constituents. A bucket with an interior hole still spans its full window and is
-kept; ``test_interior_gap_bucket_is_kept_because_its_window_still_closed`` pins
+constituents. A bucket missing some of its minutes still closes on the grid as
+long as the grid-boundary minute is present, and is kept;
+``test_bucket_with_a_leading_gap_is_kept_because_its_window_still_closed`` pins
 that so a future "constituent count == 5" reading cannot creep in silently.
+
+The most visible consequence is the OPENING AUCTION: ``ceil(09:30, 5min)`` is
+09:30, so that minute forms a bucket of its own with exactly ONE constituent and
+is KEPT. That is one 1-minute bar pooled as a "5min bar" every trading day, in
+BOTH geometries and in the frozen baseline alike. It is deliberately left alone
+here -- see ``_complete_grid_bars``.
 """
 
 from __future__ import annotations
@@ -201,12 +208,18 @@ def test_missing_data_residual_bucket_is_dropped_from_a_whole_day_frame():
     assert pd.Timestamp("2021-07-01 14:35") in kept_ends  # untouched neighbour stays
 
 
-def test_interior_gap_bucket_is_kept_because_its_window_still_closed():
-    """Missing MIDDLE minutes do not make a residual bucket: the window still closes.
+def test_bucket_with_a_leading_gap_is_kept_because_its_window_still_closed():
+    """A bucket missing its LEADING minutes still closes on the grid, so it is kept.
 
     Pins that the rule tests the bucket's END, not its constituent count -- a
     "count == 5" reading would silently drop these and diverge from the legacy
     path on every illiquid symbol.
+
+    The gap is deliberately at the FRONT of the bucket (14:36/14:37 of the
+    14:36..14:40 window). That is what separates this rule from a span-based one:
+    a leading gap moves ``bar_start`` while leaving ``bar_end`` on the grid, so
+    ``bar_end - bar_start == freq`` would reject the bucket while the real rule
+    keeps it.
     """
     rows = [r for r in _tail_session("2021-07-01") if r[0].strftime("%H:%M") not in
             {"14:36", "14:37"}]

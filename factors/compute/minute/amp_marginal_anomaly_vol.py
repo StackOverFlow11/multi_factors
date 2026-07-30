@@ -94,9 +94,9 @@ def _complete_grid_bars(coarse: pd.DataFrame, freq: str) -> pd.DataFrame:
     :func:`resample_intraday_bars` buckets each 1min bar by ``ceil(bar_end, freq)``
     and then reports the bucket's REAL span, so the emitted ``bar_end`` is the last
     constituent's ``bar_end`` — equal to the bucket's grid boundary when the window
-    closed, strictly before it when the bucket ran out of 1min bars. That equality
-    is therefore an exact test for "this derived bar covers a full ``freq`` window",
-    and it is the test applied here.
+    closed, strictly before it when the bucket ran out of 1min bars. The test applied
+    here is that equality, and it should be read literally: it asks whether THE
+    GRID-BOUNDARY MINUTE IS PRESENT, not how many constituents the bucket has.
 
     WHY this factor needs it (and why it lives here, not in ``resample_intraday_bars``).
     Every statistic downstream is BAR-LENGTH SENSITIVE — ``amp = high/low - 1`` and
@@ -126,16 +126,37 @@ def _complete_grid_bars(coarse: pd.DataFrame, freq: str) -> pd.DataFrame:
 
     Those are the ONLY two causes of a residual bucket, and they do not reach the same
     callers: TRUNCATION cannot arise from whole-day input, so a whole-day caller's only
-    exposure is the DATA GAP. Measured on the real minute cache over the CSI500
-    evaluation window (591 symbols, 649,681 (symbol, day) pairs), the gap case is
-    EMPTY — the cached 1min bars are grid-contiguous within each session — so on that
-    cache this filter drops nothing for a whole-day caller. Do not restate that
-    measurement as "there are no residual buckets": it says nothing about the truncated
-    geometry, where there is one per trading day.
+    exposure is the DATA GAP. Censused over the FULL evaluation grid — the frozen
+    panel's own (date, symbol) pairs, 995/995 symbols and 1,159,263 pairs, no
+    sampling — the gap case is EMPTY: the cached 1min bars are grid-contiguous within
+    each session, so on this cache the filter drops nothing for a whole-day caller.
+    Do not restate that census as "there are no residual buckets": it says nothing
+    about the truncated geometry, where there is one per trading day.
 
-    A bucket with an INTERIOR hole (its last minute present, an earlier one missing)
-    still spans the full window and is KEPT: the test is about the window closing, not
-    about constituent count. Returns a fresh frame; never mutates ``coarse``.
+    A bucket with an EARLIER minute missing but its last minute present still closes
+    on the grid and is KEPT: the test is about the window closing, not about
+    constituent count.
+
+    WHAT THIS DELIBERATELY LETS THROUGH — the OPENING AUCTION bar. ``ceil(09:30,
+    5min)`` is 09:30, so the session's first minute forms a bucket of its own holding
+    exactly ONE constituent, ends on the grid, and is kept. So one 1-minute bar is
+    pooled as a "5min bar" every single trading day (measured: on 600000.SH over
+    2023-06, 20 of 20 days have exactly one kept sub-5-constituent bucket and it is
+    always 09:30). That sits awkwardly beside the bar-length argument above, and it is
+    STILL LEFT ALONE ON PURPOSE: both geometries keep it and so does the frozen
+    baseline, so dropping it would MOVE PUBLISHED VALUES — a separate correctness
+    question needing its own PR and its own evidence, not a change to smuggle in here.
+
+    RANGE OF THIS GUARD (§ house rule: a guard states what it does not cover). The
+    equality test is only meaningful when the ``freq`` grid aligns with the A-share
+    session. Measured on real bars, ``{1, 5, 15, 30}min`` drop nothing, but ``60min``
+    drops one bucket per day: ``ceil(11:30, 60min)`` is 12:00, so the 11:01–11:30
+    half-hour ends off-grid and this filter would DISCARD THE WHOLE MORNING CLOSE
+    every day. That is latent, not live — ``freq`` defaults to the module constant
+    ``AMP_ANOMALY_FREQ`` ("5min") and both call sites use the default — but a caller
+    passing 60min would get silent daily data loss rather than an error.
+
+    Returns a fresh frame; never mutates ``coarse``.
     """
     bar_end = coarse["bar_end"]
     complete = (bar_end == bar_end.dt.ceil(freq)).to_numpy()
