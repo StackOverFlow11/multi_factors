@@ -478,3 +478,68 @@ def test_a_machine_manifest_row_that_disagrees_with_its_panel_is_convicted(tmp_p
     assert any("manifest.json n_nan" in p for p in problems)
     # nothing else fired: the git-tracked side is untouched and still agrees
     assert not any("git-tracked" in p for p in problems)
+
+
+def test_a_deleted_reconciliation_entry_is_convicted(tmp_path: Path):
+    """The gap this closes: iterating only the entries PRESENT cannot see one
+    that was removed. The next PR is a deletion PR, so a verifier blind to
+    removals would be blind exactly when it matters.
+
+    TWO minute factors on purpose. With one, deleting its entry empties the
+    block and the pre-existing "no reconciliation block" message fires — which
+    would let this test pass without the closed-set check existing at all. The
+    real case is 11 entries becoming 10, and that is what is built here.
+    """
+    doc = build_frozen_tree(
+        tmp_path, factors={"alpha_20": "minute", "beta_20": "minute", "book_x": "book"}
+    )
+    assert verify_frozen_panels(tmp_path, doc).ok  # green control
+
+    def _drop_one(document):
+        removed = document["reconciliation"].pop("alpha_20")
+        assert removed, "fixture no longer has the entry this test removes"
+
+    patch_manifest(tmp_path, "manifest.json", _drop_one)
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any(
+        "reconciliation has no entry for alpha_20" in p for p in result.problems
+    ), result.problems
+    # The block is NOT empty, so the pre-existing "no reconciliation block"
+    # message cannot be what convicted here.
+    assert not any("carries no reconciliation block" in p for p in result.problems)
+
+
+def test_an_entry_for_a_non_minute_panel_is_convicted(tmp_path: Path):
+    """The other direction of the closed set: an invented entry."""
+    doc = build_frozen_tree(tmp_path)
+
+    def _invent(document):
+        document["reconciliation"]["book_x"] = {
+            "artifact": "eval_book_x_no_book.json",
+            "checks": {},
+        }
+
+    patch_manifest(tmp_path, "manifest.json", _invent)
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any("carries an entry for book_x" in p for p in result.problems)
+
+
+def test_the_real_manifests_reconcile_exactly_their_minute_panels(tmp_path: Path):
+    """Coupling check: the closed set is only meaningful if the real frozen trees
+    actually satisfy it. Both do — D1 has 11 minute panels and 11 entries, the
+    PR-C tree 1 and 1 — so this check is a live constraint, not a rule the real
+    data was already exempt from."""
+    import json
+
+    root = Path(__file__).resolve().parents[1] / "artifacts" / "refactor_baseline"
+    if not (root / "manifest.json").exists():  # gitignored bulk tree
+        pytest.skip("frozen baseline not present in this checkout")
+    for relative in ("manifest.json", "pr_c_cutoff_fix/manifest.json"):
+        document = json.loads((root / relative).read_text(encoding="utf-8"))
+        minute = {
+            row["factor_id"] for row in document["rows"] if row["kind"] == "minute"
+        }
+        assert minute == set(document["reconciliation"]), relative
+        assert minute, relative

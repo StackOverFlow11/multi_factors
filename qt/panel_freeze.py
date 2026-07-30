@@ -397,6 +397,35 @@ def _check_recorded_reconciliation(document: dict, problems: list[str]) -> None:
             "agreement with the shipped eval artifacts is unwitnessed."
         )
         return
+
+    # CLOSED SET, not "whatever happens to be here". Iterating only the entries
+    # present cannot see a DELETED one -- and the PR that follows this one is a
+    # deletion PR, so a verifier blind to removals would be blind exactly when it
+    # is needed. Every minute panel was reconciled before the freeze accepted it
+    # (book factors carry no coverage fields in the eval artifacts, so they have
+    # no entry by design); anything else means the record was edited.
+    #
+    # The expected set comes from this same document's rows, which are themselves
+    # tamperable -- but not usefully: deleting a row too is caught by the panel
+    # loop, which iterates the GIT-TRACKED factor list and reports a panel whose
+    # machine-manifest row is absent. The two checks close each other.
+    expected = {
+        str(row["factor_id"])
+        for row in document.get("rows", [])
+        if str(row.get("kind")) == "minute"
+    }
+    for factor_id in sorted(expected - set(recorded)):
+        problems.append(
+            f"reconciliation has no entry for {factor_id}, which manifest.json "
+            "lists as a minute panel — every minute panel was reconciled before "
+            "being frozen, so an absent entry means the record lost one."
+        )
+    for factor_id in sorted(set(recorded) - expected):
+        problems.append(
+            f"reconciliation carries an entry for {factor_id}, which is not a "
+            "minute panel in this manifest."
+        )
+
     for factor_id in sorted(recorded):
         entry = recorded[factor_id] or {}
         artifact = entry.get("artifact")
