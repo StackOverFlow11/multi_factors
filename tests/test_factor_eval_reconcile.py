@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from qt.factor_eval_reconcile import (
+    SPARSE_VALID_DAY_TAIL_SYMBOLS,
     ReconciliationError,
     check_new_pair_consistency,
     classify_anchor_row,
@@ -1563,10 +1564,10 @@ def test_panels_sparse_valid_day_tail_symbol_whitelist_has_teeth():
 
 
 def test_panels_sparse_valid_day_tail_window_has_teeth():
-    # REVERSE: one trading day past the window's end (2021-11-12 is a Friday,
-    # so the next trading day is 2021-11-15).
-    frozen = _frozen_panel([("2021-11-15", "000402.SZ", 0.5)], "f")
-    new = _new_series([("2021-11-15", "000402.SZ", -0.5)])
+    # REVERSE, re-cut for the re-derived boundary: the window now ends
+    # 2021-11-15 (a Monday), so the first date OUTSIDE it is 2021-11-16.
+    frozen = _frozen_panel([("2021-11-16", "000402.SZ", 0.5)], "f")
+    new = _new_series([("2021-11-16", "000402.SZ", -0.5)])
     result = classify_panel_differences(
         new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
     )
@@ -1688,3 +1689,117 @@ def test_report_inputs_reject_a_half_written_bookclose_pair(tmp_path):
     (tmp_path / f"{stem}_exec_with_book_bookclose.md").unlink()
     with pytest.raises(ReconciliationError, match="HALF-written"):
         require_report_inputs(tmp_path, "jump_amount_corr_20", "config/x.yaml")
+
+
+def test_panels_sparse_valid_day_tail_last_registered_day_is_inside():
+    # The re-derived window's LAST day must be inside it (the boundary moved
+    # to 2021-11-15 because one real cell sat there); paired with the reverse
+    # test above, the two pin the edge from both sides.
+    frozen = _frozen_panel([("2021-11-15", "000402.SZ", 0.5)], "f")
+    new = _new_series([("2021-11-15", "000402.SZ", -0.5)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_sparse_valid_day_tail")) == 1
+
+
+#: The re-derived membership, written out INDEPENDENTLY of the constant.
+#: Parametrizing over ``SPARSE_VALID_DAY_TAIL_SYMBOLS`` itself cannot detect a
+#: name being dropped — the case simply disappears and the suite still passes
+#: (measured: removing 600906.SH took the run from 9 passed to 8 passed, green
+#: both times). A test whose expectations are read from the thing under test
+#: is the shape this repo has been bitten by repeatedly.
+_EXPECTED_SPARSE_TAIL_SYMBOLS = (
+    "000034.SZ", "000402.SZ", "000999.SZ", "002281.SZ", "002375.SZ",
+    "002653.SZ", "300857.SZ", "600906.SH", "688183.SH",
+)
+
+
+def test_the_sparse_tail_whitelist_is_exactly_the_re_derived_membership():
+    assert SPARSE_VALID_DAY_TAIL_SYMBOLS == frozenset(_EXPECTED_SPARSE_TAIL_SYMBOLS)
+    assert len(_EXPECTED_SPARSE_TAIL_SYMBOLS) == 9
+
+
+@pytest.mark.parametrize("symbol", _EXPECTED_SPARSE_TAIL_SYMBOLS)
+def test_panels_sparse_tail_whitelist_members_are_each_accepted(symbol):
+    # Every registered name is really usable (a typo'd ticker would sit in the
+    # constant looking authoritative while never matching anything).
+    frozen = _frozen_panel([("2021-11-02", symbol, 0.5)], "f")
+    new = _new_series([("2021-11-02", symbol, -0.5)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_sparse_valid_day_tail")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# The sparse-tail class's FALSIFIABLE CONTENT, checked against the real frozen
+# panels: membership is a MECHANISM (the symbol's valid-day emission density on
+# that factor is below that factor's own median), and the whitelist is only
+# that criterion's enumeration. A name that is dense everywhere would falsify
+# the mechanism story — which is the whole reason the class is allowed to exist.
+# --------------------------------------------------------------------------- #
+_SPARSE_TAIL_FACTORS = (
+    "ridge_minute_return_20",
+    "valley_ridge_vwap_ratio_20",
+    "peak_ridge_amount_ratio_20",
+)
+#: The emission window the medians are taken over: the early region plus the
+#: November cluster the class covers.
+_DENSITY_LO, _DENSITY_HI = "2021-07-01", "2021-11-30"
+_FROZEN_PANELS = Path("artifacts/refactor_baseline/panels")
+
+requires_frozen_panels = pytest.mark.skipif(
+    not all((_FROZEN_PANELS / f"{f}.parquet").exists() for f in _SPARSE_TAIL_FACTORS),
+    reason="frozen D1 panels not on disk (artifacts/ is gitignored)",
+)
+
+
+def _emission_density(factor_id: str) -> tuple[dict[str, int], float]:
+    """(symbol -> emitted days, the factor's median) over the density window."""
+    frame = pd.read_parquet(_FROZEN_PANELS / f"{factor_id}.parquet")
+    frame["date"] = pd.to_datetime(frame["date"])
+    window = frame[(frame["date"] >= _DENSITY_LO) & (frame["date"] <= _DENSITY_HI)]
+    emitted = window.groupby("symbol")[factor_id].apply(lambda s: int(s.notna().sum()))
+    return emitted.to_dict(), float(emitted.median())
+
+
+@requires_frozen_panels
+def test_every_sparse_tail_name_is_sparse_on_some_affected_factor():
+    """Each whitelisted name must satisfy the density criterion SOMEWHERE.
+
+    A name that is at or above the median on all three affected factors would
+    mean the class is admitting it for some other reason than the mechanism the
+    class claims — i.e. the whitelist would be a residual description. The
+    ruling on that is explicit: STOP, do not widen.
+    """
+    density = {f: _emission_density(f) for f in _SPARSE_TAIL_FACTORS}
+    offenders = {}
+    for symbol in sorted(SPARSE_VALID_DAY_TAIL_SYMBOLS):
+        seen = {
+            f: (emitted.get(symbol), median)
+            for f, (emitted, median) in density.items()
+            if symbol in emitted
+        }
+        if not any(e < m for e, m in seen.values()):
+            offenders[symbol] = seen
+    assert not offenders, (
+        "whitelisted name(s) are NOT sparse on any affected factor, so the "
+        f"class is not describing the mechanism it claims: {offenders}"
+    )
+
+
+@requires_frozen_panels
+def test_the_density_criterion_predicts_where_600906_appears_and_where_it_does_not():
+    """The asymmetry that makes the criterion a prediction rather than a label.
+
+    600906.SH is below its median on peak_ridge and ABOVE it on ridge — and it
+    shows up in the former's November cluster and not in the latter's. If the
+    criterion were decorative, this pair would not split.
+    """
+    peak_emitted, peak_median = _emission_density("peak_ridge_amount_ratio_20")
+    ridge_emitted, ridge_median = _emission_density("ridge_minute_return_20")
+    assert peak_emitted["600906.SH"] < peak_median
+    assert ridge_emitted["600906.SH"] >= ridge_median

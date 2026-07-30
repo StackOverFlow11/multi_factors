@@ -52,10 +52,14 @@ gate that runs at every mode's entry:
   1b. ``warmup_sparse_valid_day_tail`` — the SAME anchor-truncation family on
      valid-day POOLED factors with a sparse emission grid, whose early-region
      difference is carried forward past the early window instead of averaging
-     out inside it. Registered window [2021-11-01, 2021-11-12], a symbol
-     whitelist, at most 20 cells per factor, pooled factors only; amplitude
-     unbounded inside (the geometries legitimately differ, as in the early
-     region).
+     out inside it. Membership is a MECHANISM — the symbol's valid-day
+     emission density on that factor is below that factor's own median — and
+     the whitelist is that criterion's enumeration in this window (checked,
+     not assumed: 18/18 in-class pairs satisfy it). Registered window
+     [2021-11-01, 2021-11-15], a symbol whitelist, at most 20 cells per
+     factor, pooled factors only; amplitude unbounded inside (the geometries
+     legitimately differ, as in the early region). MUST NOT BE WIDENED AGAIN
+     — see the constants' anti-ratchet note.
   2. ``float_reordering_tail`` — scattered finite-vs-finite cells with rel
      diff <= 5e-12 (rolling-correlation summation order; the JC1 1e-12 gate
      is the attributable floor, this is the measured tail above it), OR with
@@ -293,24 +297,55 @@ EARLY_REGION_HI = pd.Timestamp("2021-10-31")
 
 #: ``warmup_sparse_valid_day_tail`` (C5 F3 ②, lead ruling): the SECOND surface
 #: of the same anchor-truncation family as ``warmup_left_extension``, on
-#: valid-day POOLED factors whose emission grid is sparse (they publish a value
-#: only on valid days, so a stock with few valid days carries an early-region
-#: difference forward for months instead of averaging it out within the early
-#: window). The cells therefore land OUTSIDE the early region, in a short
-#: cluster in early November 2021 on a handful of sparse names — which is why
-#: the early-region class cannot absorb them and a separate, tightly bounded
-#: class is needed. AMPLITUDE IS NOT BOUNDED inside the class (the measured
-#: ridge cells include a sign flip, rel 1.96): the two loading geometries
-#: legitimately disagree there for the same reason they do inside the early
-#: region. The teeth are the window, the symbol whitelist and the cell cap —
-#: all three are checked, and the class is only available to pooled factors.
+#: valid-day POOLED factors whose emission grid is sparse.
+#:
+#: THE CLASS'S FALSIFIABLE CONTENT — the membership criterion is a MECHANISM,
+#: and the whitelist below is only its enumeration in this window:
+#:
+#:     a cell belongs here because THAT SYMBOL'S valid-day emission density
+#:     ON THAT FACTOR is below THAT FACTOR'S OWN median.
+#:
+#: Such a name publishes on too few days for an early-region difference to
+#: average out inside the early window, so it carries the difference forward
+#: past it — which is why these cells land OUTSIDE the early region and the
+#: early-region class cannot absorb them.
+#:
+#: The mechanism is falsifiable and was checked, not assumed. Measured over
+#: [2021-07-01, 2021-11-30] on the frozen panels: all 18 in-class
+#: (factor, symbol) pairs sit below their factor's own median emission (medians
+#: 40-41 days), and 0 violate it. The sharpest confirmation is an ASYMMETRY the
+#: mechanism predicts: 600906.SH emits 29 days on peak_ridge (below its median)
+#: and 42 on ridge (ABOVE its median) — and it appears in the former's cluster
+#: and NOT in the latter's. Control group: volume_peak_count_20, a DENSE pooled
+#: factor (83 of 92 days), has zero cells on these same nine names.
+#: ``tests/test_factor_eval_reconcile.py`` re-runs this check against the real
+#: frozen panels whenever the corpus is on disk.
+#:
+#: AMPLITUDE IS NOT BOUNDED inside the class (the measured ridge cells include a
+#: sign flip, rel 1.96): the two loading geometries legitimately disagree there
+#: for the same reason they do inside the early region. The teeth are the
+#: window, the symbol whitelist and the cell cap — all three are checked, and
+#: the class is only available to pooled factors.
+#:
+#: ⚠️ ANTI-RATCHET (lead ruling, C5): THIS CLASS MUST NOT BE WIDENED AGAIN.
+#: Keep relaxing a class and ``unclassified`` can always be driven to zero, at
+#: which point the class stops being a claim about a mechanism and becomes a
+#: description of the residual — and "an uncatalogued difference is a failure"
+#: (design §六.5) has been quietly repealed. If a future factor or cell needs
+#: this class, that need is ITSELF evidence that the class is describing
+#: residuals rather than a mechanism: STOP AND REPORT, do not patch the bounds.
 SPARSE_VALID_DAY_TAIL_LO = pd.Timestamp("2021-11-01")
-SPARSE_VALID_DAY_TAIL_HI = pd.Timestamp("2021-11-12")
-#: The measured sparse names (union over the affected factors).
+SPARSE_VALID_DAY_TAIL_HI = pd.Timestamp("2021-11-15")
+#: The enumeration of the criterion above across the THREE affected factors
+#: (ridge_minute_return / valley_ridge_vwap_ratio / peak_ridge_amount_ratio).
+#: ⚠️ An earlier version of this constant held SIX names and ran to 11-12,
+#: derived from only TWO of those factors — because the third was FAILING at
+#: the time and had been recorded as passing (see catalogue §七之七).
 SPARSE_VALID_DAY_TAIL_SYMBOLS: frozenset[str] = frozenset({
-    "000034.SZ", "000402.SZ", "000999.SZ", "002375.SZ", "002653.SZ", "688183.SH",
+    "000034.SZ", "000402.SZ", "000999.SZ", "002281.SZ", "002375.SZ",
+    "002653.SZ", "300857.SZ", "600906.SH", "688183.SH",
 })
-#: measured 13 cells per factor -> cap 20
+#: measured 13 / 13 / 19 cells across the three factors -> cap 20
 SPARSE_VALID_DAY_TAIL_MAX_CELLS = 20
 
 #: factor_id -> the frozen exec artifact's report name (qt.exec_baseline_freeze
