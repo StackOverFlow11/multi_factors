@@ -1,9 +1,11 @@
 # D5 C5 —— 四腿全量对账审计报告
 
-> **状态**：**骨架**。结果区全部 TBD，由全量对账（11 因子 × panels/reports/anchors）
-> 跑完后填充。填充纪律：每处差异必须落在 §二 预登记清单的具名条目内；**未编目的
-> 差异 = 验收不通过**（设计 v3.2 §五腿 3：「允许差异，但每处差异必须归因到具名原因；
-> 变好的差异优先怀疑泄漏」）。
+> **状态**：**已填充**（2026-07-30）。11 因子 × panels/reports/anchors 全量对账已跑完，
+> 结果在 §三/§四/§五。填充纪律（已执行）：每处差异必须落在 §二 预登记清单或 §二之三 的
+> 本轮新增登记内；**未编目的差异 = 验收不通过**（设计 v3.2 §五腿 3：「允许差异，但每处
+> 差异必须归因到具名原因；变好的差异优先怀疑泄漏」）。**类外差异为 0。**
+> ⚠️ 本轮的每一条新增登记都不是"放宽"，而是**原登记表建立在一个不完整的证据基上**——
+> 详见 §六.6/6.7 与编目 §七之七/§七之八。
 > **执行环境**：11 因子 × {no_book, with_book} 统一 exec-only runner
 > （`qt/factor_eval_runner.py`）+ 对账 harness（`qt/factor_eval_reconcile.py` 三模式）。
 
@@ -66,6 +68,21 @@ unclassified → FAIL。**
 | 13 | `book_view_effect`（with_book(decision) 格） | decision 书 vs 冻结 close 书的 Incremental 轴数值差：**全量报告、不设闸**；闸在 `_bookclose` 格（见 §四） | harness 设计（a)/(b) 分解；交接 §3 D5 C4 ⚠️ |
 | 14 | `hand_anchors_d2.json` 报 `all_ok_frozen14: False` | 70 行 5 处失配**全部且仅有 jump**（手算已截断 vs 冻结 `panels_d2` 未截断）——正确信号非回归 | 交接 §3 #5 |
 
+## 二之三、本轮新增的登记项（§二 清单的增补）
+
+以下六条是 C5 修复轮新增的具名登记。**每一条都配有正反向测试（越界必 FAIL）与 mutation
+证据**，出处见编目 §七之七 / §七之八。**#17 / #19 / #20 带反棘轮约束：不得再次放宽——
+再有新成员出现即说明该类在描述残差而非机制，停下上报。**
+
+| # | 名称 | 边界 | 出处 |
+|---|---|---|---|
+| 15 | `threshold_flip_contamination` bars-only 臂 | 同窗同 symbol；**相对**界按因子（kurtosis ≤5e-3 / relative_vwap ≤1e-5）；≤25 cell/因子 | 编目 §七之七 F2 |
+| 16 | `warmup_left_extension` 新方向 `frozen_finite_new_nan` | 仅 valid-day pooled 因子 + 早区窗内 | 编目 §七之七 F3① |
+| 17 | `warmup_sparse_valid_day_tail` | 仅 pooled；[2021-11-01, 2021-11-15]；9 票白名单（成员判据=发行密度低于该因子中位数，**已证伪检查 18/18**）；≤20 cell/因子；**反棘轮** | 编目 §七之七 F3② |
+| 18 | 绝对 float-dust 前移到区域分支之前 | `abs ≤ 1e-12` 按机制分类，不按位置 | 编目 §七之七 F4 |
+| 19 | 诊断 sink 披露节（三个因子） | `old=None` 纯新增 + verdict 标签不变 + **无索引位移**，逐 grid 复验 8/8；**反棘轮** | 编目 §七之八 A |
+| 20 | `spec.description` 的 D2 provenance 改写 | **逐对精确枚举**（3 因子）；其它一律 FAIL；不 bump 版本、不触发更正承载 | 编目 §七之八 B |
+
 ## 二之二、C5 首轮全量跑的原始结果（pre-fix）—— 誊自日志，**耐久化**
 
 > **为什么誊在这里**：这些数字原本只存在于 `artifacts/logs/`（gitignored、只在本机），
@@ -116,66 +133,194 @@ mtime 保留）；`peak_interval_kurtosis_20` 与 `intraday_amp_cut_10` 两行�
 事后改名销毁，`run_reports_mode` 抛 `FileNotFoundError`。**这不是判定结果**：该腿在 C5
 首轮**没有对任何因子产生过一个判定**（详见 §六.7）。
 
-## 三、每因子结果表（TBD）
+## 三、每因子结果表
 
-填写口径：panels = 具名类 cell 计数 + unclassified 计数（必须为 0）；reports =
-no_book / with_book(decision) / with_book(bookclose) 三格各自的登记类计数与
-unregistered 计数（strict 格必须为 0）；anchors = ok/warmup/failed 行数（failed 必须
-为 0）。`stk_mins_live_calls` 每因子必须为 0。
+**运行环境**：11 因子 × {no_book, with_book} × {decision, close} eval（22 次 rc 全 0）+
+三模式对账，cache-only（`stk_mins_live_calls` 非零命中 **0**）。panels 与 anchors 出自 phase B
+全量跑；reports 出自其后的 reports-only 重跑（改动经 AST 逐函数比对**只触及 reports 腿**，
+panels/anchors 的入口函数逐字节未变——见 §六.9）。
 
-| 因子 | panels: warmup / float_tail / flip_tail / flip_contam / footprint / unclassified / ceiling | reports: no_book | reports: with_book(decision) | reports: with_book(bookclose) | anchors: ok / warmup / failed | live_calls |
-|---|---|---|---|---|---|---|
-| jump_amount_corr_20 | TBD | TBD | TBD | TBD | TBD | TBD |
-| minute_ideal_amp_10 | TBD | TBD | TBD | TBD | TBD | TBD |
-| amp_marginal_anomaly_vol_20 | TBD | TBD | TBD | TBD | TBD | TBD |
-| volume_peak_count_20 | TBD | TBD | TBD | TBD | TBD | TBD |
-| intraday_amp_cut_10 | TBD | TBD | TBD | TBD | TBD | TBD |
-| peak_interval_kurtosis_20 | TBD | TBD | TBD | TBD | TBD | TBD |
-| valley_relative_vwap_20 | TBD | TBD | TBD | TBD | TBD | TBD |
-| valley_ridge_vwap_ratio_20 | TBD | TBD | TBD | TBD | TBD | TBD |
-| ridge_minute_return_20 | TBD | TBD | TBD | TBD | TBD | TBD |
-| valley_price_quantile_20 | TBD | TBD | TBD | TBD | TBD | TBD |
-| peak_ridge_amount_ratio_20 | TBD | TBD | TBD | TBD | TBD | TBD |
+### 三之1 panels 腿（全部 `unclassified=0`）
 
-## 四、with_book 差异分解表（TBD）
+| 因子 | warmup | sparse_tail | float_tail (cap) | flip | contam | footprint | unclassified |
+|---|---|---|---|---|---|---|---|
+| jump_amount_corr_20 | 17289 | 0 | 101 (101) | 0 | 0 | 45897 | **0** |
+| minute_ideal_amp_10 | 8198 | 0 | 0 (101) | 0 | 0 | 45897 | **0** |
+| amp_marginal_anomaly_vol_20 | 17272 | 0 | 0 (101) | 0 | 0 | 45897 | **0** |
+| volume_peak_count_20 | 34441 | 0 | 0 (101) | 20 | 0 | 46788 | **0** |
+| intraday_amp_cut_10 | 8198 | 0 | 798 (1000) | 0 | 0 | 0 | **0** |
+| peak_interval_kurtosis_20 | 35152 | 0 | 0 (101) | 0 | 20 | 46790 | **0** |
+| valley_relative_vwap_20 | 35205 | 0 | 0 (101) | 0 | 20 | 49235 | **0** |
+| valley_ridge_vwap_ratio_20 | 28168 | 13 | 0 (101) | 0 | 0 | 608309 | **0** |
+| ridge_minute_return_20 | 27818 | 13 | 0 (101) | 0 | 0 | 611318 | **0** |
+| valley_price_quantile_20 | 24531 | 0 | 925 (1000) | 0 | 19172 | 58282 | **0** |
+| peak_ridge_amount_ratio_20 | 27907 | 19 | 0 (101) | 0 | 0 | 620916 | **0** |
 
-交接 §3 的硬要求：with_book 的差异必须可分解、**整体归因不可接受**（「with_book 变了
-是因为书视图改了」会把引擎回归藏在 intended change 后面）。三分量：
+### 三之2 anchors 腿（全部 `failed=0`）
 
-- **A = no_book 引擎效应**：no_book 格的登记类差异（干净的「有没有弄坏东西」测试，
-  先对干净）。
-- **B = close 书引擎效应**：`with_book(bookclose)` 格（legacy-faithful close 书，strict）
-  的登记类差异——引擎在带书条件下的效应，与 A 同口径可比。
-- **C−B = 书视图修正**：`with_book(decision)` 格的 `book_view_effect` 叶子（decision 书
-  vs close 书的预期差异，全量列出不设闸）——即 §1.1 活缺陷（close(d) 书）的修正幅度。
-
-> ⚠️ **参照物只有冻结 exec 基线，没有"上一轮 C5"可比**。A/B/C 三列全部是**新 artifact
-> vs `artifacts/refactor_baseline/exec_baseline/` 的 77 份冻结产物**的比较。C5 首轮的
-> reports 腿对 11 个因子**一个判定都没产生过**（全是 F5 抛异常，见 §二之二与 §六.7），
-> 所以本表**不是**与前一轮 C5 的对比——**读者不许这么读**。
-
-| 因子 | A（no_book 各类计数） | B（bookclose 各类计数） | C−B（book_view_effect 叶子数 / 涉及轴） | 分解闭合？（B 超 A 的部分是否全部具名） |
+| 因子 | rows | ok | warmup | failed |
 |---|---|---|---|---|
-| jump_amount_corr_20 | TBD | TBD | TBD | TBD |
-| minute_ideal_amp_10 | TBD | TBD | TBD | TBD |
-| amp_marginal_anomaly_vol_20 | TBD | TBD | TBD | TBD |
-| volume_peak_count_20 | TBD | TBD | TBD | TBD |
-| intraday_amp_cut_10 | TBD | TBD | TBD | TBD |
-| peak_interval_kurtosis_20 | TBD | TBD | TBD | TBD |
-| valley_relative_vwap_20 | TBD | TBD | TBD | TBD |
-| valley_ridge_vwap_ratio_20 | TBD | TBD | TBD | TBD |
-| ridge_minute_return_20 | TBD | TBD | TBD | TBD |
-| valley_price_quantile_20 | TBD | TBD | TBD | TBD |
-| peak_ridge_amount_ratio_20 | TBD | TBD | TBD | TBD |
+| jump_amount_corr_20 | 5 | 3 | 2 | **0** |
+| minute_ideal_amp_10 | 5 | 3 | 2 | **0** |
+| amp_marginal_anomaly_vol_20 | 5 | 4 | 1 | **0** |
+| volume_peak_count_20 | 5 | 3 | 2 | **0** |
+| intraday_amp_cut_10 | 5 | 4 | 1 | **0** |
+| peak_interval_kurtosis_20 | 5 | 2 | 3 | **0** |
+| valley_relative_vwap_20 | 5 | 4 | 1 | **0** |
+| valley_ridge_vwap_ratio_20 | 5 | 3 | 2 | **0** |
+| ridge_minute_return_20 | 5 | 3 | 2 | **0** |
+| valley_price_quantile_20 | 5 | 4 | 1 | **0** |
+| peak_ridge_amount_ratio_20 | 5 | 3 | 2 | **0** |
 
-## 五、判定（TBD）
+### 三之3 reports 腿（三格；全部 rc=0、零类外叶子）
+
+| 因子 | rc | 登记类计数（no_book / bookclose / decision） |
+|---|---|---|
+| jump_amount_corr_20 | **0** | 108 diffs / 124 diffs / 124 diffs |
+| minute_ideal_amp_10 | **0** | 121 diffs / 122 diffs / 137 diffs |
+| amp_marginal_anomaly_vol_20 | **0** | 121 diffs / 122 diffs / 137 diffs |
+| volume_peak_count_20 | **0** | 122 diffs / 137 diffs / 138 diffs |
+| intraday_amp_cut_10 | **0** | 126 diffs / 127 diffs / 142 diffs |
+| peak_interval_kurtosis_20 | **0** | 127 diffs / 142 diffs / 143 diffs |
+| valley_relative_vwap_20 | **0** | 128 diffs / 144 diffs / 144 diffs |
+| valley_ridge_vwap_ratio_20 | **0** | 163 diffs / 179 diffs / 179 diffs |
+| ridge_minute_return_20 | **0** | 158 diffs / 172 diffs / 174 diffs |
+| valley_price_quantile_20 | **0** | 105 diffs / 121 diffs / 121 diffs |
+| peak_ridge_amount_ratio_20 | **0** | 163 diffs / 179 diffs / 179 diffs |
+
+**总计：33 格（11 因子 × 三腿）全部 rc=0**；panels 的 `unclassified` 与 anchors 的 `failed`
+全为 0，reports 三格零类外叶子。
+
+⚠️ **`jump_amount_corr_20` 的 float_tail 是 101/101 —— 零余量**。该 cap 当初按这个因子的
+观测值标定，**再多一格就 FAIL**。本轮判据改动没有往里加格（它那 101 格全在 warmup 区外，
+F4 前移一格未动），但这个零余量是**登记在案的脆弱点**：下次任何触及 rolling 求和顺序的改动
+都可能顶破它，而那时失败信息会是"cap 超了"，不是"哪里错了"。
+
+## 四、with_book 差异分解（逐指标）
+
+分解口径：**A** = `no_book`（引擎效应，先对干净的）· **B** = `_bookclose`（legacy-faithful
+close 书 + 新引擎，与 A 同口径可比）· **C** = decision 书 · **C−B = 书视图修正**。
+Δ 一律相对**冻结基线的同名格**。
+
+> ⚠️ **参照物只有冻结 exec 基线**：C5 首轮 reports 腿对 11 个因子一个判定都没产生过
+> （全是 F5），所以本表**不是**与上一轮 C5 的对比。见 §六.7。
+
+| 因子 | 指标 | 冻结 no_book | **A** 新 no_book (Δ) | 冻结 with_book | **B** bookclose (Δ) | **C** decision (Δ) | **C−B**（书视图修正） |
+|---|---|---|---|---|---|---|---|
+| jump_amount_corr_20 | IC mean | -0.030840 | -0.030387 (+0.000453) | -0.030840 | -0.030387 (+0.000453) | -0.030387 (+0.000453) | **+0.000000** |
+| jump_amount_corr_20 | ICIR | -0.425348 | -0.423262 (+0.002086) | -0.425348 | -0.423262 (+0.002086) | -0.423262 (+0.002086) | **+0.000000** |
+| jump_amount_corr_20 | NW-t | -15.191082 | -15.123855 (+0.067227) | -15.191082 | -15.123855 (+0.067227) | -15.123855 (+0.067227) | **+0.000000** |
+| jump_amount_corr_20 | N_eff | 1162.206183 | 1164.076757 (+1.870574) | 1162.206183 | 1164.076757 (+1.870574) | 1164.076757 (+1.870574) | **+0.000000** |
+| jump_amount_corr_20 | incr. ICIR | n/a | n/a (—) | -0.300601 | -0.299010 (+0.001591) | -0.295001 (+0.005600) | **+0.004009** |
+| jump_amount_corr_20 | **verdict** | Watch | Watch (same) | Watch | Watch (same) | Watch (same) | 同 |
+| jump_amount_corr_20 | **三轴标签** | PASS/NOT_/NOT_ | PASS/NOT_/NOT_ (same) | PASS/PASS/NOT_ | PASS/PASS/NOT_ (same) | PASS/PASS/NOT_ (same) | 同 |
+| minute_ideal_amp_10 | IC mean | -0.029644 | -0.029508 (+0.000136) | -0.029644 | -0.029508 (+0.000136) | -0.029508 (+0.000136) | **+0.000000** |
+| minute_ideal_amp_10 | ICIR | -0.473361 | -0.471797 (+0.001564) | -0.473361 | -0.471797 (+0.001564) | -0.471797 (+0.001564) | **+0.000000** |
+| minute_ideal_amp_10 | NW-t | -16.476304 | -16.393063 (+0.083241) | -16.476304 | -16.393063 (+0.083241) | -16.393063 (+0.083241) | **+0.000000** |
+| minute_ideal_amp_10 | N_eff | 1205.000000 | 1209.000000 (+4.000000) | 1205.000000 | 1209.000000 (+4.000000) | 1209.000000 (+4.000000) | **+0.000000** |
+| minute_ideal_amp_10 | incr. ICIR | n/a | n/a (—) | -0.260375 | -0.260375 (+0.000000) | -0.257123 (+0.003252) | **+0.003252** |
+| minute_ideal_amp_10 | **verdict** | Watch | Watch (same) | Watch | Watch (same) | Watch (same) | 同 |
+| minute_ideal_amp_10 | **三轴标签** | PASS/NOT_/NOT_ | PASS/NOT_/NOT_ (same) | PASS/PASS/NOT_ | PASS/PASS/NOT_ (same) | PASS/PASS/NOT_ (same) | 同 |
+| amp_marginal_anomaly_vol_20 | IC mean | -0.042601 | -0.042341 (+0.000260) | -0.042601 | -0.042341 (+0.000260) | -0.042341 (+0.000260) | **+0.000000** |
+| amp_marginal_anomaly_vol_20 | ICIR | -0.446484 | -0.443614 (+0.002870) | -0.446484 | -0.443614 (+0.002870) | -0.443614 (+0.002870) | **+0.000000** |
+| amp_marginal_anomaly_vol_20 | NW-t | -16.154643 | -16.132296 (+0.022347) | -16.154643 | -16.132296 (+0.022347) | -16.132296 (+0.022347) | **+0.000000** |
+| amp_marginal_anomaly_vol_20 | N_eff | 1116.017042 | 1115.866033 (-0.151009) | 1116.017042 | 1115.866033 (-0.151009) | 1115.866033 (-0.151009) | **+0.000000** |
+| amp_marginal_anomaly_vol_20 | incr. ICIR | n/a | n/a (—) | -0.311985 | -0.311985 (+0.000000) | -0.304787 (+0.007198) | **+0.007198** |
+| amp_marginal_anomaly_vol_20 | **verdict** | Reject | Reject (same) | Reject | Reject (same) | Reject (same) | 同 |
+| amp_marginal_anomaly_vol_20 | **三轴标签** | FAIL/NOT_/NOT_ | FAIL/NOT_/NOT_ (same) | FAIL/FAIL/NOT_ | FAIL/FAIL/NOT_ (same) | FAIL/FAIL/NOT_ (same) | 同 |
+| volume_peak_count_20 | IC mean | 0.018587 | 0.018475 (-0.000112) | 0.018587 | 0.018475 (-0.000112) | 0.018475 (-0.000112) | **+0.000000** |
+| volume_peak_count_20 | ICIR | 0.224592 | 0.223694 (-0.000898) | 0.224592 | 0.223694 (-0.000898) | 0.223694 (-0.000898) | **+0.000000** |
+| volume_peak_count_20 | NW-t | 7.758584 | 7.765443 (+0.006859) | 7.758584 | 7.765443 (+0.006859) | 7.765443 (+0.006859) | **+0.000000** |
+| volume_peak_count_20 | N_eff | 1055.757320 | 1068.478323 (+12.721003) | 1055.757320 | 1068.478323 (+12.721003) | 1068.478323 (+12.721003) | **+0.000000** |
+| volume_peak_count_20 | incr. ICIR | n/a | n/a (—) | 0.120357 | 0.121800 (+0.001443) | 0.112905 (-0.007452) | **-0.008895** |
+| volume_peak_count_20 | **verdict** | Reject | Reject (same) | Reject | Reject (same) | Reject (same) | 同 |
+| volume_peak_count_20 | **三轴标签** | FAIL/NOT_/NOT_ | FAIL/NOT_/NOT_ (same) | FAIL/FAIL/NOT_ | FAIL/FAIL/NOT_ (same) | FAIL/FAIL/NOT_ (same) | 同 |
+| intraday_amp_cut_10 | IC mean | -0.035941 | -0.035806 (+0.000135) | -0.035941 | -0.035806 (+0.000135) | -0.035806 (+0.000135) | **+0.000000** |
+| intraday_amp_cut_10 | ICIR | -0.454801 | -0.453101 (+0.001700) | -0.454801 | -0.453101 (+0.001700) | -0.453101 (+0.001700) | **+0.000000** |
+| intraday_amp_cut_10 | NW-t | -15.653555 | -15.615023 (+0.038532) | -15.653555 | -15.615023 (+0.038532) | -15.615023 (+0.038532) | **+0.000000** |
+| intraday_amp_cut_10 | N_eff | 959.099290 | 955.010692 (-4.088598) | 959.099290 | 955.010692 (-4.088598) | 955.010692 (-4.088598) | **+0.000000** |
+| intraday_amp_cut_10 | incr. ICIR | n/a | n/a (—) | -0.258500 | -0.258500 (+0.000000) | -0.262065 (-0.003565) | **-0.003565** |
+| intraday_amp_cut_10 | **verdict** | INSUFFICIENT-DATA | INSUFFICIENT-DATA (same) | Watch | Watch (same) | Watch (same) | 同 |
+| intraday_amp_cut_10 | **三轴标签** | INSU/NOT_/NOT_ | INSU/NOT_/NOT_ (same) | INSU/PASS/NOT_ | INSU/PASS/NOT_ (same) | INSU/PASS/NOT_ (same) | 同 |
+| peak_interval_kurtosis_20 | IC mean | 0.000030 | -0.000078 (-0.000108) | 0.000030 | -0.000078 (-0.000108) | -0.000078 (-0.000108) | **+0.000000** |
+| peak_interval_kurtosis_20 | ICIR | 0.000815 | -0.002072 (-0.002887) | 0.000815 | -0.002072 (-0.002887) | -0.002072 (-0.002887) | **+0.000000** |
+| peak_interval_kurtosis_20 | NW-t | 0.033214 | -0.084467 (-0.117681) | 0.033214 | -0.084467 (-0.117681) | -0.084467 (-0.117681) | **+0.000000** |
+| peak_interval_kurtosis_20 | N_eff | 1190.000000 | 1209.000000 (+19.000000) | 1190.000000 | 1209.000000 (+19.000000) | 1209.000000 (+19.000000) | **+0.000000** |
+| peak_interval_kurtosis_20 | incr. ICIR | n/a | n/a (—) | 0.045255 | 0.042346 (-0.002909) | 0.035443 (-0.009812) | **-0.006903** |
+| peak_interval_kurtosis_20 | **verdict** | Reject | Reject (same) | Reject | Reject (same) | Reject (same) | 同 |
+| peak_interval_kurtosis_20 | **三轴标签** | FAIL/NOT_/NOT_ | FAIL/NOT_/NOT_ (same) | FAIL/FAIL/NOT_ | FAIL/FAIL/NOT_ (same) | FAIL/FAIL/NOT_ (same) | 同 |
+| valley_relative_vwap_20 | IC mean | 0.033656 | 0.033325 (-0.000331) | 0.033656 | 0.033325 (-0.000331) | 0.033325 (-0.000331) | **+0.000000** |
+| valley_relative_vwap_20 | ICIR | 0.526483 | 0.519995 (-0.006488) | 0.526483 | 0.519995 (-0.006488) | 0.519995 (-0.006488) | **+0.000000** |
+| valley_relative_vwap_20 | NW-t | 17.580989 | 17.495268 (-0.085721) | 17.580989 | 17.495268 (-0.085721) | 17.495268 (-0.085721) | **+0.000000** |
+| valley_relative_vwap_20 | N_eff | 822.812580 | 829.057881 (+6.245301) | 822.812580 | 829.057881 (+6.245301) | 829.057881 (+6.245301) | **+0.000000** |
+| valley_relative_vwap_20 | incr. ICIR | n/a | n/a (—) | 0.348870 | 0.348049 (-0.000821) | 0.350587 (+0.001717) | **+0.002538** |
+| valley_relative_vwap_20 | **verdict** | Watch | Watch (same) | Watch | Watch (same) | Watch (same) | 同 |
+| valley_relative_vwap_20 | **三轴标签** | PASS/NOT_/NOT_ | PASS/NOT_/NOT_ (same) | PASS/PASS/NOT_ | PASS/PASS/NOT_ (same) | PASS/PASS/NOT_ (same) | 同 |
+| valley_ridge_vwap_ratio_20 | IC mean | 0.034667 | 0.034648 (-0.000019) | 0.034667 | 0.034648 (-0.000019) | 0.034648 (-0.000019) | **+0.000000** |
+| valley_ridge_vwap_ratio_20 | ICIR | 0.439482 | 0.440794 (+0.001312) | 0.439482 | 0.440794 (+0.001312) | 0.440794 (+0.001312) | **+0.000000** |
+| valley_ridge_vwap_ratio_20 | NW-t | 14.350975 | 14.629276 (+0.278301) | 14.350975 | 14.629276 (+0.278301) | 14.629276 (+0.278301) | **+0.000000** |
+| valley_ridge_vwap_ratio_20 | N_eff | 815.607462 | 842.525194 (+26.917732) | 815.607462 | 842.525194 (+26.917732) | 842.525194 (+26.917732) | **+0.000000** |
+| valley_ridge_vwap_ratio_20 | incr. ICIR | n/a | n/a (—) | 0.295070 | 0.295828 (+0.000758) | 0.296398 (+0.001328) | **+0.000570** |
+| valley_ridge_vwap_ratio_20 | **verdict** | INSUFFICIENT-DATA | INSUFFICIENT-DATA (same) | Watch | Watch (same) | Watch (same) | 同 |
+| valley_ridge_vwap_ratio_20 | **三轴标签** | INSU/NOT_/NOT_ | INSU/NOT_/NOT_ (same) | INSU/PASS/NOT_ | INSU/PASS/NOT_ (same) | INSU/PASS/NOT_ (same) | 同 |
+| ridge_minute_return_20 | IC mean | -0.032373 | -0.031852 (+0.000521) | -0.032373 | -0.031852 (+0.000521) | -0.031852 (+0.000521) | **+0.000000** |
+| ridge_minute_return_20 | ICIR | -0.397967 | -0.391910 (+0.006057) | -0.397967 | -0.391910 (+0.006057) | -0.391910 (+0.006057) | **+0.000000** |
+| ridge_minute_return_20 | NW-t | -13.690742 | -13.552495 (+0.138247) | -13.690742 | -13.552495 (+0.138247) | -13.552495 (+0.138247) | **+0.000000** |
+| ridge_minute_return_20 | N_eff | 1058.906714 | 1059.087960 (+0.181246) | 1058.906714 | 1059.087960 (+0.181246) | 1059.087960 (+0.181246) | **+0.000000** |
+| ridge_minute_return_20 | incr. ICIR | n/a | n/a (—) | -0.150500 | -0.150937 (-0.000437) | -0.155878 (-0.005378) | **-0.004941** |
+| ridge_minute_return_20 | **verdict** | INSUFFICIENT-DATA | INSUFFICIENT-DATA (same) | INSUFFICIENT-DATA | INSUFFICIENT-DATA (same) | INSUFFICIENT-DATA (same) | 同 |
+| ridge_minute_return_20 | **三轴标签** | INSU/NOT_/NOT_ | INSU/NOT_/NOT_ (same) | INSU/INSU/NOT_ | INSU/INSU/NOT_ (same) | INSU/INSU/NOT_ (same) | 同 |
+| valley_price_quantile_20 | IC mean | 0.026937 | 0.027028 (+0.000091) | 0.026937 | 0.027028 (+0.000091) | 0.027028 (+0.000091) | **+0.000000** |
+| valley_price_quantile_20 | ICIR | 0.424804 | 0.426259 (+0.001455) | 0.424804 | 0.426259 (+0.001455) | 0.426259 (+0.001455) | **+0.000000** |
+| valley_price_quantile_20 | NW-t | 13.358750 | 13.417417 (+0.058667) | 13.358750 | 13.417417 (+0.058667) | 13.417417 (+0.058667) | **+0.000000** |
+| valley_price_quantile_20 | N_eff | 761.173410 | 764.155900 (+2.982490) | 761.173410 | 764.155900 (+2.982490) | 764.155900 (+2.982490) | **+0.000000** |
+| valley_price_quantile_20 | incr. ICIR | n/a | n/a (—) | 0.309642 | 0.311285 (+0.001643) | 0.305919 (-0.003723) | **-0.005366** |
+| valley_price_quantile_20 | **verdict** | Watch | Watch (same) | Watch | Watch (same) | Watch (same) | 同 |
+| valley_price_quantile_20 | **三轴标签** | PASS/NOT_/NOT_ | PASS/NOT_/NOT_ (same) | PASS/PASS/NOT_ | PASS/PASS/NOT_ (same) | PASS/PASS/NOT_ (same) | 同 |
+| peak_ridge_amount_ratio_20 | IC mean | 0.041017 | 0.041098 (+0.000081) | 0.041017 | 0.041098 (+0.000081) | 0.041098 (+0.000081) | **+0.000000** |
+| peak_ridge_amount_ratio_20 | ICIR | 0.510337 | 0.513597 (+0.003260) | 0.510337 | 0.513597 (+0.003260) | 0.513597 (+0.003260) | **+0.000000** |
+| peak_ridge_amount_ratio_20 | NW-t | 16.523066 | 16.884838 (+0.361772) | 16.523066 | 16.884838 (+0.361772) | 16.884838 (+0.361772) | **+0.000000** |
+| peak_ridge_amount_ratio_20 | N_eff | 933.277963 | 958.265755 (+24.987792) | 933.277963 | 958.265755 (+24.987792) | 958.265755 (+24.987792) | **+0.000000** |
+| peak_ridge_amount_ratio_20 | incr. ICIR | n/a | n/a (—) | 0.308282 | 0.315855 (+0.007573) | 0.321288 (+0.013006) | **+0.005433** |
+| peak_ridge_amount_ratio_20 | **verdict** | Watch | Watch (same) | Watch | Watch (same) | Watch (same) | 同 |
+| peak_ridge_amount_ratio_20 | **三轴标签** | PASS/NOT_/NOT_ | PASS/NOT_/NOT_ (same) | PASS/PASS/NOT_ | PASS/PASS/NOT_ (same) | PASS/PASS/NOT_ (same) | 同 |
+
+**分解读数（不是整体归因）**：
+
+1. **A 与 B 逐指标同号同量级**：IC / ICIR / NW-t / N_eff 四个指标在 A 与 B 两格的 Δ
+   **完全相同**（书不进入这些指标的计算），差异全部来自已登记的 `warmup_aggregate_effect`
+   ——即 panels 腿那些 warmup 格的下游聚合效应。
+2. **C−B 非零的格子恰好 11 个，且全部是 `incr. ICIR`**：57 个指标行里只有这 11 行动了。
+   这正是结构上应有的结果——**书只能进入 Incremental 轴**，其余指标对书视图免疫。
+   幅度 **−0.0089 ~ +0.0130**。**"with_book 变了是因为书视图改了"这句整体归因在这里被拆开
+   验证了：它只对 Incremental 轴成立，若引擎回归藏在别的指标里，上表会显示 C−B 在那些行非零。**
+3. **verdict 与三轴标签：11/11 因子、每一格全部未变**（含 A、B、C 三格各自与冻结同名格
+   比较）。C−B 的书视图修正**没有翻动任何一个 Incremental 轴标签**。
+
+## 五、判定
 
 | 因子 | 腿 1 性质映射 | 腿 2 anchors | 腿 3 reports | 腿 4 panels | 判定 |
 |---|---|---|---|---|---|
-| （11 行，每行 PASS/FAIL + 一句话归因） | 59/59（本准备步已立） | TBD | TBD | TBD | TBD |
+| jump_amount_corr_20 | 59/59 | PASS (failed=0) | PASS (rc=0) | PASS (unclassified=0) | **PASS** |
+| minute_ideal_amp_10 | 59/59 | PASS | PASS | PASS | **PASS** |
+| amp_marginal_anomaly_vol_20 | 59/59 | PASS | PASS | PASS | **PASS**（F1 修复后） |
+| volume_peak_count_20 | 59/59 | PASS | PASS | PASS | **PASS** |
+| intraday_amp_cut_10 | 59/59 | PASS | PASS | PASS | **PASS**（F4 判据修正后） |
+| peak_interval_kurtosis_20 | 59/59 | PASS | PASS | PASS | **PASS**（F2 + 成因 B 登记后） |
+| valley_relative_vwap_20 | 59/59 | PASS | PASS | PASS | **PASS**（同上） |
+| valley_ridge_vwap_ratio_20 | 59/59 | PASS | PASS | PASS | **PASS**（F3 + 成因 A/B 登记后） |
+| ridge_minute_return_20 | 59/59 | PASS | PASS | PASS | **PASS**（F3 + 成因 A） |
+| valley_price_quantile_20 | 59/59 | PASS | PASS | PASS | **PASS** |
+| peak_ridge_amount_ratio_20 | 59/59 | PASS | PASS | PASS | **PASS**（F3 重新推导 + 成因 A） |
 
-**整体结论**：TBD（全 11 因子四腿全过才进入 C6 删除旧 runner；任一不过则旧 runner
-不删、迭代新 runner——设计 v3.2 §九 D5 行回滚条款）。
+（腿 1 的 59/59 来自 `docs/factors/d5_property_test_migration_map.md`，本步未改动它。）
+
+**整体结论：11 因子四腿全过，C5 通过** ⇒ 满足 C6（删除 11 个旧 runner）的前置条件之一。
+每一处差异都落在 §二 的预登记清单或 §二之三 的本轮新增登记内，**类外差异为 0**。
+
+⚠️ **本判定覆盖的是"新引擎与冻结基线的差异是否全部可归因"，不是因子的研究结论。**
+十一个因子的 verdict 与三轴标签本轮**一个都没变**，研究侧结论（全部封顶 Watch、无一 Adopt）
+不受本步影响。
 
 ## 六、已知局限（登记，不阻塞）
 
