@@ -1766,22 +1766,31 @@ requires_frozen_panels = pytest.mark.skipif(
 
 
 def _emission_density(factor_id: str) -> tuple[dict[str, int], float]:
-    """(symbol -> emitted days, the factor's median) over the density window."""
+    """(symbol -> emitted days, the factor's p25) over the density window.
+
+    The threshold is the 25th percentile, NOT the median. A median gate is
+    nearly vacuous by construction — half the universe passes it — so a guard
+    built on it could hardly fail. Measured, all in-class pairs sit below p25
+    (worst percentile rank 21.7%, 15 of 18 below 3%), so tightening costs
+    nothing here and turns an almost-unfailable check into one with teeth.
+    """
     frame = pd.read_parquet(_FROZEN_PANELS / f"{factor_id}.parquet")
     frame["date"] = pd.to_datetime(frame["date"])
     window = frame[(frame["date"] >= _DENSITY_LO) & (frame["date"] <= _DENSITY_HI)]
     emitted = window.groupby("symbol")[factor_id].apply(lambda s: int(s.notna().sum()))
-    return emitted.to_dict(), float(emitted.median())
+    return emitted.to_dict(), float(emitted.quantile(0.25))
 
 
 @requires_frozen_panels
 def test_every_sparse_tail_name_is_sparse_on_some_affected_factor():
-    """Each whitelisted name must satisfy the density criterion SOMEWHERE.
+    """Each whitelisted name must satisfy the NECESSARY condition somewhere.
 
-    A name that is at or above the median on all three affected factors would
-    mean the class is admitting it for some other reason than the mechanism the
-    class claims — i.e. the whitelist would be a residual description. The
-    ruling on that is explicit: STOP, do not widen.
+    This is a guard on the enumeration, not a rule that produces it: the
+    predicate admits roughly 69x as many (factor, symbol) pairs as the class
+    covers, so passing it says only that no member contradicts the story.
+    A name at or above p25 on all three affected factors WOULD contradict it —
+    the class would then be admitting that name for some reason nobody has
+    stated. The ruling on that is explicit: STOP, do not widen.
     """
     density = {f: _emission_density(f) for f in _SPARSE_TAIL_FACTORS}
     offenders = {}
@@ -1801,16 +1810,23 @@ def test_every_sparse_tail_name_is_sparse_on_some_affected_factor():
 
 @requires_frozen_panels
 def test_the_density_criterion_predicts_where_600906_appears_and_where_it_does_not():
-    """The asymmetry that makes the criterion a prediction rather than a label.
+    """The asymmetry, with its reach: only the NEGATIVE direction holds.
 
-    600906.SH is below its median on peak_ridge and ABOVE it on ridge — and it
-    shows up in the former's November cluster and not in the latter's. If the
-    criterion were decorative, this pair would not split.
+    600906.SH is below p25 on peak_ridge and above the median on ridge — and it
+    shows up in the former's November cluster and not in the latter's. What
+    that supports is "dense => absent" (the control group volume_peak_count_20
+    corroborates it: zero cells on all nine names). It does NOT support
+    "sparse => present", which is false by roughly 69x. It is also ONE data
+    point, dense by a single day.
     """
-    peak_emitted, peak_median = _emission_density("peak_ridge_amount_ratio_20")
-    ridge_emitted, ridge_median = _emission_density("ridge_minute_return_20")
-    assert peak_emitted["600906.SH"] < peak_median
-    assert ridge_emitted["600906.SH"] >= ridge_median
+    peak_emitted, peak_p25 = _emission_density("peak_ridge_amount_ratio_20")
+    ridge_emitted, _ridge_p25 = _emission_density("ridge_minute_return_20")
+    assert peak_emitted["600906.SH"] < peak_p25
+    # The dense side is stated against the MEDIAN and clears it by ONE DAY
+    # (42 vs 41) — a single data point, recorded with its reach rather than
+    # leaned on. Only the negative direction of the prediction holds
+    # (dense => absent); sparse => present is false, by 69x.
+    assert ridge_emitted["600906.SH"] >= 41
 
 
 # --------------------------------------------------------------------------- #
@@ -2068,9 +2084,17 @@ def test_md_prefixes_cover_EVERY_key_the_real_section_payload_carries(
     Deriving the prefixes from ``dataclasses.fields`` alone missed the two
     COMPUTED properties ``to_section`` adds on top of ``asdict``, so three
     rendered Markdown lines stayed unregistered and the reports leg kept
-    failing with the JSON side already green. Comparing against the actual
-    payload keys is what closes that gap — a future payload key with no
-    dataclass field to be read from fails here instead of on a two-hour run.
+    failing with the JSON side already green.
+
+    ⚠️ REACH, measured: this test does NOT guard
+    ``DERIVED_PAYLOAD_PROPERTIES`` itself. Both sides now read that tuple, so
+    deleting an entry from it leaves this test GREEN by construction (measured:
+    dropping ``validity_rate`` -> 4 passed). What catches that is the REAL
+    reports leg (all three Markdown grids fail) and
+    ``test_derived_payload_properties_are_exactly_the_coverage_properties``
+    below, which pins the tuple against the payload classes themselves. This
+    test's own job is narrower: a payload key with no dataclass field AND no
+    entry in that tuple fails here rather than on a two-hour run.
     """
     from qt.factor_eval_disclosures import (
         NEUTRALIZATION_SECTION_NAME,
@@ -2112,4 +2136,40 @@ def test_md_prefixes_cover_EVERY_key_the_real_section_payload_carries(
     assert not missing, (
         f"{factor_id}/{section_name}: payload keys with no registered Markdown "
         f"prefix -> their rendered lines would fail the reports leg: {sorted(missing)}"
+    )
+
+
+def test_derived_payload_properties_are_exactly_the_coverage_properties():
+    """Pin ``DERIVED_PAYLOAD_PROPERTIES`` to the payload classes themselves.
+
+    Both ``to_section`` and the reconcile prefix derivation read that tuple, so
+    every test comparing one against the other is equal BY CONSTRUCTION and
+    stays green when an entry is deleted (measured). The tuple therefore needs
+    an anchor that is not itself derived from it: the union of ``@property``
+    names declared on the coverage dataclasses. Delete an entry and this goes
+    red; add a property to a coverage class without registering it and this
+    goes red too — which is the direction that would otherwise ship an
+    unregistered Markdown line.
+    """
+    from qt.factor_eval_disclosures import (
+        DERIVED_PAYLOAD_PROPERTIES,
+        NeutralizationCoverage,
+        PeakCoverage,
+        RidgeCoverage,
+        RidgeReturnCoverage,
+    )
+
+    declared: set[str] = set()
+    for cls in (RidgeCoverage, RidgeReturnCoverage, PeakCoverage, NeutralizationCoverage):
+        declared |= {
+            name
+            for name, attr in vars(cls).items()
+            if isinstance(attr, property) and not name.startswith("_")
+        }
+    # ``render`` is a method, not a property, and is carried as the section's
+    # note rather than as a payload key — the set below is payload-bearing only.
+    assert set(DERIVED_PAYLOAD_PROPERTIES) == declared, (
+        "DERIVED_PAYLOAD_PROPERTIES must equal the coverage classes' property "
+        f"names; registered={sorted(DERIVED_PAYLOAD_PROPERTIES)} "
+        f"declared={sorted(declared)}"
     )

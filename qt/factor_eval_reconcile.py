@@ -52,14 +52,16 @@ gate that runs at every mode's entry:
   1b. ``warmup_sparse_valid_day_tail`` — the SAME anchor-truncation family on
      valid-day POOLED factors with a sparse emission grid, whose early-region
      difference is carried forward past the early window instead of averaging
-     out inside it. Membership is a MECHANISM — the symbol's valid-day
-     emission density on that factor is below that factor's own median — and
-     the whitelist is that criterion's enumeration in this window (checked,
-     not assumed: 18/18 in-class pairs satisfy it). Registered window
+     out inside it. AN ENUMERATION CLASS WITH A NECESSARY-CONDITION GUARD, not
+     a mechanism class: membership is the registered whitelist, and the
+     density property (emission below that factor's own p25) is a guard every
+     member satisfies (18/18) rather than a rule that produces the list — the
+     predicate alone admits ~69x as many pairs. Registered window
      [2021-11-01, 2021-11-15], a symbol whitelist, at most 20 cells per
      factor, pooled factors only; amplitude unbounded inside (the geometries
-     legitimately differ, as in the early region). MUST NOT BE WIDENED AGAIN
-     — see the constants' anti-ratchet note.
+     legitimately differ, as in the early region). MUST NOT BE WIDENED AGAIN,
+     and must NOT be extended by deriving from the density property — see the
+     constants' anti-ratchet note.
   2. ``float_reordering_tail`` — scattered finite-vs-finite cells with rel
      diff <= 5e-12 (rolling-correlation summation order; the JC1 1e-12 gate
      is the attributable floor, this is the measured tail above it), OR with
@@ -299,26 +301,46 @@ EARLY_REGION_HI = pd.Timestamp("2021-10-31")
 #: of the same anchor-truncation family as ``warmup_left_extension``, on
 #: valid-day POOLED factors whose emission grid is sparse.
 #:
-#: THE CLASS'S FALSIFIABLE CONTENT — the membership criterion is a MECHANISM,
-#: and the whitelist below is only its enumeration in this window:
+#: THIS IS AN ENUMERATION CLASS WITH A NECESSARY-CONDITION GUARD — NOT a
+#: mechanism class. The distinction is operational, not stylistic: a mechanism
+#: class could be EXTENDED BY DERIVING from the mechanism, and this one must
+#: not be. Membership is the enumerated list below; the density property is a
+#: guard every member must satisfy, not a rule that produces the list.
 #:
-#:     a cell belongs here because THAT SYMBOL'S valid-day emission density
-#:     ON THAT FACTOR is below THAT FACTOR'S OWN median.
+#: What the density property says:
 #:
-#: Such a name publishes on too few days for an early-region difference to
-#: average out inside the early window, so it carries the difference forward
-#: past it — which is why these cells land OUTSIDE the early region and the
-#: early-region class cannot absorb them.
+#:   1. Sparse emission is the PRECONDITION that lets an early-region
+#:      difference be carried PAST the early window: such a name publishes on
+#:      too few days for the difference to average out inside it. Necessary,
+#:      and NOWHERE NEAR SUFFICIENT — measured, the predicate ("emission below
+#:      that factor's own median") admits 420 + 404 + 426 = 1,250
+#:      (factor, symbol) pairs inside this window, against the 18 the class
+#:      actually covers. Roughly 69x.
+#:   2. Whether a sparse name ACTUALLY carries a difference forward also
+#:      depends on whether it had an early-region difference at all and on how
+#:      its valid days fall. So the predicate CONSTRAINS the member set and
+#:      does not DETERMINE it.
+#:   3. The whitelist is therefore the enumeration of the OBSERVED cells. What
+#:      is falsifiable and checked is the necessary condition: every member
+#:      satisfies it (18/18). THE CLASS IS DELIBERATELY NARROWER THAN THE
+#:      MECHANISM, and that is the point — see the anti-ratchet note.
 #:
-#: The mechanism is falsifiable and was checked, not assumed. Measured over
-#: [2021-07-01, 2021-11-30] on the frozen panels: all 18 in-class
-#: (factor, symbol) pairs sit below their factor's own median emission (medians
-#: 40-41 days), and 0 violate it. The sharpest confirmation is an ASYMMETRY the
-#: mechanism predicts: 600906.SH emits 29 days on peak_ridge (below its median)
-#: and 42 on ridge (ABOVE its median) — and it appears in the former's cluster
-#: and NOT in the latter's. Control group: volume_peak_count_20, a DENSE pooled
-#: factor (83 of 92 days), has zero cells on these same nine names.
-#: ``tests/test_factor_eval_reconcile.py`` re-runs this check against the real
+#: The guard is checked at the 25th PERCENTILE, not the median. A median gate
+#: is nearly vacuous by construction (half the universe passes it); measured,
+#: all 18 in-class pairs sit below their factor's own p25, with a worst
+#: percentile rank of 21.7% and 15 of 18 below 3%. Tightening it turns a guard
+#: that almost could not fail into one that can.
+#:
+#: Supporting ASYMMETRY, with its reach stated: 600906.SH emits 29 days on
+#: peak_ridge (below its p25) and 42 on ridge — and it appears in the former's
+#: cluster and NOT in the latter's. This is a CONDITIONAL prediction and only
+#: its NEGATIVE direction holds: dense => absent (corroborated by the control
+#: group volume_peak_count_20, a dense pooled factor at 83 of 92 days, which
+#: has zero cells on all nine names). Sparse => present does NOT hold — that
+#: is what the 69x above measures. And it is a SINGLE data point whose dense
+#: side clears its median by ONE DAY (42 vs 41), so it cannot carry more than
+#: it is carrying here.
+#: ``tests/test_factor_eval_reconcile.py`` re-runs the guard against the real
 #: frozen panels whenever the corpus is on disk.
 #:
 #: AMPLITUDE IS NOT BOUNDED inside the class (the measured ridge cells include a
@@ -329,11 +351,17 @@ EARLY_REGION_HI = pd.Timestamp("2021-10-31")
 #:
 #: ⚠️ ANTI-RATCHET (lead ruling, C5): THIS CLASS MUST NOT BE WIDENED AGAIN.
 #: Keep relaxing a class and ``unclassified`` can always be driven to zero, at
-#: which point the class stops being a claim about a mechanism and becomes a
-#: description of the residual — and "an uncatalogued difference is a failure"
-#: (design §六.5) has been quietly repealed. If a future factor or cell needs
-#: this class, that need is ITSELF evidence that the class is describing
-#: residuals rather than a mechanism: STOP AND REPORT, do not patch the bounds.
+#: which point the class stops being a claim at all and becomes a description
+#: of the residual — and "an uncatalogued difference is a failure" (design
+#: §六.5) has been quietly repealed. If a future factor or cell needs this
+#: class, that need is ITSELF evidence of exactly that: STOP AND REPORT, do
+#: not patch the bounds — and in particular do NOT "derive" new members from
+#: the density property, which admits 69x what the class covers.
+#: Because no rule determines membership, this constraint is the ONLY guard
+#: this class has, which also PROMOTES THE REVERSE TESTS from a supporting
+#: role to the primary one: the assertions that a name outside the whitelist,
+#: a date outside the window, or a bounded factor must FAIL are what keep the
+#: enumeration an enumeration.
 SPARSE_VALID_DAY_TAIL_LO = pd.Timestamp("2021-11-01")
 SPARSE_VALID_DAY_TAIL_HI = pd.Timestamp("2021-11-15")
 #: The enumeration of the criterion above across the THREE affected factors
