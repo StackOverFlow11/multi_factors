@@ -580,3 +580,106 @@ NW-t −16.1546 → −16.1323、periods 1199 → 1209；增量 ICIR：`_bookclo
 **0/1,213 日不同**、max rel **0.0**。评审独立复测（另写脚本、用 `git show main:` 把修复
 前后两个模块载进同一进程喂逐字节相同输入）得 max rel **1.457e-01**、且**整日几何 5/5
 逐位相等**——"已发布值不移动"由此**直接证得，不靠推理**。
+
+### 七之七、C5 全量对账（11 因子 × 三模式）暴露的五类失败 —— 具名类扩展登记（2026-07-30）
+
+C5 全量跑（`artifacts/logs/factor_eval_reconcile_*.log`，2026-07-28 那批）暴露五类失败
+F1–F5。F1 是**真引擎缺陷**、已由独立 correctness PR 消除（见 §七之六，**永不作为具名类**）；
+F5 是 harness/runner 的 artifact 销毁缺陷（修码，见本节末）。**只有 F2/F3/F4 是判据缺口**，
+本节登记它们的边界与越界反例。
+
+**方法**：先把 11 个因子的 served 面板一次性 dump 下来（`tmp/context/cc_c5_audit/`，
+cache-only、`live_calls=0`），再离线对**同一批 served 值**跑改动前后的分类器——同一份输入、
+两套判据，差异才可归因到判据本身而不是两次引擎运行。
+
+#### F2 —— `threshold_flip_contamination` 的 bars-only 臂（新增）
+
+与 §七之五裁定 2 的截面臂**同一物理事件**：600623.SH 2023-06-15 13:07 一根
+`volume=13300.0` 整数 bar 压在 same-slot μ+σ 阈值上，pandas rolling 浮点累加**路径依赖
+加载起点**（thr 差 ~4e-13）⇒ `vol > thr` 翻转。bars-only 因子**没有逐日 OLS 去传播它**，
+所以只有**直接受影响的那只 symbol** 能动；窗口内任何**别的** symbol 仍然掉进后面的通用尾部，
+量级不够就照样 unclassified 失败。
+
+| 参数 | 值 | 实测 |
+|---|---|---|
+| 窗口 | [2023-06-01, 2023-07-14]（**与截面臂同窗，未改**） | 实际落点 2023-06-15..07-14 |
+| symbol | 仅 600623.SH（**与截面臂同 symbol，未改**） | 两因子的 20 格全在这一只 |
+| 判据 | **相对**（截面臂是绝对） | 见下 |
+| `peak_interval_kurtosis_20` | rel ≤ **5e-3** | 实测 max rel **2.904e-3**（max abs 1.07e-2） |
+| `valley_relative_vwap_20` | rel ≤ **1e-5** | 实测 max rel **1.530e-6**（恒定绝对偏移） |
+| cell 数 | ≤ **25**/因子 | 实测各 **20** 格 |
+
+**为什么 bars-only 臂用相对判据而截面臂用绝对**：这两个因子的值尺度互不相干——kurtosis 的
+20 格 |diff| 到 **1.07e-2**（若沿用截面臂 2e-04 的绝对界会全数越界），relative_vwap 的
+|diff| 只有 1.53e-6。在其中一个上标定的绝对界对另一个没有意义，故按因子登记**相对**界。
+**未登记的因子拿不到这个类**（jump 在同窗同量级仍 unclassified，有反向测试）。
+
+#### F3 —— anchor 截断的两个新表象
+
+① **`warmup_left_extension` 方向集新增 `frozen_finite_new_nan`**，**仅** valid-day pooled
+因子、**仅**早区窗内。机制：这些因子只在有效日发行、且需要 `min_valid_days` 个有效日，
+anchor 边缘两种几何**积累到的有效日个数**可以不同（实证 688276.SH 2021-08-20：旧锚 10 个
+有效日 → 出值，饱和加载 8 个 → NaN）。bounded 因子没有这个计数闸门，其 finite→NaN
+**仍然**是 unclassified（反向测试锁定）；pooled 因子在早区窗**之外**的 finite→NaN 同样仍失败。
+实测：ridge/valley_ridge 各 7 格、peak_ridge 11 格，全在 2021-07-28..08-23（早区窗内）。
+
+② **新具名类 `warmup_sparse_valid_day_tail`**：同一 anchor 截断在**稀疏发行**的 valid-day
+pooled 因子上的长尾——有效日少的票把早区差异**带出早区窗**，落在 2021 年 11 月上旬一小簇。
+
+| 参数 | 值 | 实测 |
+|---|---|---|
+| 因子形态 | 仅 valid-day pooled | bounded 因子拿不到（反向测试） |
+| 窗口 | [2021-11-01, **2021-11-12**] | ridge / valley_ridge 落点即此 |
+| symbol 白名单 | 000034.SZ / 000402.SZ / 000999.SZ / 002375.SZ / 002653.SZ / 688183.SH | 两因子各 5 只，并集 6 只 |
+| 幅度 | **不设界**（与 warmup 同理由：两种加载几何在该处本就合法地不同） | ridge 最大 rel **1.96**（符号翻转） |
+| cell 数 | ≤ **20**/因子 | 实测各 **13** 格 |
+
+**机制的可证伪印证**：该类涉及的 (因子, symbol) 对**全部 18/18** 落在该因子自身发行密度的
+中位数**以下**（窗口 [2021-07-01, 2021-11-30]，中位 40–41 个发行日）。更强的一条：
+600906.SH 在 peak_ridge 上发行 29 日（低于中位）而在 ridge 上 42 日（**高于**中位）——
+它也**只**出现在 peak_ridge 的簇里。稀疏性是逐 (因子, symbol) 的，受影响集合随之而变。
+对照组 `volume_peak_count_20`（非稀疏 pooled，发行 90% 的日子）：同样这 9 只票**一格不差**。
+
+#### F4 —— 绝对 float-dust 谓词前移到所有区域分支之前
+
+`|diff| ≤ 1e-12`（§七之五裁定 3 的绝对臂）原先排在 `_in_warmup` **之后**，于是恰好落在
+warmup 区的几格机器精度尘埃被计成 warmup cell，其**按月计数**把 pooled 非递增闸门顶翻——
+实测 `intraday_amp_cut_10` 月计数 `{07: 8198, 08: 11, 09: 3, 10: 9}`，3→9 判非单调，而
+8/9/10 月那 23 格**全部** `abs ≤ 1e-12`，与 2021-11 至 2026-06 每月都有的稳态尾部同一总体。
+
+裁定：**按机制识别，不按位置**——绝对臂前移到梯子最前（紧跟 1e-12 相对容差之后）。
+它同时先于截面污染窗口，这是有意的：实测 `intraday_amp_cut_10` 那 17 格"污染"**全部**是尘埃，
+现在如实归入 float 尾。相对臂（rel ≤ 5e-12）**仍在原位**（区域分支之后），未动。
+
+**回归实测（同一批 served 值，改动前 → 改动后）**：
+
+| 因子 | warmup | 月计数 | float_tail（cap） | contamination | ok |
+|---|---|---|---|---|---|
+| `intraday_amp_cut_10` | 8221 → **8198** | `{07:8198, 08:11, 09:3, 10:9}` → **`{07:8198}`** | 758 → **798**（1000） | 17 → **0** | False → **True** |
+| `valley_price_quantile_20` | 24568 → **24531** | `{07:902, 08:19980, 09:3667, 10:19}` → `{07:902, 08:19980, 09:3649}` | 883 → **925**（1000） | 19177 → 19172 | True → True |
+| `jump_amount_corr_20` | 17289（不变） | — | **101 → 101**（cap 101，**恰在界上、未被顶破**） | 0 → 0 | True → True |
+| 其余 8 个因子 | 不变 | 不变 | 0 → 0 | 不变 | 不变 |
+
+尘埃只在两个因子身上落进过区域分支；两者改动后都**远在** float cap 之内。**恰在 cap 上的
+jump 一格未增**（它的 101 格全在 warmup 区外）。
+
+#### F5 —— runner 的 artifact 销毁（修码，不是具名类）
+
+`qt/factor_eval_runner.py::_apply_bookclose_suffix` 原先**先**用共享 stem 写
+`{stem}_exec_with_book.*`、**再** `os.replace` 移到 `_bookclose` ⇒ 按 decision→close 顺序跑完，
+decision 的 with-book 三件套被**覆盖后移走**，全 11 因子的 `exec_with_book.*` 在 C5 全量跑里
+全部消失，reconcile reports 腿死在裸 `FileNotFoundError`。修法：后缀**传进写出层**
+（`run_exec_basis_evaluation(..., with_book_suffix=)`，默认 `""` ⇒ 既有调用方逐字节不变），
+**不再事后移动**；reconcile reports 模式增加前置检查，缺文件时给出"先跑
+`run-factor-eval --book-mode decision`"的可读错误并列出缺了哪几个。半写的 `_bookclose`
+配对（只有 json 或只有 md）同样是可读错误——那说明 close 模式跑到一半死了。
+
+#### 本节未覆盖、需 lead 另行裁定的一处
+
+`peak_ridge_amount_ratio_20` 的 panels 腿**在 C5 全量跑里就是 FAIL（unclassified=30）**，
+而交接文档 §2 的结果总表把它记成 panels=0（通过）——**文档记错，日志为准**
+（`artifacts/logs/factor_eval_reconcile_peak_ridge_amount_ratio_20.log`，
+`unclassified=30 ... ok=False`）。它属于 F3 同族的**第三个**因子：11 格 ffnn（已由 ① 吸收）
++ 19 格 11 月簇，其中 13 格落在 ② 的窗口/白名单内、**剩 6 格在界外**（3 只未登记的
+symbol 共 5 格 + 688183.SH 在 2021-11-15，晚窗口末日一个交易日）。按 ② 现行参数它仍 FAIL。
+**未自行放宽**——见 C5 审计报告与交接记录。

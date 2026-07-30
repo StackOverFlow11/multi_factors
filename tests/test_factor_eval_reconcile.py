@@ -1236,3 +1236,404 @@ def test_anchor_jump_mismatch_inside_warmup_is_warmup_not_definition_failure():
         hand=0.46, service=0.35, is_pooled=False, tol=1e-12, warmup_dates=warmup,
     )
     assert row.classification == "warmup_left_extension"
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F4 — the ABSOLUTE float-dust predicate runs BEFORE every region branch.
+#
+# Machine-precision dust exists uniformly across the grid; when the region
+# branches ran first, the few dust cells that happened to land in the warmup
+# region were counted as warmup cells and their monthly counts failed the
+# pooled non-increasing gate on pure noise (measured intraday_amp_cut:
+# 2021-08/09/10 = 8/3/9 cells, every one |diff| <= 1e-12).
+# --------------------------------------------------------------------------- #
+def test_panels_float_dust_inside_the_warmup_boundary_is_dust_not_warmup():
+    # A 1e-13 absolute move on the grid's first w-1 dates: dust, whatever
+    # region it sits in.
+    frozen = _frozen_panel(
+        [("2021-07-01", "A", 1e-5), ("2021-07-02", "A", 1.0), ("2021-07-03", "A", 1.0)],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-01", "A", 1e-5 + 1e-13), ("2021-07-02", "A", 1.0), ("2021-07-03", "A", 1.0)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("float_reordering_tail")) == 1
+    assert result.by_class("warmup_left_extension") == []
+
+
+def test_panels_a_real_move_inside_the_warmup_boundary_is_still_warmup():
+    # REVERSE of the above: raise the SAME cell's move above the dust floor
+    # and it goes back to the warmup class. The reorder must not have turned
+    # the warmup class off.
+    frozen = _frozen_panel(
+        [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.0), ("2021-07-03", "A", 1.0)],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-01", "A", 1.05), ("2021-07-02", "A", 1.0), ("2021-07-03", "A", 1.0)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_left_extension")) == 1
+    assert result.by_class("float_reordering_tail") == []
+
+
+def test_panels_pooled_monthly_gate_is_not_failed_by_float_dust():
+    # The measured F4 shape: a big genuine warmup month, then later months
+    # carrying ONLY dust. Under the old ordering those dust cells were warmup
+    # cells and 1 -> 2 across months failed the non-increasing gate.
+    rows_f = [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.0)]
+    rows_f += [(f"2021-08-{d:02d}", "A", 1e-5) for d in (2, 3)]
+    rows_f += [(f"2021-09-{d:02d}", "A", 1e-5) for d in (1, 2, 3)]
+    rows_f += [("2021-12-01", "A", 1.0)]
+    frozen = _frozen_panel(rows_f, "f")
+    # July: the structurally exempt month (first finite value) + a real warmup
+    # move on 07-02; Aug/Sep: dust only, in a RISING count (2 then 3).
+    rows_n = [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.4)]
+    rows_n += [(f"2021-08-{d:02d}", "A", 1e-5 + 1e-13) for d in (2, 3)]
+    rows_n += [(f"2021-09-{d:02d}", "A", 1e-5 + 1e-13) for d in (1, 2, 3)]
+    rows_n += [("2021-12-01", "A", 1.0)]
+    new = _new_series(rows_n)
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert result.warmup_by_month == {"2021-07": 1}
+    assert result.warmup_monotonic is True
+    assert len(result.by_class("float_reordering_tail")) == 5
+
+
+def test_panels_pooled_monthly_gate_still_fails_on_real_rising_counts():
+    # REVERSE: the same shape with the Aug/Sep cells moved ABOVE the dust
+    # floor. The gate must still fire — the reorder removed noise from the
+    # counts, it did not weaken the gate.
+    rows_f = [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.0)]
+    rows_f += [(f"2021-08-{d:02d}", "A", 1.0) for d in (2, 3)]
+    rows_f += [(f"2021-09-{d:02d}", "A", 1.0) for d in (1, 2, 3)]
+    rows_f += [("2021-12-01", "A", 1.0)]
+    frozen = _frozen_panel(rows_f, "f")
+    rows_n = [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.4)]
+    rows_n += [(f"2021-08-{d:02d}", "A", 1.2) for d in (2, 3)]
+    rows_n += [(f"2021-09-{d:02d}", "A", 1.2) for d in (1, 2, 3)]
+    rows_n += [("2021-12-01", "A", 1.0)]
+    new = _new_series(rows_n)
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert not result.ok
+    assert result.warmup_by_month == {"2021-07": 1, "2021-08": 2, "2021-09": 3}
+    assert result.warmup_monotonic is False
+
+
+def test_panels_float_dust_inside_the_contamination_window_is_dust():
+    # The reorder also precedes the contamination window (measured: all 17 of
+    # intraday_amp_cut's "contamination" cells were dust and now say so).
+    frozen = _frozen_panel(
+        [("2023-06-15", "600623.SH", 1e-5), ("2023-06-16", "600623.SH", 1.0)], "f"
+    )
+    new = _new_series(
+        [("2023-06-15", "600623.SH", 1e-5 + 1e-13), ("2023-06-16", "600623.SH", 1.0)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("float_reordering_tail")) == 1
+    assert result.by_class("threshold_flip_contamination") == []
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F2 — threshold_flip_contamination, BARS-ONLY arm (per-factor REL bound)
+# --------------------------------------------------------------------------- #
+def _flip_cells(factor_id: str, rel: float, n: int, *, symbol="600623.SH"):
+    """n cells on ``symbol`` inside the registered flip window, at ~``rel``."""
+    dates = pd.date_range("2023-06-15", periods=n, freq="D").strftime("%Y-%m-%d")
+    frozen = _frozen_panel([(d, symbol, 1.0) for d in dates], factor_id)
+    new = _new_series([(d, symbol, 1.0 / (1.0 - rel)) for d in dates])
+    return new, frozen
+
+
+def test_panels_bars_only_flip_contamination_within_the_per_factor_bound():
+    new, frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1,
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("threshold_flip_contamination")) == 3
+
+
+def test_panels_bars_only_flip_above_the_per_factor_bound_fails():
+    # REVERSE: one order of magnitude past kurtosis's 5e-3 bound.
+    new, frozen = _flip_cells("peak_interval_kurtosis_20", 5e-02, 3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+def test_panels_bars_only_flip_bound_is_PER_FACTOR():
+    # The same 1e-3 cell passes for kurtosis (bound 5e-3) and FAILS for
+    # valley_relative_vwap (bound 1e-5) — a single shared bound calibrated on
+    # either factor would be wrong about the other.
+    kurt_new, kurt_frozen = _flip_cells("peak_interval_kurtosis_20", 1e-03, 2)
+    kurt = classify_panel_differences(
+        kurt_new, kurt_frozen, factor_id="peak_interval_kurtosis_20",
+        is_pooled=True, lookback_depth=1,
+    )
+    vwap_new, vwap_frozen = _flip_cells("valley_relative_vwap_20", 1e-03, 2)
+    vwap = classify_panel_differences(
+        vwap_new, vwap_frozen, factor_id="valley_relative_vwap_20",
+        is_pooled=True, lookback_depth=1,
+    )
+    assert kurt.ok and len(kurt.by_class("threshold_flip_contamination")) == 2
+    assert not vwap.ok
+    assert len(vwap.by_class("unclassified_finite_vs_finite")) == 2
+
+
+def test_panels_bars_only_flip_is_not_available_to_an_unregistered_factor():
+    # REVERSE: jump lives in the same window with the same magnitude and is
+    # NOT in the registry -> it never gets the class.
+    new, frozen = _flip_cells("jump_amount_corr_20", 2.9e-03, 3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="jump_amount_corr_20", is_pooled=False,
+        lookback_depth=1,
+    )
+    assert not result.ok
+    assert result.by_class("threshold_flip_contamination") == []
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+def test_panels_bars_only_flip_is_only_the_directly_affected_symbol():
+    # REVERSE: a bars-only factor has no per-date OLS to spread the flip, so
+    # another symbol moving inside the window is a NEW FACT, not contamination.
+    new, frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 3, symbol="600000.SH")
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1,
+    )
+    assert not result.ok
+    assert result.by_class("threshold_flip_contamination") == []
+
+
+def test_panels_bars_only_flip_outside_the_window_fails():
+    # REVERSE: same symbol, same magnitude, one day past the window's end.
+    frozen = _frozen_panel([("2023-07-17", "600623.SH", 1.0)], "peak_interval_kurtosis_20")
+    new = _new_series([("2023-07-17", "600623.SH", 1.0029)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_bars_only_flip_cell_cap():
+    at_cap_new, at_cap_frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 25)
+    at_cap = classify_panel_differences(
+        at_cap_new, at_cap_frozen, factor_id="peak_interval_kurtosis_20",
+        is_pooled=True, lookback_depth=1,
+    )
+    over_new, over_frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 26)
+    over = classify_panel_differences(
+        over_new, over_frozen, factor_id="peak_interval_kurtosis_20",
+        is_pooled=True, lookback_depth=1,
+    )
+    assert at_cap.ok and len(at_cap.by_class("threshold_flip_contamination")) == 25
+    # every cell still CLASSIFIES; the cap is a count gate on the class
+    assert len(over.by_class("threshold_flip_contamination")) == 26
+    assert not over.ok
+
+
+def test_panels_bars_only_bound_never_applies_to_a_cross_sectional_factor():
+    # Exclusivity: a cross-sectional factor uses the ABSOLUTE arm even if its
+    # id is in the bars-only registry. rel 2.9e-3 on a value of 1.0 is
+    # |diff| 2.9e-3, past the direct-symbol 2e-4 absolute bound -> FAIL.
+    new, frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1, is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F3 (1) — frozen-finite -> new-NaN joins the warmup direction set, for
+# VALID-DAY POOLED factors inside the early region only.
+# --------------------------------------------------------------------------- #
+def test_panels_pooled_frozen_finite_new_nan_in_the_early_region_is_warmup():
+    frozen = _frozen_panel(
+        [("2021-08-20", "688276.SH", 0.42), ("2021-12-01", "688276.SH", 0.5)], "f"
+    )
+    new = _new_series(
+        [("2021-08-20", "688276.SH", NAN), ("2021-12-01", "688276.SH", 0.5)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert result.warmup_by_direction == {"frozen_finite_new_nan": 1}
+    assert result.warmup_by_month == {"2021-08": 1}
+
+
+def test_panels_bounded_frozen_finite_new_nan_is_never_warmup():
+    # REVERSE: a bounded factor has no valid-day counting gate that could
+    # legitimately drop a value — inside its own warmup boundary or not.
+    frozen = _frozen_panel(
+        [("2021-08-20", "688276.SH", 0.42), ("2021-12-01", "688276.SH", 0.5)], "f"
+    )
+    new = _new_series(
+        [("2021-08-20", "688276.SH", NAN), ("2021-12-01", "688276.SH", 0.5)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=40
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_frozen_finite_new_nan")) == 1
+
+
+def test_panels_pooled_frozen_finite_new_nan_outside_the_early_region_fails():
+    # REVERSE: the same disappearance one month past the early region.
+    frozen = _frozen_panel(
+        [("2021-11-20", "688276.SH", 0.42), ("2021-12-01", "688276.SH", 0.5)], "f"
+    )
+    new = _new_series(
+        [("2021-11-20", "688276.SH", NAN), ("2021-12-01", "688276.SH", 0.5)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_frozen_finite_new_nan")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F3 (2) — warmup_sparse_valid_day_tail
+# --------------------------------------------------------------------------- #
+def _sparse_tail_cells(n: int, *, symbol="000402.SZ", start="2021-11-01", value=-0.5):
+    dates = pd.bdate_range(start, periods=n).strftime("%Y-%m-%d")
+    frozen = _frozen_panel([(d, symbol, 0.5) for d in dates], "f")
+    new = _new_series([(d, symbol, value) for d in dates])
+    return new, frozen
+
+
+def test_panels_sparse_valid_day_tail_is_registered_for_pooled_factors():
+    # Amplitude is deliberately unbounded inside the class: the measured
+    # ridge_minute_return cells include a sign flip (rel 1.96).
+    new, frozen = _sparse_tail_cells(3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_sparse_valid_day_tail")) == 3
+
+
+def test_panels_sparse_valid_day_tail_is_not_available_to_bounded_factors():
+    new, frozen = _sparse_tail_cells(3)
+    result = classify_panel_differences(
+        # lookback_depth=1 -> no warmup dates at all, so the only class that
+        # could take these cells is the sparse tail, and a bounded factor
+        # must not get it.
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1
+    )
+    assert not result.ok
+    assert result.by_class("warmup_sparse_valid_day_tail") == []
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+def test_panels_sparse_valid_day_tail_symbol_whitelist_has_teeth():
+    # REVERSE: a name that is not on the sparse whitelist, same window.
+    new, frozen = _sparse_tail_cells(3, symbol="600519.SH")
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+def test_panels_sparse_valid_day_tail_window_has_teeth():
+    # REVERSE: one trading day past the window's end (2021-11-12 is a Friday,
+    # so the next trading day is 2021-11-15).
+    frozen = _frozen_panel([("2021-11-15", "000402.SZ", 0.5)], "f")
+    new = _new_series([("2021-11-15", "000402.SZ", -0.5)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_sparse_valid_day_tail_cell_cap():
+    at_cap_new, at_cap_frozen = _sparse_tail_cells(20)
+    over_new, over_frozen = _sparse_tail_cells(21)
+    at_cap = classify_panel_differences(
+        at_cap_new, at_cap_frozen, factor_id="f", is_pooled=True, lookback_depth=40,
+        sparse_tail_hi=pd.Timestamp("2021-12-31"),
+    )
+    over = classify_panel_differences(
+        over_new, over_frozen, factor_id="f", is_pooled=True, lookback_depth=40,
+        sparse_tail_hi=pd.Timestamp("2021-12-31"),
+    )
+    assert at_cap.ok and len(at_cap.by_class("warmup_sparse_valid_day_tail")) == 20
+    assert len(over.by_class("warmup_sparse_valid_day_tail")) == 21
+    assert not over.ok
+
+
+def test_panels_sparse_valid_day_tail_does_not_enter_the_monthly_warmup_counts():
+    # It sits OUTSIDE the early region by construction; feeding it into the
+    # monthly non-increasing machinery would fail that gate by definition.
+    new, frozen = _sparse_tail_cells(3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.warmup_by_month == {}
+    assert result.warmup_by_direction == {}
+
+
+# --------------------------------------------------------------------------- #
+# D5 C4a review NIT-1 — per-class max rel in the run summary
+# --------------------------------------------------------------------------- #
+def test_max_rel_by_class_separates_a_registered_headline_from_the_gate():
+    # The headline max_rel_diff is taken before any bucketing; here it is
+    # 0.5 and belongs ENTIRELY to the warmup class, while the only other
+    # differing cell is dust. Printed alone the headline reads like an
+    # ungated tolerance.
+    frozen = _frozen_panel(
+        [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.0), ("2021-09-01", "A", 1e-5)],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-01", "A", 2.0), ("2021-07-02", "A", 1.0), ("2021-09-01", "A", 1e-5 + 1e-13)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert result.ok, result.diffs
+    assert result.max_rel_diff == pytest.approx(0.5)
+    by_class = result.max_rel_by_class()
+    assert by_class["warmup_left_extension"] == pytest.approx(0.5)
+    # ... while the other differing cell is seven orders of magnitude smaller
+    # (its RATIO is 1e-8 — it qualifies on the absolute arm, which is exactly
+    # why reading the headline as "the tolerance" is wrong).
+    assert by_class["float_reordering_tail"] < 1e-6
+
+
+def test_max_rel_by_class_reports_inf_for_one_sided_cells():
+    # A NaN -> finite cell has no ratio; reporting 0.0 would read as "these
+    # cells agree".
+    frozen = _frozen_panel([("2021-07-01", "A", NAN), ("2021-07-02", "A", 1.0)], "f")
+    new = _new_series([("2021-07-01", "A", 0.7), ("2021-07-02", "A", 1.0)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert result.max_rel_by_class()["warmup_left_extension"] == float("inf")

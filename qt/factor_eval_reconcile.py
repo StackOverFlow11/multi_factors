@@ -49,21 +49,37 @@ gate that runs at every mode's entry:
        shape still FAILS. If the frozen panel has no finite value at all
        there is no exemption (the conservative direction). Months after the
        exempt month stay strictly gated.
+  1b. ``warmup_sparse_valid_day_tail`` — the SAME anchor-truncation family on
+     valid-day POOLED factors with a sparse emission grid, whose early-region
+     difference is carried forward past the early window instead of averaging
+     out inside it. Registered window [2021-11-01, 2021-11-12], a symbol
+     whitelist, at most 20 cells per factor, pooled factors only; amplitude
+     unbounded inside (the geometries legitimately differ, as in the early
+     region).
   2. ``float_reordering_tail`` — scattered finite-vs-finite cells with rel
      diff <= 5e-12 (rolling-correlation summation order; the JC1 1e-12 gate
      is the attributable floor, this is the measured tail above it), OR with
      abs diff <= 1e-12 regardless of rel (lead ruling 3: on near-zero
      cross-sectional OLS residuals the rel criterion is meaningless — the
-     measured dust is ~1e-16 machine precision on ~1e-5 residuals). The
-     class is CAPPED — 101 cells for bars-only factors (the measured jump
-     count), 1000 for cross-sectional ones (measured vpq 707 + headroom);
-     more fails.
+     measured dust is ~1e-16 machine precision on ~1e-5 residuals). The ABS
+     arm is evaluated FIRST in the ladder, ahead of every region branch
+     (C5 F4): dust is uniform across the grid, and letting the region decide
+     first made a handful of dust cells count as warmup cells and fail the
+     pooled monthly gate on noise. The class is CAPPED — 101 cells for
+     bars-only factors (the measured jump count), 1000 for cross-sectional
+     ones (measured vpq 707 + headroom); more fails.
   3. ``threshold_flip_tail`` — count factors (volume_peak): rolling-sigma
      float noise (~4e-10) times an integer volume sitting on the peak
      threshold flips the count by EXACTLY +/-1 on a sparse (symbol, day)
      cluster (measured: 20 cells, 600623.SH 2023-06-15..07-14). Bounds:
      |delta| == 1 exactly, rel <= 1e-2, at most 25 cells; more fails.
-  4. ``threshold_flip_contamination`` — CROSS-SECTIONAL factors only (lead
+  4. ``threshold_flip_contamination`` — two arms of one physical event.
+     BARS-ONLY arm (C5 F2): only the directly affected symbol (600623.SH)
+     inside the same window, bounded per factor by a RELATIVE tolerance
+     (``BARS_ONLY_FLIP_CONTAMINATION_REL_TOL``, at most 25 cells) — a
+     bars-only factor has no per-date OLS to spread the flip, so any other
+     symbol moving there is a new fact.
+     CROSS-SECTIONAL arm — (lead
      ruling 2, catalogue §七之五): the same PRV critical-bar flip family as
      (3), observed on vpq as a CONTINUOUS value change (valley VWAP ->
      q_day -> qbar) plus second-order contamination of the whole cross
@@ -80,9 +96,15 @@ gate that runs at every mode's entry:
      served one by the migrated primitives.
   5. the jump cutoff reference — handled by the reference-path selection above.
 
-  Anything else (finite->NaN, finite-vs-finite beyond every named tail, a
-  finite value on a row the frozen panel does not have outside the warmup
-  boundary) is UNCLASSIFIED and fails the mode. Extra all-NaN rows in the
+  Anything else (finite->NaN outside the one registered direction below,
+  finite-vs-finite beyond every named tail, a finite value on a row the frozen
+  panel does not have outside the warmup boundary) is UNCLASSIFIED and fails
+  the mode. The one registered finite->NaN direction is
+  ``warmup_left_extension``'s ``frozen_finite_new_nan`` (C5 F3), available to
+  VALID-DAY POOLED factors inside the early region only: their emission is
+  gated by a count of valid days, so the two geometries can accumulate a
+  different number of them at the anchor edge. A bounded factor has no such
+  gate and its finite->NaN stays unclassified. Extra all-NaN rows in the
   served panel are the D4c NaN footprint (registered drift #3) and are
   counted, not failed.
 
@@ -242,8 +264,54 @@ THRESHOLD_FLIP_CONTAMINATION_CROSS_ABS_TOL = 1e-06
 #: measured 19,143 cells -> cap 20,000
 THRESHOLD_FLIP_CONTAMINATION_MAX_CELLS = 20_000
 
+#: ``threshold_flip_contamination``, BARS-ONLY arm (C5 F2, lead ruling): the
+#: SAME physical event as the cross-sectional arm — the 600623.SH 2023-06-15
+#: 13:07 ``volume=13300.0`` integer bar sitting on the same-slot mu+sigma
+#: threshold, where pandas' rolling float accumulation is path-dependent on the
+#: load start (threshold differs by ~4e-13) and flips ``vol > thr``. On a
+#: bars-only factor there is no per-date OLS to propagate it, so ONLY the
+#: directly affected symbol can move; every other symbol inside the window
+#: keeps falling through to the generic tails and fails there if it is a real
+#: change. The bound is RELATIVE here (the cross-sectional arm's bound is
+#: absolute) because these two factors live on unrelated value scales: measured
+#: kurtosis rel 8.2e-5..2.9e-3 with |diff| up to 1.07e-02, relative_vwap a
+#: constant rel ~1.53e-06. An absolute bound calibrated on one is meaningless
+#: for the other. Per factor, so a factor that is not in this map gets NO
+#: bars-only contamination class at all.
+BARS_ONLY_FLIP_CONTAMINATION_REL_TOL: dict[str, float] = {
+    #: measured max rel 2.90e-03 -> bound 5e-03
+    "peak_interval_kurtosis_20": 5e-03,
+    #: measured max rel 1.53e-06 -> bound 1e-05
+    "valley_relative_vwap_20": 1e-05,
+}
+#: measured 20 cells per factor (the same 20 trading days as
+#: ``threshold_flip_tail``'s volume_peak cluster) -> cap 25
+BARS_ONLY_FLIP_CONTAMINATION_MAX_CELLS = 25
+
 EARLY_REGION_LO = pd.Timestamp("2021-07-01")
 EARLY_REGION_HI = pd.Timestamp("2021-10-31")
+
+#: ``warmup_sparse_valid_day_tail`` (C5 F3 ②, lead ruling): the SECOND surface
+#: of the same anchor-truncation family as ``warmup_left_extension``, on
+#: valid-day POOLED factors whose emission grid is sparse (they publish a value
+#: only on valid days, so a stock with few valid days carries an early-region
+#: difference forward for months instead of averaging it out within the early
+#: window). The cells therefore land OUTSIDE the early region, in a short
+#: cluster in early November 2021 on a handful of sparse names — which is why
+#: the early-region class cannot absorb them and a separate, tightly bounded
+#: class is needed. AMPLITUDE IS NOT BOUNDED inside the class (the measured
+#: ridge cells include a sign flip, rel 1.96): the two loading geometries
+#: legitimately disagree there for the same reason they do inside the early
+#: region. The teeth are the window, the symbol whitelist and the cell cap —
+#: all three are checked, and the class is only available to pooled factors.
+SPARSE_VALID_DAY_TAIL_LO = pd.Timestamp("2021-11-01")
+SPARSE_VALID_DAY_TAIL_HI = pd.Timestamp("2021-11-12")
+#: The measured sparse names (union over the affected factors).
+SPARSE_VALID_DAY_TAIL_SYMBOLS: frozenset[str] = frozenset({
+    "000034.SZ", "000402.SZ", "000999.SZ", "002375.SZ", "002653.SZ", "688183.SH",
+})
+#: measured 13 cells per factor -> cap 20
+SPARSE_VALID_DAY_TAIL_MAX_CELLS = 20
 
 #: factor_id -> the frozen exec artifact's report name (qt.exec_baseline_freeze
 #: FACTORS). Closed map: an unknown factor id is a readable error, never a guess.
@@ -752,6 +820,32 @@ class PanelDiff:
     def by_class(self, classification: str) -> list[PanelCellDiff]:
         return [d for d in self.diffs if d.classification == classification]
 
+    def max_rel_by_class(self) -> dict[str, float]:
+        """Per-class max relative difference, for the run summary.
+
+        ``max_rel_diff`` above is the headline over the WHOLE grid and is
+        updated before any bucketing, so it is routinely dominated by a
+        registered class (measured: a headline ``9.03e-01`` that sits entirely
+        inside ``warmup_left_extension``) while printed next to
+        ``unclassified=0``. Read alone that invites "the tolerance has no
+        teeth"; per class it is unambiguous, and since ``diffs`` is never
+        persisted it would otherwise have to be recomputed from a rerun
+        (D5 C4a review NIT-1).
+
+        A cell with a missing side (``nan_to_finite`` / ``new_only_finite`` /
+        ``frozen_finite_new_nan``) has no defined ratio and reports ``inf`` —
+        never 0.0, which would read as "these cells agree".
+        """
+        out: dict[str, float] = {}
+        for d in self.diffs:
+            if d.frozen is None or d.new is None:
+                rel = float("inf")
+            else:
+                denom = max(abs(d.frozen), abs(d.new))
+                rel = abs(d.frozen - d.new) / denom if denom > 0 else 0.0
+            out[d.classification] = max(out.get(d.classification, 0.0), rel)
+        return out
+
 
 def classify_panel_differences(
     new_values: pd.Series,
@@ -768,6 +862,10 @@ def classify_panel_differences(
     float_tail_max: int | None = None,
     flip_rel_tol: float = THRESHOLD_FLIP_REL_TOL,
     flip_max: int = THRESHOLD_FLIP_MAX_CELLS,
+    sparse_tail_lo: pd.Timestamp = SPARSE_VALID_DAY_TAIL_LO,
+    sparse_tail_hi: pd.Timestamp = SPARSE_VALID_DAY_TAIL_HI,
+    sparse_tail_symbols: frozenset[str] = SPARSE_VALID_DAY_TAIL_SYMBOLS,
+    sparse_tail_max: int = SPARSE_VALID_DAY_TAIL_MAX_CELLS,
 ) -> PanelDiff:
     """Classify every cell difference between the served and the frozen panel.
 
@@ -817,6 +915,17 @@ def classify_panel_differences(
             if is_cross_sectional
             else FLOAT_TAIL_MAX_CELLS
         )
+    # The bars-only contamination arm is per factor and NEVER available to a
+    # cross-sectional factor (that one has its own arm, with absolute bounds).
+    bars_only_flip_tol = (
+        None if is_cross_sectional
+        else BARS_ONLY_FLIP_CONTAMINATION_REL_TOL.get(factor_id)
+    )
+    contamination_max = (
+        THRESHOLD_FLIP_CONTAMINATION_MAX_CELLS
+        if is_cross_sectional
+        else BARS_ONLY_FLIP_CONTAMINATION_MAX_CELLS
+    )
     result = PanelDiff(factor_id=factor_id)
     frozen = frozen.copy()
     frozen["date"] = pd.to_datetime(frozen["date"])
@@ -902,8 +1011,39 @@ def classify_panel_differences(
             result.max_rel_diff = max(result.max_rel_diff, rel)
             if rel <= tol:
                 result.within_tolerance += 1
+            elif abs_diff <= FLOAT_TAIL_ABS_TOL:
+                # C5 F4 (lead ruling): the absolute float-dust predicate is
+                # evaluated BEFORE any REGION branch, so a cell is classified
+                # by its MECHANISM rather than by where it happens to sit.
+                # Machine-precision dust exists uniformly across the whole
+                # grid (measured: every month from 2021-11 to 2026-06 carries
+                # 6..28 such cells); when the region branches ran first, the
+                # handful that landed in the warmup region were counted as
+                # warmup cells, and their month counts (measured
+                # intraday_amp_cut: 8, 3, 9 in 2021-08/09/10, all |diff| <=
+                # 1e-12) then failed the pooled non-increasing gate on pure
+                # noise. Moving the predicate up removes the dust from the
+                # warmup counts instead of weakening the gate. It also means
+                # the class caps below now bound the dust wherever it lands.
+                result.diffs.append(
+                    PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
+                                  float(new_v), "float_reordering_tail")
+                )
             elif _in_warmup(date, symbol):
                 _warmup_cell(date, symbol, frozen_v, new_v, "finite_to_finite")
+            elif (
+                is_pooled
+                and symbol in sparse_tail_symbols
+                and sparse_tail_lo <= date <= sparse_tail_hi
+            ):
+                # C5 F3 (2) — the sparse valid-day tail of the same anchor
+                # truncation. Pooled factors only, inside the registered
+                # window, on a registered sparse name; amplitude unbounded
+                # inside (see the constant's docstring), cell count capped.
+                result.diffs.append(
+                    PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
+                                  float(new_v), "warmup_sparse_valid_day_tail")
+                )
             elif (
                 is_cross_sectional
                 and THRESHOLD_FLIP_CONTAMINATION_LO
@@ -930,10 +1070,34 @@ def classify_panel_differences(
                     PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
                                   float(new_v), cls)
                 )
-            elif abs_diff <= FLOAT_TAIL_ABS_TOL or rel <= float_tail_tol:
-                # Lead ruling 3: |diff| <= 1e-12 is float dust REGARDLESS of
-                # rel (the rel criterion is meaningless on near-zero
-                # cross-sectional OLS residuals).
+            elif (
+                bars_only_flip_tol is not None
+                and symbol == THRESHOLD_FLIP_CONTAMINATION_SYMBOL
+                and THRESHOLD_FLIP_CONTAMINATION_LO
+                <= date
+                <= THRESHOLD_FLIP_CONTAMINATION_HI
+            ):
+                # C5 F2 (lead ruling): the bars-only arm of the same class.
+                # Only the DIRECTLY affected symbol qualifies — a bars-only
+                # factor has no per-date OLS to contaminate the rest of the
+                # cross section, so any other symbol moving inside this window
+                # would be a new fact and keeps falling through below. An
+                # overshoot of the per-factor bound is UNCLASSIFIED here and
+                # never falls through to the generic tails, exactly as in the
+                # cross-sectional arm.
+                cls = (
+                    "threshold_flip_contamination"
+                    if rel <= bars_only_flip_tol
+                    else "unclassified_finite_vs_finite"
+                )
+                result.diffs.append(
+                    PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
+                                  float(new_v), cls)
+                )
+            elif rel <= float_tail_tol:
+                # The REL arm of the float tail. (Lead ruling 3's ABS arm now
+                # runs at the top of the ladder — see the C5 F4 branch — so a
+                # dust cell is classified the same way wherever it lands.)
                 result.diffs.append(
                     PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
                                   float(new_v), "float_reordering_tail")
@@ -949,11 +1113,26 @@ def classify_panel_differences(
                                   float(new_v), "unclassified_finite_vs_finite")
                 )
             continue
-        if pd.notna(frozen_v):  # finite -> NaN: never in an allowed class
-            result.diffs.append(
-                PanelCellDiff(str(date.date()), str(symbol), float(frozen_v), None,
-                              "unclassified_frozen_finite_new_nan")
-            )
+        if pd.notna(frozen_v):
+            # frozen finite -> new NaN. C5 F3 (1) (lead ruling): this joins the
+            # warmup direction set for VALID-DAY POOLED factors INSIDE the
+            # early region, and nowhere else. Mechanism: those factors publish
+            # only on valid days and need ``min_valid_days`` of them, so at the
+            # anchor edge the two loading geometries can accumulate a different
+            # NUMBER of valid days (measured 688276.SH 2021-08-20: 10 under the
+            # old anchor -> a value, 8 under the saturated load -> NaN). It is
+            # the same left-extension geometry difference as the other three
+            # directions, in the one direction that can only appear on a
+            # factor whose emission is gated by a count. For a BOUNDED factor,
+            # or outside the early region, finite -> NaN remains unclassified:
+            # there is no counting gate that could legitimately drop a value.
+            if is_pooled and _in_warmup(date, symbol):
+                _warmup_cell(date, symbol, frozen_v, new_v, "frozen_finite_new_nan")
+            else:
+                result.diffs.append(
+                    PanelCellDiff(str(date.date()), str(symbol), float(frozen_v), None,
+                                  "unclassified_frozen_finite_new_nan")
+                )
             continue
         # frozen NaN -> new finite: the warmup class or unclassified.
         if _in_warmup(date, symbol):
@@ -997,8 +1176,8 @@ def classify_panel_differences(
         )
         and len(result.by_class("float_reordering_tail")) <= float_tail_max
         and len(result.by_class("threshold_flip_tail")) <= flip_max
-        and len(result.by_class("threshold_flip_contamination"))
-        <= THRESHOLD_FLIP_CONTAMINATION_MAX_CELLS
+        and len(result.by_class("threshold_flip_contamination")) <= contamination_max
+        and len(result.by_class("warmup_sparse_valid_day_tail")) <= sparse_tail_max
     )
     return result
 
@@ -1171,22 +1350,71 @@ def run_panels_mode(config_path: str, factor_id: str, repo_root: Path) -> PanelD
     )
     logger.info(
         "panels %s: rows frozen=%d new=%d equal=%d tol=%d warmup=%d(%s) "
-        "warmup_ceiling=%s exempt_month=%s "
+        "warmup_ceiling=%s exempt_month=%s sparse_tail=%d "
         "float_tail=%d threshold_flip=%d flip_contamination=%d footprint=%d "
-        "unclassified=%d max_rel=%.3e live_calls=%d ok=%s",
+        "unclassified=%d max_rel=%.3e max_rel_by_class=%s live_calls=%d ok=%s",
         factor_id, result.rows_frozen, result.rows_new, result.equal,
         result.within_tolerance, len(result.by_class("warmup_left_extension")),
         result.warmup_by_direction,
         result.warmup_max_cells,
         result.warmup_exempt_month,
+        len(result.by_class("warmup_sparse_valid_day_tail")),
         len(result.by_class("float_reordering_tail")),
         len(result.by_class("threshold_flip_tail")),
         len(result.by_class("threshold_flip_contamination")),
         result.nan_footprint_rows,
         len([d for d in result.diffs if d.classification.startswith("un")]),
-        result.max_rel_diff, live_calls, result.ok,
+        result.max_rel_diff,
+        {k: f"{v:.3e}" for k, v in sorted(result.max_rel_by_class().items())},
+        live_calls, result.ok,
     )
     return result
+
+
+def require_report_inputs(report_dir: Path, factor_id: str, config_path: str) -> None:
+    """Fail readably if the reports leg's inputs are not all on disk.
+
+    The four DECISION-book-mode artifacts are required. Before the D5 C5 F5
+    fix, running the two book modes in the order decision -> close DESTROYED
+    the decision with-book artifacts (the close run wrote the shared stem and
+    renamed it afterwards), and this leg then died on a bare
+    ``FileNotFoundError`` naming one file — which reads like a run that was
+    never done, not like a run whose output was deleted after the fact. Naming
+    every missing file and the command that produces it turns "which of the
+    six do I have?" into something the message answers.
+
+    The ``_bookclose`` trio stays OPTIONAL (that is the existing contract: a
+    decision-only run reconciles two grids instead of three), but a HALF
+    present pair is not — that state means a close-mode run died mid-write.
+    """
+    stem = f"factor_eval_{factor_id}"
+    required = [
+        report_dir / f"{stem}_exec_no_book.json",
+        report_dir / f"{stem}_exec_no_book.md",
+        report_dir / f"{stem}_exec_with_book.json",
+        report_dir / f"{stem}_exec_with_book.md",
+    ]
+    missing = [p for p in required if not p.exists()]
+    if missing:
+        raise ReconciliationError(
+            f"reports mode needs the decision-book artifacts of {factor_id!r}, "
+            f"but {len(missing)} of {len(required)} are absent: "
+            f"{[p.name for p in missing]}. Produce them first with: "
+            f"run-factor-eval --config {config_path} --factor {factor_id} "
+            "--book-mode decision"
+        )
+    bookclose = [
+        report_dir / f"{stem}_exec_with_book_bookclose.json",
+        report_dir / f"{stem}_exec_with_book_bookclose.md",
+    ]
+    present = [p for p in bookclose if p.exists()]
+    if len(present) == 1:
+        raise ReconciliationError(
+            f"{factor_id!r} has a HALF-written _bookclose pair "
+            f"({present[0].name} exists, its counterpart does not). Re-run: "
+            f"run-factor-eval --config {config_path} --factor {factor_id} "
+            "--book-mode close"
+        )
 
 
 def run_reports_mode(
@@ -1198,6 +1426,7 @@ def run_reports_mode(
     cfg = load_config(config_path)
     report_dir = report_dir or Path(cfg.output.report_dir)
     report_name = _report_name(factor_id)
+    require_report_inputs(report_dir, factor_id, config_path)
     correction_expected = factor_id == "jump_amount_corr_20"
     registered_sections = REGISTERED_EXTRA_SECTIONS.get(factor_id, ())
     section_md_prefixes = _registered_section_md_prefixes(registered_sections)
@@ -1338,6 +1567,8 @@ __all__ = [
     "ALLOWED_ADDED_JSON_PATHS",
     "ALLOWED_ADDED_MD_PREFIXES",
     "AnchorsDiff",
+    "BARS_ONLY_FLIP_CONTAMINATION_MAX_CELLS",
+    "BARS_ONLY_FLIP_CONTAMINATION_REL_TOL",
     "EARLY_REGION_HI",
     "EARLY_REGION_LO",
     "FLOAT_TAIL_ABS_TOL",
@@ -1351,6 +1582,10 @@ __all__ = [
     "REGISTERED_EXTRA_SECTIONS",
     "ReconciliationError",
     "ReportDiff",
+    "SPARSE_VALID_DAY_TAIL_HI",
+    "SPARSE_VALID_DAY_TAIL_LO",
+    "SPARSE_VALID_DAY_TAIL_MAX_CELLS",
+    "SPARSE_VALID_DAY_TAIL_SYMBOLS",
     "THRESHOLD_FLIP_CONTAMINATION_CROSS_ABS_TOL",
     "THRESHOLD_FLIP_CONTAMINATION_DIRECT_ABS_TOL",
     "THRESHOLD_FLIP_CONTAMINATION_HI",
@@ -1368,6 +1603,7 @@ __all__ = [
     "load_anchor_rows",
     "load_verified_baseline",
     "require_baseline_verified",
+    "require_report_inputs",
     "run_anchors_mode",
     "run_panels_mode",
     "run_reports_mode",
