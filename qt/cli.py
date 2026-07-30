@@ -203,195 +203,6 @@ def _cmd_run_phase_i5d_intraday_groups(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_run_eval_jump_amount_corr(args: argparse.Namespace) -> int:
-    """Run the two real jump-amount-corr factor evaluations (cache-only) + reports."""
-    from qt.eval_jump_amount_corr import run_eval_jump_amount_corr
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_jump_amount_corr(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    print(
-        f"OK run-eval-jump-amount-corr: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
-def _cmd_run_eval_minute_ideal_amplitude(args: argparse.Namespace) -> int:
-    """Run the two real minute-ideal-amplitude factor evaluations (cache-only) + reports."""
-    from qt.eval_minute_ideal_amplitude import run_eval_minute_ideal_amplitude
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_minute_ideal_amplitude(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    print(
-        f"OK run-eval-minute-ideal-amplitude: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
-def _cmd_run_eval_amp_marginal_anomaly_vol(args: argparse.Namespace) -> int:
-    """Run the two real amp-marginal-anomaly-vol factor evaluations (cache-only) + reports."""
-    from qt.eval_amp_marginal_anomaly_vol import run_eval_amp_marginal_anomaly_vol
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_amp_marginal_anomaly_vol(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    print(
-        f"OK run-eval-amp-marginal-anomaly-vol: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
-def _cmd_run_eval_volume_peak_count(args: argparse.Namespace) -> int:
-    """Run the two real volume-peak-count factor evaluations (cache-only) + reports."""
-    from qt.eval_volume_peak_count import run_eval_volume_peak_count
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_volume_peak_count(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    print(
-        f"OK run-eval-volume-peak-count: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
-def _cmd_run_eval_intraday_amp_cut(args: argparse.Namespace) -> int:
-    """Run the two real intraday-amp-cut factor evaluations (cache-only) + reports."""
-    from qt.eval_intraday_amp_cut import run_eval_intraday_amp_cut
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_intraday_amp_cut(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    print(
-        f"OK run-eval-intraday-amp-cut: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
-def _cmd_run_eval_peak_interval_kurtosis(args: argparse.Namespace) -> int:
-    """Run the two real peak-interval-kurtosis evaluations (cache-only) + reports."""
-    from qt.eval_peak_interval_kurtosis import run_eval_peak_interval_kurtosis
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_peak_interval_kurtosis(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    print(
-        f"OK run-eval-peak-interval-kurtosis: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
-def _cmd_run_eval_valley_relative_vwap(args: argparse.Namespace) -> int:
-    """Run the two real valley-relative-VWAP evaluations (cache-only) + reports."""
-    from qt.eval_valley_relative_vwap import run_eval_valley_relative_vwap
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_valley_relative_vwap(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    print(
-        f"OK run-eval-valley-relative-vwap: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
 def _fmt_metric(value: object, spec: str = ".4f") -> str:
     """Format a metric that a SKIPPED section may legitimately leave absent.
 
@@ -407,173 +218,6 @@ def _fmt_metric(value: object, spec: str = ".4f") -> str:
         return format(value, spec)
     except (TypeError, ValueError):
         return str(value)
-
-
-def _cmd_run_eval_ridge_minute_return(args: argparse.Namespace) -> int:
-    """Run the two real ridge-minute-return evaluations (cache-only) + reports."""
-    from qt.eval_ridge_minute_return import run_eval_ridge_minute_return
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_ridge_minute_return(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    net = (
-        " ".join(
-            f"{m:g}x={v:+.6f}" for m, v in sorted(nb["net_long_short_by_cost"].items())
-        )
-        or "n/a"
-    )
-    print(
-        f"OK run-eval-ridge-minute-return: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        # Ridge bars are structurally scarce and the return guard narrows them further;
-        # the realized distribution and the day-validity rate are surfaced so a coverage
-        # regression is visible.
-        f"{result.ridge_coverage.render()}\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        # sign=-1 makes the frozen layer's aligned_spread_* unreliable (it adds costs back
-        # instead of deducting them); the sign-agnostic net spreads are printed instead.
-        f"net long-short by cost (aligned_spread_* UNRELIABLE at sign=-1): {net}\n"
-        f"turnover={_fmt_metric(nb['long_short_turnover'])} "
-        f"rank_autocorr_lag1={_fmt_metric(nb['rank_autocorr_lag1'])} "
-        f"half_life={_fmt_metric(nb['half_life_periods'], '.2f')}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
-def _cmd_run_eval_peak_ridge_amount_ratio(args: argparse.Namespace) -> int:
-    """Run the two real peak/ridge amount-ratio evaluations (cache-only) + reports."""
-    from qt.eval_peak_ridge_amount_ratio import run_eval_peak_ridge_amount_ratio
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_peak_ridge_amount_ratio(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    net = (
-        " ".join(
-            f"{m:g}x={v:+.6f}" for m, v in sorted(nb["net_long_short_by_cost"].items())
-        )
-        or "n/a"
-    )
-    print(
-        f"OK run-eval-peak-ridge-amount-ratio: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        # PEAK bars are the structurally scarce leg of THIS pair (the reverse of PR-J);
-        # the realized distribution, the day-validity rate and the counterfactual at a
-        # peak floor of 10 are surfaced so the lowered gate is a number, not a claim.
-        f"{result.peak_coverage.render()}\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        # sign=+1, so the frozen layer's aligned-spread cost-sign defect does NOT apply
-        # to this factor; net spreads are still printed for sibling comparability.
-        f"net long-short by cost: {net}\n"
-        f"ic_rank={_fmt_metric(nb['ic_mean'])} "
-        f"ic_pearson={_fmt_metric(nb['ic_pearson_mean'])} "
-        f"monotonicity={_fmt_metric(nb['monotonicity_spearman'])}\n"
-        f"turnover={_fmt_metric(nb['long_short_turnover'])} "
-        f"rank_autocorr_lag1={_fmt_metric(nb['rank_autocorr_lag1'])} "
-        f"half_life={_fmt_metric(nb['half_life_periods'], '.2f')}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
-def _cmd_run_eval_valley_price_quantile(args: argparse.Namespace) -> int:
-    """Run the two real valley-price-quantile evaluations (cache-only) + reports."""
-    from qt.eval_valley_price_quantile import run_eval_valley_price_quantile
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_valley_price_quantile(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    net = (
-        " ".join(
-            f"{m:g}x={v:+.6f}" for m, v in sorted(nb["net_long_short_by_cost"].items())
-        )
-        or "n/a"
-    )
-    print(
-        f"OK run-eval-valley-price-quantile: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        # The reversal neutralization is the structural novelty of this factor; a
-        # neutralization that silently ate the panel shows up here as a number.
-        # render() is the single home of this line (catalogue section 3 one-site
-        # normalization; it used to be an inline f-string here).
-        f"{result.neutralization.render()}\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        # sign=+1, so the frozen layer's aligned-spread cost-sign defect does NOT apply
-        # to this factor; net spreads are still printed for sibling comparability.
-        f"net long-short by cost: {net}\n"
-        # The PR-K review's regularity, first tested here on a positive-sign factor.
-        f"ic_rank={_fmt_metric(nb['ic_mean'])} "
-        f"ic_pearson={_fmt_metric(nb['ic_pearson_mean'])} "
-        f"monotonicity={_fmt_metric(nb['monotonicity_spearman'])}\n"
-        f"turnover={_fmt_metric(nb['long_short_turnover'])} "
-        f"rank_autocorr_lag1={_fmt_metric(nb['rank_autocorr_lag1'])} "
-        f"half_life={_fmt_metric(nb['half_life_periods'], '.2f')}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
-
-
-def _cmd_run_eval_valley_ridge_vwap_ratio(args: argparse.Namespace) -> int:
-    """Run the two real valley/ridge VWAP-ratio evaluations (cache-only) + reports."""
-    from qt.eval_valley_ridge_vwap_ratio import run_eval_valley_ridge_vwap_ratio
-    from qt.exec_basis_eval import format_exec_basis_line
-
-    try:
-        result = run_eval_valley_ridge_vwap_ratio(args.config)
-    except (ConfigError, ValueError, FileNotFoundError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    nb, wb = result.no_book_metrics, result.with_book_metrics
-    print(
-        f"OK run-eval-valley-ridge-vwap-ratio: covered={result.covered_symbols}/"
-        f"{result.requested_symbols}, stk_mins_live_calls={result.minute_live_calls}, "
-        f"factor_rows={result.factor_rows} ({result.elapsed:.1f}s)\n"
-        # Ridge bars are structurally scarce; the realized distribution and the
-        # day-validity rate are surfaced so a coverage regression is visible.
-        f"{result.ridge_coverage.render()}\n"
-        f"no-book: {nb['deployment']} (predictive={nb['predictive']}) "
-        f"ic_mean={nb['ic_mean']:.4f} ic_ir={nb['ic_ir']:.3f} N_eff={nb['effective_samples']:.1f}\n"
-        f"with-book: {wb['deployment']} (incremental={wb['incremental']}) "
-        f"incr_ic_ir={wb['incremental_ic_ir']:.3f}\n"
-        f"reports: {result.reports.no_book_md} | {result.reports.with_book_md}\n"
-        f"dashboards: {result.reports.no_book_dashboard} | "
-        f"{result.reports.with_book_dashboard}"
-    )
-    print(format_exec_basis_line(result.exec_basis))
-    return 0
 
 
 def _cmd_run_factor_eval(args: argparse.Namespace) -> int:
@@ -832,83 +476,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_i5d.add_argument("--config", required=True, help="Path to the YAML config.")
     p_i5d.set_defaults(func=_cmd_run_phase_i5d_intraday_groups)
 
-    p_jac = sub.add_parser(
-        "run-eval-jump-amount-corr",
-        help="Run the first real factor evaluation (jump-amount-corr, CSI500, cache-only).",
-    )
-    p_jac.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_jac.set_defaults(func=_cmd_run_eval_jump_amount_corr)
-
-    p_mia = sub.add_parser(
-        "run-eval-minute-ideal-amplitude",
-        help="Run the minute-ideal-amplitude factor evaluation (CSI500, cache-only).",
-    )
-    p_mia.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_mia.set_defaults(func=_cmd_run_eval_minute_ideal_amplitude)
-
-    p_amav = sub.add_parser(
-        "run-eval-amp-marginal-anomaly-vol",
-        help="Run the amp-marginal-anomaly-vol factor evaluation (CSI500, cache-only).",
-    )
-    p_amav.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_amav.set_defaults(func=_cmd_run_eval_amp_marginal_anomaly_vol)
-
-    p_vpc = sub.add_parser(
-        "run-eval-volume-peak-count",
-        help="Run the volume-peak-count factor evaluation (CSI500, cache-only).",
-    )
-    p_vpc.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_vpc.set_defaults(func=_cmd_run_eval_volume_peak_count)
-
-    p_iac = sub.add_parser(
-        "run-eval-intraday-amp-cut",
-        help="Run the intraday-amp-cut factor evaluation (CSI500, cache-only).",
-    )
-    p_iac.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_iac.set_defaults(func=_cmd_run_eval_intraday_amp_cut)
-
-    p_pik = sub.add_parser(
-        "run-eval-peak-interval-kurtosis",
-        help="Run the peak-interval-kurtosis factor evaluation (CSI500, cache-only).",
-    )
-    p_pik.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_pik.set_defaults(func=_cmd_run_eval_peak_interval_kurtosis)
-
-    p_vrv = sub.add_parser(
-        "run-eval-valley-relative-vwap",
-        help="Run the valley-relative-VWAP factor evaluation (CSI500, cache-only).",
-    )
-    p_vrv.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_vrv.set_defaults(func=_cmd_run_eval_valley_relative_vwap)
-
-    p_vrr = sub.add_parser(
-        "run-eval-valley-ridge-vwap-ratio",
-        help="Run the valley/ridge VWAP-ratio factor evaluation (CSI500, cache-only).",
-    )
-    p_vrr.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_vrr.set_defaults(func=_cmd_run_eval_valley_ridge_vwap_ratio)
-
-    p_rmr = sub.add_parser(
-        "run-eval-ridge-minute-return",
-        help="Run the ridge-minute-return factor evaluation (CSI500, cache-only).",
-    )
-    p_rmr.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_rmr.set_defaults(func=_cmd_run_eval_ridge_minute_return)
-
-    p_vpq = sub.add_parser(
-        "run-eval-valley-price-quantile",
-        help="Run the valley-price-quantile factor evaluation (CSI500, cache-only).",
-    )
-    p_vpq.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_vpq.set_defaults(func=_cmd_run_eval_valley_price_quantile)
-
-    p_pra = sub.add_parser(
-        "run-eval-peak-ridge-amount-ratio",
-        help="Run the peak/ridge amount-ratio factor evaluation (CSI500, cache-only).",
-    )
-    p_pra.add_argument("--config", required=True, help="Path to the YAML config.")
-    p_pra.set_defaults(func=_cmd_run_eval_peak_ridge_amount_ratio)
-
     p_fe = sub.add_parser(
         "run-factor-eval",
         help="Run the UNIFIED exec-only factor evaluation (D5 C4, cache-only).",
@@ -961,8 +528,55 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: Prefix of the eleven per-factor evaluation subcommands retired in D5 C6.
+RETIRED_EVAL_PREFIX = "run-eval-"
+
+
+def retired_eval_commands() -> dict[str, str]:
+    """Retired subcommand name -> the factor id ``run-factor-eval`` wants.
+
+    DERIVED, not transcribed: the old command names were the frozen exec report
+    names with underscores turned into dashes, and that factor-id/report-name
+    map already exists as one closed table. Restating eleven pairs here would be
+    a second copy, and the copy in the CLI is the one nobody would update.
+    """
+    from qt.factor_eval_reconcile import FACTOR_TO_REPORT_NAME
+
+    return {
+        f"{RETIRED_EVAL_PREFIX}{report_name.replace('_', '-')}": factor_id
+        for factor_id, report_name in FACTOR_TO_REPORT_NAME.items()
+    }
+
+
+def _retired_command_hint(name: str) -> str | None:
+    """The migration message for a retired subcommand, or None if unknown.
+
+    argparse's own answer to a removed subcommand is ``invalid choice``, which
+    tells an operator that they typed something wrong — not that the command was
+    replaced, nor by what. The eleven per-factor runners collapsed into ONE
+    parameterised command, so the mapping is mechanical and worth printing.
+    """
+    factor_id = retired_eval_commands().get(name)
+    if factor_id is None:
+        return None
+    return (
+        f"{name} was retired in D5 C6: the eleven per-factor evaluation commands "
+        f"collapsed into one. Use instead:\n"
+        f"    python -m qt.cli run-factor-eval --config <config> "
+        f"--factor {factor_id} [--book-mode decision|close]\n"
+        "It is exec-only (the close basis left the evaluation contract in D5) and "
+        "writes factor_eval_* artifacts rather than eval_*."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse args and dispatch. Returns a process exit code."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0].startswith(RETIRED_EVAL_PREFIX):
+        hint = _retired_command_hint(argv[0])
+        if hint is not None:
+            print(f"ERROR: {hint}", file=sys.stderr)
+            return 1
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

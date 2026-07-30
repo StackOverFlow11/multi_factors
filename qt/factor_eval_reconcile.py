@@ -379,7 +379,10 @@ SPARSE_VALID_DAY_TAIL_MAX_CELLS = 20
 
 #: factor_id -> the frozen exec artifact's report name (qt.exec_baseline_freeze
 #: FACTORS). Closed map: an unknown factor id is a readable error, never a guess.
-_FACTOR_TO_REPORT_NAME: dict[str, str] = {
+#: PUBLIC because it is the single source for the retired-command hints in
+#: qt.cli too (D5 C6) -- the eleven old ``run-eval-*`` names were these report
+#: names with dashes, so the CLI derives them here rather than keeping a copy.
+FACTOR_TO_REPORT_NAME: dict[str, str] = {
     "jump_amount_corr_20": "jump_amount_corr",
     "minute_ideal_amp_10": "minute_ideal_amplitude",
     "amp_marginal_anomaly_vol_20": "amp_marginal_anomaly_vol",
@@ -392,7 +395,7 @@ _FACTOR_TO_REPORT_NAME: dict[str, str] = {
     "valley_price_quantile_20": "valley_price_quantile",
     "peak_ridge_amount_ratio_20": "peak_ridge_amount_ratio",
 }
-assert set(_FACTOR_TO_REPORT_NAME.values()) == set(REPORT_FACTOR_NAMES)
+assert set(FACTOR_TO_REPORT_NAME.values()) == set(REPORT_FACTOR_NAMES)
 
 #: Registered JSON additions (catalogue §七 spec 16->20 keys; §七之二 contract
 #: v1.0/v1.1). ``corrections`` and ``spec.requires`` are matched as PREFIXES
@@ -1477,7 +1480,7 @@ def load_anchor_rows(factor_id: str, repo_root: Path) -> list[dict]:
 # --------------------------------------------------------------------------- #
 def _report_name(factor_id: str) -> str:
     try:
-        return _FACTOR_TO_REPORT_NAME[factor_id]
+        return FACTOR_TO_REPORT_NAME[factor_id]
     except KeyError:
         raise ReconciliationError(
             f"{factor_id!r} has no frozen exec artifact name mapping."
