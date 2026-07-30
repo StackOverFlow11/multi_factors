@@ -66,7 +66,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 | 项 | 值 |
 |---|---|
-| `main` | `c9cc12e`（PR #109） |
+| `main` | 下表全部 gate 实测于 `c9cc12e`（PR #109）；此后只落过 docs-only 的 #110（文档瘦身，pytest 复跑同为 2537） |
 | `pytest -p no:warnings` | **2537 passed**（⚠️ 不要再传 `-q`：`pyproject.toml` 已含 `addopts="-q"`，叠成 `-qq` 会吞掉摘要行） |
 | `ruff check .` | clean |
 | phase0 锚（`run-phase0 --config config/example.yaml`） | **ic 0.9600 / annual 0.8408**（自 P0 起从未变过，任何改动都不许动它） |
