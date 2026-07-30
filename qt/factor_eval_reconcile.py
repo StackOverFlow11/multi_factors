@@ -1015,16 +1015,17 @@ def classify_panel_differences(
                 # C5 F4 (lead ruling): the absolute float-dust predicate is
                 # evaluated BEFORE any REGION branch, so a cell is classified
                 # by its MECHANISM rather than by where it happens to sit.
-                # Machine-precision dust exists uniformly across the whole
-                # grid (measured: every month from 2021-11 to 2026-06 carries
-                # 6..28 such cells); when the region branches ran first, the
-                # handful that landed in the warmup region were counted as
-                # warmup cells, and their month counts (measured
-                # intraday_amp_cut: 8, 3, 9 in 2021-08/09/10, all |diff| <=
-                # 1e-12) then failed the pooled non-increasing gate on pure
-                # noise. Moving the predicate up removes the dust from the
-                # warmup counts instead of weakening the gate. It also means
-                # the class caps below now bound the dust wherever it lands.
+                # Machine-precision dust is uniform across the whole grid —
+                # measured on intraday_amp_cut: 798 cells spread over all 59
+                # months of the window, 3..28 per month (median 12), 100% of
+                # them on this absolute arm. When the region branches ran
+                # first, the cells that happened to land in the warmup region
+                # were counted as WARMUP cells, and their month counts (11, 3,
+                # 9 for 2021-08/09/10 — squarely inside that 3..28 spread)
+                # then failed the pooled non-increasing gate on pure noise.
+                # Moving the predicate up removes the dust from the warmup
+                # counts instead of weakening the gate, and puts it under the
+                # float-tail cap wherever it lands.
                 result.diffs.append(
                     PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
                                   float(new_v), "float_reordering_tail")

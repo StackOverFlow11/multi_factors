@@ -645,7 +645,9 @@ pooled 因子上的长尾——有效日少的票把早区差异**带出早区�
 `|diff| ≤ 1e-12`（§七之五裁定 3 的绝对臂）原先排在 `_in_warmup` **之后**，于是恰好落在
 warmup 区的几格机器精度尘埃被计成 warmup cell，其**按月计数**把 pooled 非递增闸门顶翻——
 实测 `intraday_amp_cut_10` 月计数 `{07: 8198, 08: 11, 09: 3, 10: 9}`，3→9 判非单调，而
-8/9/10 月那 23 格**全部** `abs ≤ 1e-12`，与 2021-11 至 2026-06 每月都有的稳态尾部同一总体。
+8/9/10 月那 23 格**全部** `abs ≤ 1e-12`。**独立复算的稳态对照**：该因子改动后的 798 格
+float 尾铺满窗口**全部 59 个月**，每月 **3–28 格（中位 12）**、**100% 走绝对臂**——被争议的
+8/9/10 三个月（11 / 3 / 9 格）**正落在这个分布之内**，与任何别的月份区分不开。
 
 裁定：**按机制识别，不按位置**——绝对臂前移到梯子最前（紧跟 1e-12 相对容差之后）。
 它同时先于截面污染窗口，这是有意的：实测 `intraday_amp_cut_10` 那 17 格"污染"**全部**是尘埃，
@@ -683,3 +685,11 @@ decision 的 with-book 三件套被**覆盖后移走**，全 11 因子的 `exec_
 + 19 格 11 月簇，其中 13 格落在 ② 的窗口/白名单内、**剩 6 格在界外**（3 只未登记的
 symbol 共 5 格 + 688183.SH 在 2021-11-15，晚窗口末日一个交易日）。按 ② 现行参数它仍 FAIL。
 **未自行放宽**——见 C5 审计报告与交接记录。
+
+**判据改动经真实 harness 复核（非只跑离线分类器）**：`run-factor-eval-reconcile --mode panels`
+在真实缓存上重跑两个代表因子，数字与离线分析逐项一致——
+`intraday_amp_cut_10` **rc=0**（`warmup=8198 float_tail=798 flip_contamination=0
+unclassified=0 monotonic=True`）、`peak_interval_kurtosis_20` **rc=0**
+（`warmup=35152 flip_contamination=20 unclassified=0`）。新的逐类 max 行同时给出
+`max_rel by class: float_reordering_tail=2.946e-09, warmup_left_extension=inf`——
+headline 的 `1.976e+00` 完全属于 warmup 类，闸门类只有 2.9e-09，这正是 NIT-1 要消除的误读。
