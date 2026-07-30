@@ -23,6 +23,7 @@ from qt.factor_eval_reconcile import (
     diff_report_md,
     frozen_panel_path,
     require_baseline_verified,
+    require_report_inputs,
 )
 
 # --------------------------------------------------------------------------- #
@@ -1637,3 +1638,53 @@ def test_max_rel_by_class_reports_inf_for_one_sided_cells():
         new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
     )
     assert result.max_rel_by_class()["warmup_left_extension"] == float("inf")
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F5 — the reports leg names its missing inputs instead of dying on the
+# first one it happens to open.
+# --------------------------------------------------------------------------- #
+def _write_report_set(report_dir: Path, factor_id: str, *, bookclose: bool):
+    report_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"factor_eval_{factor_id}"
+    names = [
+        f"{stem}_exec_no_book.json", f"{stem}_exec_no_book.md",
+        f"{stem}_exec_with_book.json", f"{stem}_exec_with_book.md",
+    ]
+    if bookclose:
+        names += [
+            f"{stem}_exec_with_book_bookclose.json",
+            f"{stem}_exec_with_book_bookclose.md",
+        ]
+    for name in names:
+        (report_dir / name).write_text("{}", encoding="utf-8")
+    return stem
+
+
+def test_report_inputs_complete_decision_set_passes_with_or_without_bookclose(tmp_path):
+    for bookclose in (False, True):
+        d = tmp_path / f"bc_{bookclose}"
+        _write_report_set(d, "jump_amount_corr_20", bookclose=bookclose)
+        require_report_inputs(d, "jump_amount_corr_20", "config/x.yaml")
+
+
+def test_report_inputs_names_every_missing_decision_artifact(tmp_path):
+    stem = _write_report_set(tmp_path, "jump_amount_corr_20", bookclose=True)
+    (tmp_path / f"{stem}_exec_with_book.json").unlink()
+    (tmp_path / f"{stem}_exec_with_book.md").unlink()
+    with pytest.raises(ReconciliationError) as excinfo:
+        require_report_inputs(tmp_path, "jump_amount_corr_20", "config/x.yaml")
+    message = str(excinfo.value)
+    # BOTH missing files are named (the bare FileNotFoundError named one) ...
+    assert f"{stem}_exec_with_book.json" in message
+    assert f"{stem}_exec_with_book.md" in message
+    # ... and the message says what to run, with the config it was given.
+    assert "--book-mode decision" in message
+    assert "config/x.yaml" in message
+
+
+def test_report_inputs_reject_a_half_written_bookclose_pair(tmp_path):
+    stem = _write_report_set(tmp_path, "jump_amount_corr_20", bookclose=True)
+    (tmp_path / f"{stem}_exec_with_book_bookclose.md").unlink()
+    with pytest.raises(ReconciliationError, match="HALF-written"):
+        require_report_inputs(tmp_path, "jump_amount_corr_20", "config/x.yaml")
