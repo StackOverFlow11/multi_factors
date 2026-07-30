@@ -231,12 +231,12 @@ aligned_base = sign * gross - base_cost
 （`tests/__init__.py` 收集陷阱）同一接口。**非测试模块共四个**（实测
 `grep -rln "qt\.eval_" --include=*.py | grep -v ^./tests/`）：
 
-| 模块 | 用途 | C6 处置 |
+| 模块 | 用途 | C6 处置（**已执行**，改造 PR，2026-07-30） |
 |---|---|---|
-| `qt/cli.py` | 11 个 `_cmd_run_eval_*` 子命令（§五 C13） | 随统一 runner 收敛为一个子命令 |
-| **`qt/panel_freeze.py`** | **生产 D1 冻结基线的工具**——调各 runner 私有 `_load_*_panel` + `_build_book_factors`，「零公式重抄」正是靠 import 它们实现的 | **删 runner 会打断「重新生成 / 重新验证 D1 基线」的能力** |
-| **`qt/panel_reconcile.py`** | D2 逐格对账工具（同上依赖） | 同上 |
-| **`qt/hand_anchors_engine_values.py`** | D2 手算锚的引擎侧取值 | 同上 |
+| `qt/cli.py` | 11 个 `_cmd_run_eval_*` 子命令（§五 C13） | ✅ 收敛为 `run-factor-eval` 一个子命令；11 个旧命令名保留**迁移提示**（argparse 的 `invalid choice` 只会让人以为自己打错了） |
+| **`qt/panel_freeze.py`** | **生产 D1 冻结基线的工具**——调各 runner 私有 `_load_*_panel` + `_build_book_factors`，「零公式重抄」正是靠 import 它们实现的 | ✅ **改 verify-only**：重生成 loud raise，`--verify` 逐面板重算 canonical hash + 整条 manifest 行，对着 **git 里的**哈希表核 |
+| **`qt/panel_reconcile.py`** | D2 逐格对账工具（同上依赖） | ✅ **改 verify-only**：重建退役，**比较仍然真跑**（它本来就不需要 runner）——两侧各自从盘上独立读回、逐格重导出 D2 结论 |
+| **`qt/hand_anchors_engine_values.py`** | D2 手算锚的引擎侧取值 | ✅ **改 verify-only**：重算退役，`--verify` 用记录自身的 hand/engine 数重导出 rel_diff / ok / all_ok_daily |
 
 ⚠️ **后三个全是 D1/D2 的验收工具**，而 **D5 面板腿的比较对象正是 `panel_freeze.py` 的产物**。
 按设计 v3.2 §五第 4 腿的 **provenance 规则**，基线只许从钉住的 pre-D2 SHA 重新生成——
@@ -250,6 +250,17 @@ import 的 runner loader，即便统一 runner 已上线）、**要么显式记�
 ② 无论哪种，`docs/factors/d1_panel_freeze_manifest.md` 的「重跑命令」一节都会变成陈旧描述，
 **必须同批更新**——否则就是本项目 #76/#78/#82 那条形态的又一次复发（文档教人跑一条已经
 跑不了的命令）。
+
+**已落实（2026-07-30 改造 PR）**：走的是第二条路——owner 2026-07-28 裁定**退役重生成能力**，
+**D1/D2 基线自此不可从本仓再生**，只能依赖已冻结的 artifact + 哈希。三个工具都不删，改成
+只读验证；重生成入口是 **loud raise 而不是静默 no-op**（红线 #9）。要求 ② 同批完成：
+`d1_panel_freeze_manifest.md` §一 与 `pr_c_cutoff_fix_reference_panel.md` §四 的「重跑命令」
+已改为退役声明 + 验证命令。
+
+**这条不对称损失的账，最后是这样结的**：担心的是「工具已被删、想复核也无从下手」。现在复核
+能力**变强了而不是变弱**——旧的重生成路径从来不能用于复核（provenance 规则禁止从当前树重跑，
+从被验证的树重建基线正是本仓犯过一次的空对账），而新的 `--verify` 是一条以前根本不存在的路：
+15 个面板逐一重算 canonical hash 与整条 manifest 行，对着 **git 里的**期望值核，3 秒跑完。
 
 ## 七、与 C5 对账的接口
 
