@@ -1,0 +1,46 @@
+# Phase 4-1/4-2/4-3 持久化缓存 + 分钟级 pipeline I1–I4（PR #23 – #31）
+
+> 本文件是 `CLAUDE.md` 进度日志的**归档**，内容逐字搬移，未做任何改写。
+> 索引见 [`docs/progress/README.md`](README.md)；当前状态与操作约定仍在仓库根 `CLAUDE.md`。
+
+端点级 raw 缓存（行情 / universe / tradability / 因子支撑端点）、`data-update` 增量暖跑，以及 1min raw feed → 缓存 → PIT 日频聚合 → 尾盘执行骨架。
+
+---
+
+- ✅ **Phase 4-1 持久化 Tushare 行情缓存**（**PR #23 已 merge 到 `main`**，daily + adj_factor）：feed 之下的 **endpoint 级 raw 缓存**——真实 run 不再每次重抓全量日线+复权因子。**默认 disabled（向后兼容，旧配置行为一字不变）**；opt-in 后行情走 read-through，只有未覆盖的日期区间打 API。
+  - **缓存只存 raw**（未复权 OHLCV/amount + 原始 adj_factor），绝不存 qfq、绝不存任何 secret；`front_adjust` 仍在内存跑，公式/时机零改动；`PanelStore` 仍是 per-run artifact，**不是**缓存 SoT。
+  - `data/cache/`：`intervals`（闭区间日历算法做 gap 规划——按"日历区间是否抓过"而非"行是否存在"判定，正确区分"未抓"vs"源本无行"）/ `parquet_store`（按 `(endpoint,symbol)` 分文件存 `symbol_prefix` 分片，原子 upsert 按 `(date,symbol)` 去重，latest 胜）/ `coverage`（append-only ledger，11 列含 status ok/empty/failed，**只 ok/empty 算覆盖**，failed 留待重试）/ `tushare_cache`（read-through：只抓 gap、upsert、记 coverage 含空返回、再从缓存读全区间；`refresh_recent_days` 重抓近端 tail；`force_refresh` 整端点重拉；per-run 抓取计数 stats 日志）。
+  - `TushareFeed.get_bars`：`cache=None` → 旧直抓路径**逐字不变**；`cache` 注入 → read-through 后用**与直抓完全相同的 join+select**，故 `front_adjust` 前面板逐字节一致（qfq 等价单测锁定）；per-symbol 限流/重试仍留在 feed 的 `_call` 闭包里。`_build_market_cache` 仅在 `data.cache.enabled` 时接线。
+  - **配置**：`data.cache`（enabled=False / root_dir=`artifacts/cache/tushare/v1`（gitignored）/ refresh_recent_days=14 / force_refresh=[]）；校验拒绝负刷新窗/空 root/未知键；全部旧配置仍 validate。
+  - **真实 smoke（phase2 baseline；非缓存参照 ref / 缓存冷 cold / 缓存暖 warm 三轮）**：
+    - **三轮 report 指标完全一致** ✓（IC 0.0083 / annual −10.19% / maxDD −16.52% / vol 16.59% / sharpe −0.5703 / turnover 1.0818 / cost 1.19%，REF==COLD==WARM）——qfq 等价单测已证 cached==direct 数据层逐字节一致，真实 run 三轮一致是端到端实证。
+    - **warm 轮零市场端点调用**：cold 后 coverage ledger = 68 market_daily + 68 adj_factor 行（68 成分全 ok）；warm 后**仍 68+68 不变**（零新 coverage 行 = 零 gap-fetch = 零 daily/adj 调用）。
+    - wall：ref 998s / cold 1025s / warm **734s**（暖跑省 ~290s = 行情抓取部分；index_weight/财务/covariates 仍 live——P4-1 只缓存行情，诚实标注）。
+    - secret scan：缓存 parquet + ledger 0 处 token / `.config.json`；ledger 列只有端点元数据。
+  - **缓存命中直接可见（review follow-up）**：`TushareFeed.cache_stats()` 暴露各端点 gap-fetch 计数，`_load_panel` 经 run-scoped logger 打 `data cache: market_daily_gap_fetches=N adj_factor_gap_fetches=M`——冷跑非零、暖跑 0/0（warm rerun 实证 run_phase2_baseline.log 含 `0/0`，secret scan 0）。
+- **不变量守住**：factor/alpha/portfolio/execution/OOS 切片/report 全不动；`artifacts/data/{output_name}.parquet` 不当 SoT。范围克制：P4-1 只 market_daily+adj_factor，其余端点（index_weight/daily_basic/fina_indicator/...）P4-2/P4-3 再缓存。
+- ✅ **Phase 4-2 持久化 Tushare universe + tradability 缓存**（**PR #25 已 merge 到 `main`**，index_weight + suspend_d + namechange + stk_limit + stock_basic）：把 P4-1 端点级 raw 缓存扩到 universe/可交易性端点——真实 run 不再每次重抓成分股/停牌/ST/涨跌停/上市日。**默认仍 disabled（向后兼容，旧配置行为一字不变）**；opt-in 后这五端点走 read-through。
+  - **三种规划形态共用一引擎**：① dense per-symbol 日期区间（`suspend_d`/`stk_limit`，复用 P4-1 gap + recent-tail）；② index_code 维日期区间（`index_weight`，coverage key=index_code，gap 内仍 **90 天分页**，raw 快照入库）；③ snapshot 维度（`namechange` per-symbol、`stock_basic` 全局 sentinel），用 `refresh_dimension_days`（默认 30）staleness + force_refresh（`CoverageLedger.snapshot_fetched_at` 给新鲜度判定）。
+  - **语义全保**：`index_weight` 仍 PIT/as-of（370 天 pre-start lookback 进缓存请求区间，latest-snapshot-on-or-before 仍在 feed/universe）；`stk_limit` 仍 **raw price**（限价检查在 front-adjust 前，不碰 qfq）；`stock_basic` 只取 list_date 供 `min_listing_days`（缺失仍 kept+披露），current-tag `industry` 绝不入缓存/中性化；`suspend_d`/`namechange`/ST 区间形状不变；**缓存只存 raw 端点事实，不存派生 flag 作 SoT**。
+  - **三 feed 接线**：`IndexConstituentsFeed`/`TushareFlagsFeed`/`TushareCovariatesFeed` 各加 `cache=None` 注入；cache present → read-through + **共享 finalizer**（cached==direct，限价 frame `assert_frame_equal`、ST 区间集合相等、suspend set / listing dict 相等单测锁定）；`cache=None` → 直抓路径**逐字不变**（旧 feed 测试原样过）。per-symbol 限流/重试仍在各 feed 的 `_call` 闭包里（缓存 transport-agnostic）。
+  - **coverage ledger 复用 + 扩展**：11 列不变；**empty 算覆盖、failed 不算**（fetch 抛错则不记 coverage、留待重试，测试锁定）；ledger 列只有端点元数据，无 token/secret。
+  - **单一共享 cache 贯穿 4 runner**（run_phase0/phase2/oos/subset）：`_build_cache(cfg)` 建一个实例线穿 `_build_universe`/`_load_panel`/`_enrich_tradability`/`_maybe_enrich_listing`，跑完所有缓存端点后 `_log_run_cache_stats` 打**一行** 7 端点统计；P4-1 的 market 行前缀保留（旧统计测试过）。
+  - **配置**：`data.cache.refresh_dimension_days`（默认 30，>=0 校验）；旧配置全 validate（含未知键拒绝）。
+  - **真实 smoke（phase2 baseline，fresh temp root，cold→warm；fresh root 不动已 merge 的 v1 缓存）**：
+    - **cold 行**：`market_daily=68 adj_factor=68 index_weight=9 suspend_d=68 namechange=68 stk_limit=68 stock_basic=1`（全非零）；coverage = market/adj/namechange/stk_limit 各 68 ok + index_weight **1 ok**（整 gap 一行，内部 9 窗分页）+ stock_basic 1 ok + **suspend_d 68 empty**（SSE50 大盘股该窗口无停牌 → 空返回算覆盖，warm 不重抓）。
+    - **warm 行：7 端点全 0**；coverage ledger **零新行**；report 指标与 cold/P4-1 cached baseline **逐数一致**（IC 0.0083 / annual −10.19% / maxDD −16.52% / vol 16.59% / sharpe −0.5703 / turnover 1.0818 / cost 1.19%）——cached==direct 二度端到端实证。
+    - wall：cold **960s** / warm **366s**（暖跑省 ~594s = universe+tradability+market 抓取；`daily_basic`(market_cap)/`index_member_all`(pit_sw) 仍 live——P4-2 不缓存这俩，P4-3 再说，诚实标注）。
+    - secret scan：缓存 parquet + ledger + 日志 + 报告 0 处 token 值 / `.config.json`；ledger 无 token 列。
+  - **不变量守住**：factor/alpha/portfolio/execution/OOS 切片/report/`front_adjust` 全不动；`artifacts/data/*.parquet` 不当 SoT。范围克制：`daily_basic`/`fina_indicator`/`index_member_all` 仍留 P4-3。
+- ✅ **分钟级 intraday pipeline I1–I4**（**PR #29 已 merge 到 `main`**，4 commit 一 PR；**全程与日频链路解耦——`factors`/`alpha`/`portfolio`、日频 `runtime/backtest`、日频 `TushareFeed`/`TushareCache`、全部 `config/` 零改动**，Phase 0/2/3 数字不变）。本地验收文档在 `tmp/context/intraday_pit_checkpoints/stage_i{1,2,3,4}_acceptance.md`（gitignored）。
+  - **核心架构决策**：raw intraday SoT = **stk_mins `1min` only**；5/15/30/60min 是从缓存 1min **派生**的视图，不作独立 raw 上游产品抓取；日频 `D` 仍独立保留（不被分钟重采样替代）。三时间戳贯穿全程严格分离：**signal cutoff**（T 14:50，特征只用 `available_time<=cutoff`）/ **execution timestamp**（T 14:51）/ **holding period**（exec→next-exec，绝不 close-to-close）。
+  - **I1（feat data）** 1min raw feed + PIT schema：`data/clean/intraday_schema.py`（独立 `MultiIndex(time,symbol)`，分钟精度不归零；`bar_end=trade_time`/`bar_start=bar_end-freq`/`available_time=bar_end+data_lag`；`RAW_INTRADAY_FREQ`+`ensure_raw_intraday_freq` 钉死 1min）+ `data/feed/tushare_intraday.py`（`TushareIntradayFeed.get_minutes`，`vol→volume`/`ts_code→symbol`/`trade_time→time/bar_end`，非 1min 在建 SDK client 前即拒，token 不入库不打印）。
+  - **I2（feat cache）** stk_mins 1min read-through cache：`data/cache/intraday_coverage.py`（**timestamp-interval ledger**，`raw_freq/start_time/end_time`，不复用日频 date 语义；ok/empty 算覆盖 failed 不算）+ `intraday_parquet_store.py`（**月分区** `stk_mins_1min/freq=1min/symbol_prefix/symbol/year/month.parquet`，原子幂等 upsert by `(symbol,freq,bar_end)`，只存 raw）+ `intraday_cache.py`（`TushareIntradayCache.stk_mins_1min`：交易日 gap 规划复用 `intervals.py`，≤23 日窗分页 <8000 行 cap，1min-only guard）。接入 `TushareIntradayFeed` 可选 cache path（直抓路径字节级不变）。**冷写/暖零调用/partial 只补缺口/empty 记录/failed 重试/cached==direct 规范化后逐字节等价** 全测试锁定；**日频 `TushareCache` 零改动**（独立类）。
+  - **I3（feat data）** 分钟→日频 PIT 聚合：`data/clean/intraday_aggregate.py::asof_daily_features`（默认 `decision_time=14:50:00`；**先 `available_time<=cutoff` 逐 bar 过滤再按日 groupby**，分钟时间戳绝不先归零进日频）。cutoff 编码列名 `intraday_ret_0930_1450`/`intraday_realized_vol_0930_1450`/`intraday_vwap_0930_1450`/`intraday_last30m_ret_1420_1450`。`resample_intraday_bars` 派生粗 bar `available_time=max(source_1min.available_time)`。泄漏测试（扰动 14:50 后 bar → 特征不变）+ 可见性排除测试锁定。
+  - **I4（feat runtime）** 尾盘调仓 execution 骨架：`runtime/intraday_execution.py::simulate_tail_rebalance`（`next_minute_close` 模型：14:51 或窗口内最早 bar 成交；持有期收益 `exec(T)→exec(T_next)` 非收盘；缺 bar/NaN/无窗口 bar → 可解释 blocked，**不静默用日收盘替代**；只读分钟 bar 无 EOD 泄漏）。**独立函数,未接 config/pipeline**；日频 `close_to_next_period` 不变。`tail_vwap`/`closing_call_proxy` config 层拒绝（注明 future，后者需 `stk_auction_*` 权限当前无）。
+  - **下一步**：执行真实性先于研究因子 → I5b 已补执行期涨跌停可行性（见下）；之后 I5c 再把 EXPLORATORY 分钟因子作为真实 opt-in alpha 端到端接 I2→I3→I4→event engine（报告披露 cutoff/lag/execution_model/window），日频回归不破。
+- ✅ **P4-3 因子支撑端点缓存 + 21:00 data updater**（**PR #31 已 merge 到 `main`**，daily_basic + fina_indicator + index_member_all 进既有日频 `TushareCache`；新增独立 `data-update` CLI 增量暖跑，**不跑 factor/alpha/portfolio/backtest、不写 PanelStore**，日频回测仍自走 read-through 补缺口）。本地验收：`tmp/context/intraday_pit_checkpoints/stage_p4_3_data_updater_acceptance.md` + `tmp/context/session_handoff_20260613/p4_3_codex_acceptance.md`（codex 复核 PASS）。
+  - **daily_basic**（dense，pe/pb/total_mv，一次缓存调用喂 market_cap+value_ratios）；**index_member_all**（per-symbol SW in/out 维度，staleness 刷新）。
+  - **fina_indicator 字段集无关**（codex acceptance blocker 修复）：cache **永远存 canonical `FINA_FIELDS` superset**（roe/netprofit_yoy/grossprofit_margin），feed 读时选子集——一个配置 warm 不会阻塞另一配置（光加 fields_hash 会在 upsert 时互相覆盖）；drift 测试守 `FINA_FIELDS ⊇ financial.SUPPORTED_FIELDS`；coverage 仍按 report-period end_date + 长 trailing tail 抓晚披露，ann_date 作 raw 不当覆盖轴。
+  - **not_ready pending window**：今日(`not_ready_days`)空返回记 `not_ready`(非 coverage) 次跑重试，跨界 gap 拆分；`not_ready_days=0`(默认) 行为逐字不变。per-endpoint trailing tail + summary 计数。
+  - cached==direct 实证（market_cap/value_ratios/pit_sw/fina-as-of）；`cache=None`→direct 逐字不变；缓存只存 raw（无 qfq/因子/token）；日频/分钟各自 ledger/store。**日频回测数学/factor/alpha/portfolio/runtime 零改动，Phase 0/2/3 不变**。
