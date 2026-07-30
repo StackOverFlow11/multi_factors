@@ -12,6 +12,8 @@ what was assumed:
   1. bar frequency = 5min, DERIVED from the 1min cache via
      :func:`data.clean.intraday_aggregate.resample_intraday_bars` (a derived bar
      inherits ``available_time = max(source_1min.available_time)`` — PIT-faithful).
+     A derived bar counts only if its window actually REACHED its grid boundary
+     (``bar_end`` on the ``freq`` grid); a residual bucket is dropped whole.
   2. lookback window N = 20 trading days (the symbol's own days that have bars,
      trailing and INCLUDING ``d``).
   3. anomaly threshold = ``1{|Δamp_t| > μ + σ}`` with μ / σ = mean / ddof=1 std of
@@ -25,7 +27,9 @@ what was assumed:
 Definition (per symbol, per panel date ``d``):
 
   1. Take the symbol's most recent ``N`` (=20) trading days INCLUDING ``d`` of 5min
-     bars. PIT truncation (standing authorization): keep only bars with
+     bars. A derived bar is kept only if it is a COMPLETE ``freq`` window — its
+     ``bar_end`` (= the last constituent 1min bar_end) sits ON the ``freq`` grid.
+     PIT truncation (standing authorization): keep only bars with
      ``available_time <= (that bar's trade_date + decision_time)`` (default 14:50),
      so every day is truncated to its own [session-open, 14:50].
   2. Per bar: ``amp = high/low - 1`` (drop a bar unless ``low > 0`` and
@@ -82,6 +86,51 @@ AMP_ANOMALY_MIN_SELECTED = 20  # minimum selected (anomaly) bars for a finite st
 def _minute_requires(*fields: str) -> tuple[PanelField, ...]:
     """The stk_mins_1min requires tuple of a minute-derived factor (D1)."""
     return tuple(PanelField(f, source=STK_MINS_1MIN) for f in fields)
+
+
+def _complete_grid_bars(coarse: pd.DataFrame, freq: str) -> pd.DataFrame:
+    """Drop the RESIDUAL buckets of a derived-bar frame: keep complete windows only.
+
+    :func:`resample_intraday_bars` buckets each 1min bar by ``ceil(bar_end, freq)``
+    and then reports the bucket's REAL span, so the emitted ``bar_end`` is the last
+    constituent's ``bar_end`` — equal to the bucket's grid boundary when the window
+    closed, strictly before it when the bucket ran out of 1min bars. That equality
+    is therefore an exact test for "this derived bar covers a full ``freq`` window",
+    and it is the test applied here.
+
+    WHY this factor needs it (and why it lives here, not in ``resample_intraday_bars``).
+    Every statistic downstream is BAR-LENGTH SENSITIVE — ``amp = high/low - 1`` and
+    ``r = close_t/close_{t-1} - 1`` both scale with how long the bar ran — and they are
+    POOLED across a 20-day window, so one short bar per day shifts the pool's μ / σ and
+    the selected-bar return std systematically, not randomly. A 4-minute bar is not a
+    5min bar and must not be pooled with them.
+
+    WHY it is load-bearing rather than incidental. The rule is a property of the
+    FACTOR DEFINITION ("5min bars, truncated at 14:50"), and it must hold whatever
+    the CALLER hands in:
+
+    * whole-day 1min bars (the legacy runner): the 14:46..14:50 bucket is complete,
+      so it survives here and is then dropped by the availability rule below
+      (``available_time`` 14:51 > the 14:50 cutoff) — the last bar of the day is the
+      complete 14:45 bucket. The 14:45-14:50 window is genuinely UNKNOWABLE at 14:50,
+      which is why dropping it is definition-faithful rather than a loss;
+    * 1min bars ALREADY PIT-truncated by the caller (the D4 materializer truncates to
+      ``available_time <= 14:50``, i.e. through the 14:49 bar): the same bucket now
+      holds only 4 constituents and ends at 14:49, so it is a residual bucket. Without
+      this filter it would enter as a fifth "5min bar" of every single day, which is
+      precisely the load-geometry dependence this test removes;
+    * a bar frame with a mid-session data gap: a bucket whose trailing minutes are
+      missing likewise ends off-grid and is dropped. This case is the one behavioural
+      change for whole-day callers, and it is deliberate under the same argument —
+      a partial bar's amplitude and return are not comparable with a full bar's.
+
+    A bucket with an INTERIOR hole (its last minute present, an earlier one missing)
+    still spans the full window and is KEPT: the test is about the window closing, not
+    about constituent count. Returns a fresh frame; never mutates ``coarse``.
+    """
+    bar_end = coarse["bar_end"]
+    complete = (bar_end == bar_end.dt.ceil(freq)).to_numpy()
+    return coarse.loc[complete].copy()
 
 
 def _anomaly_vol_cut(
@@ -164,9 +213,17 @@ def compute_amp_marginal_anomaly_vol(
 
     Takes normalized 1min ``bars``, DERIVES ``freq`` (default 5min) bars from them via
     :func:`resample_intraday_bars` (so a derived bar is usable only once EVERY
-    constituent 1min bar is available), PIT-truncates them at ``decision_time``, forms
-    the within-day ``|Δamp|`` / ``r`` pairs, and returns the trailing-``lookback_days``
-    anomaly-bar return std. See the module docstring for the LOCKED definition.
+    constituent 1min bar is available), keeps only the COMPLETE ``freq`` windows
+    (:func:`_complete_grid_bars` — a residual bucket is not a ``freq`` bar and its
+    shorter amplitude / return must not be pooled with full ones), PIT-truncates them
+    at ``decision_time``, forms the within-day ``|Δamp|`` / ``r`` pairs, and returns
+    the trailing-``lookback_days`` anomaly-bar return std. See the module docstring
+    for the LOCKED definition.
+
+    The completeness filter makes the value INDEPENDENT OF THE CALLER'S LOADING
+    GEOMETRY: passing whole-day bars and passing bars the caller already truncated at
+    ``decision_time`` yield the same value, because the bucket straddling the cutoff
+    is dropped either way (as a post-cutoff complete bar, or as a residual one).
 
     Args:
         bars: normalized 1min bars (:mod:`data.clean.intraday_schema`),
@@ -201,6 +258,13 @@ def compute_amp_marginal_anomaly_vol(
     # DERIVE the coarse (5min) bars from 1min FIRST: available_time = max source, so a
     # coarse bar enters only once all its 1min constituents are available.
     coarse = resample_intraday_bars(bars, freq)
+    if len(coarse) == 0:
+        return empty_factor_series(name)
+    # Keep COMPLETE freq windows only. This is the factor's own definition rule, so
+    # it is applied to the derived bars regardless of whether the caller pre-truncated
+    # the 1min input -- see ``_complete_grid_bars`` for why a partial bar must never
+    # be pooled with full ones.
+    coarse = _complete_grid_bars(coarse, freq)
     if len(coarse) == 0:
         return empty_factor_series(name)
 
