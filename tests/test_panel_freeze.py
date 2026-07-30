@@ -457,3 +457,24 @@ def _problems(result, factor_id: str) -> list[str]:
         if panel.factor_id == factor_id
         for problem in panel.problems
     ]
+
+
+def test_a_machine_manifest_row_that_disagrees_with_its_panel_is_convicted(tmp_path: Path):
+    """The document carries the hashes; the machine manifest carries the fuller
+    statistical row. This case is the one only the SECOND witness can see: the
+    document still agrees with the panel, and only the recorded row does not."""
+    doc = build_frozen_tree(tmp_path)
+    assert verify_frozen_panels(tmp_path, doc).ok  # green control
+
+    def _lie(document):
+        for row in document["rows"]:
+            if row["factor_id"] == "alpha_20":
+                row["n_nan"] = row["n_nan"] + 7
+
+    patch_manifest(tmp_path, "manifest.json", _lie)
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    problems = _problems(result, "alpha_20")
+    assert any("manifest.json n_nan" in p for p in problems)
+    # nothing else fired: the git-tracked side is untouched and still agrees
+    assert not any("git-tracked" in p for p in problems)
