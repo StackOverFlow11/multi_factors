@@ -459,3 +459,84 @@ max|diff|=0.0、NaN 集合互差为 0——平移面板左端效应在真实缓�
    （不变），**截面因子 ≤1,000**（实测 707 + 余量）。全局容差不动。*理由*：101 的 cap
    按 jump（bars-only）标定，对近零值多、格子多的截面 OLS 残差系统性偏紧；abs 下限
    把「rel 在近零值上失真」从 cap 压力里剥离，两处都不放宽对真回归的牙。
+
+### 七之六、C5 F1（`amp_marginal_anomaly_vol_20` 5min 残桶）——**真引擎缺陷，已修，永不作为具名类**
+
+**结论先行（给做 C5 audit 的人）**：C5 全量对账里 `amp_marginal_anomaly_vol_20` 的
+panels 腿 **729,029 格类外 finite-vs-finite**，**不是**一个待登记的差异类，而是一个
+**真实引擎缺陷**，已由独立 correctness PR（`fix/amp-marginal-residual-bucket`）消除。
+**不要为它注册任何具名类、不要为它调任何边界参数。** 修复后实测
+`unclassified=0`，且 `float_tail=0 / threshold_flip=0 / flip_contamination=0`
+——它**没有**靠任何容差类兜底。
+
+**机制**：本因子是 11 个分钟因子里**唯一派生 5min bar** 的。
+`resample_intraday_bars` 按 `ceil(bar_end, freq)` 分桶，但 emit 的是桶的**真实跨度**
+（`bar_end` = 最后一个成分的 bar_end），所以成分不齐的桶被 emit 成一根**更短的 bar**
+（残桶），而不是被丢弃。
+
+**残桶只有两个成因，且到不了同一批调用方**：
+
+1. **截断**：materializer 预截到 `available_time <= 14:50`（到 14:49 那根）⇒
+   `[14:46,14:50]` 桶只剩 4 个成分、`bar_end=14:49` 不在网格上 ⇒ **每个交易日一个**
+   ⇒ **这就是 729,029 的全部来源**。
+2. **session 内数据洞**：桶的尾部分钟缺失，同样收在网格外。**这是唯一能在不截断的情况下
+   发生的成因。**
+
+legacy / 冻结几何喂的是**整日** bar ⇒ 成因 1 **不可能**发生 ⇒ 它的暴露只剩成因 2。
+成因 2 实测为空：直接扫 minute store 的 `bar_end` 列（`tmp/context/f1_residual_probe.py`，
+评估窗内 **591 只 / 649,681 个 (symbol, day)**）**残桶 0 个**——缓存 1min bar 在每个
+session 内网格连续。两个成因都排除 ⇒ 过滤器在 legacy 路径上是 **no-op** ⇒
+**冻结 exec 基线与 D1 冻结面板一格未动**。
+
+> ⚠️ **那份普查只量成因 2**（它对输入不施加任何 cutoff）。若把它读成"残桶总数为 0"，
+> 就会和 729,029 直接矛盾——后者是成因 1，在一个该普查根本没看的几何里。**任何时候证据
+> 和已知事实打架，先怀疑证据在量的是别的东西。**
+
+**修法**：`factors/compute/minute/amp_marginal_anomaly_vol.py::_complete_grid_bars`，
+判据 `bar_end == bar_end.dt.ceil(freq)`（emit 的 bar_end 与桶键相等 ⟺ 窗口闭合，精确），
+在 compute 里 resample 之后立刻应用。**`resample_intraday_bars` 未改**（通用 data-layer
+原语，残桶行为由 `tests/test_intraday_aggregate.py` 直接覆盖；"完整桶"是**本因子定义**的
+性质）；**也没有在 materializer 打补丁**（那会把因子定义散到调用方，正是本缺陷的形状）。
+
+**逐格实证**（`tmp/context/f1_ab_geometry.py`，同一批真实缓存 bar，000008.SZ × 61 日，
+cache-only）：
+
+| | 整日几何（legacy） | 预截几何（materializer） |
+|---|---|---|
+| 修复前 | `0.004156551477727235` | `0.0041410493817719074` |
+| 修复后 | `0.004156551477727235` | `0.004156551477727235` |
+
+修复前 **51/61 日不同、max\|diff\| 1.42e-04**（值量级 ~4e-3，**有方向**）；修复后
+**0/61 不同**，两种几何收敛到**冻结那一侧**。
+
+**修复后真实对账（cache-only，`stk_mins_live_calls=0`，`covered=995/996`）**：
+
+- **panels rc=0**：`frozen=1159263 new=1205160 equal=1822 within_tol=1140169
+  warmup=17272 float_tail=0 threshold_flip=0 flip_contamination=0
+  nan_footprint=45897 unclassified=0 max_rel_diff=9.030e-01`；
+  warmup by direction `{nan_to_finite: 9109, finite_to_finite: 8163}`。
+- **anchors rc=0**：`5 rows, ok=4 warmup=1 failed=0`；此前 FAIL 的 3 行现在**精确
+  `rel=0.00e+00`**，剩下 1 行是登记的 `warmup_left_extension`。
+- **reports rc=0**：6 份 artifact，差异**全部落在已登记类内**
+  （`registered_addition` / `warmup_aggregate_effect` / `registered_sanity_stem_rename`
+  / `book_view_effect`），**无一处 `spec.*` 差异**。
+
+**不 bump `spec.version`、不加 `FactorCorrection`（已裁定）**：该字段的语义是
+「**已发布**的值被取代」。#103（jump）是**已发布 artifact 本身就脏**（旧 runner 没做
+截断）⇒ 必须承载更正；F1 相反，**已发布/冻结的那一侧是对的**（整日几何 = 定义忠实的
+路径），缺陷是重构过程中新引擎引入、**从未发布**，修复是让新引擎**回到已发布值**。
+声明一次没发生的 supersession 会往每份 artifact 里写一句假话。连带：**不动
+`spec.description`** ⇒ reports 腿不出 `spec.*` 差异 ⇒ **不需要 jump 式注册路由**。
+
+**但确实被污染过的东西要点名**（免得读成"从来没出过错"）：C5 全量跑写出的 live
+`artifacts/reports/factor_eval_amp_marginal_anomaly_vol_20_exec_*` **是脏的**，由缺陷
+引擎产出，已被本次重跑覆盖。**冻结 exec 基线与十一因子 v0.9 表不受影响。** 缺陷的足迹
+**不小**——它触到了几乎每一个 emitted cell；秩 IC 逐日封顶会让聚合看起来动得很小，那是
+**稀释不是无害**。
+
+**verdict 重述（真跑出来的，非推定）**：`Reject / Reject` **未变**，三轴标签全未变。
+IC −0.042601 → −0.042341、ICIR −0.446484 → −0.443614、N_eff 1116.017 → 1115.866、
+NW-t −16.1546 → −16.1323、periods 1199 → 1209；增量 ICIR：`_bookclose`
+**逐位复现冻结的 −0.311985**，decision 书 −0.304787（intended book-view change）。
+⚠️ **这些微小位移不是 F1 修复造成的**——修复是把 served 值搬回冻结那一侧；位移是已登记的
+`warmup_left_extension` 聚合效应（评估日 1199→1209）。

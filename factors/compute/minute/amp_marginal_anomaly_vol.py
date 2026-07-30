@@ -124,6 +124,15 @@ def _complete_grid_bars(coarse: pd.DataFrame, freq: str) -> pd.DataFrame:
       change for whole-day callers, and it is deliberate under the same argument —
       a partial bar's amplitude and return are not comparable with a full bar's.
 
+    Those are the ONLY two causes of a residual bucket, and they do not reach the same
+    callers: TRUNCATION cannot arise from whole-day input, so a whole-day caller's only
+    exposure is the DATA GAP. Measured on the real minute cache over the CSI500
+    evaluation window (591 symbols, 649,681 (symbol, day) pairs), the gap case is
+    EMPTY — the cached 1min bars are grid-contiguous within each session — so on that
+    cache this filter drops nothing for a whole-day caller. Do not restate that
+    measurement as "there are no residual buckets": it says nothing about the truncated
+    geometry, where there is one per trading day.
+
     A bucket with an INTERIOR hole (its last minute present, an earlier one missing)
     still spans the full window and is KEPT: the test is about the window closing, not
     about constituent count. Returns a fresh frame; never mutates ``coarse``.
