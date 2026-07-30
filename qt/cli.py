@@ -632,12 +632,25 @@ def _cmd_run_factor_eval_reconcile(args: argparse.Namespace) -> int:
                 f"frozen={result.rows_frozen} new={result.rows_new} "
                 f"equal={result.equal} within_tol={result.within_tolerance} "
                 f"warmup={len(result.by_class('warmup_left_extension'))} "
+                f"sparse_tail={len(result.by_class('warmup_sparse_valid_day_tail'))} "
                 f"float_tail={len(result.by_class('float_reordering_tail'))} "
                 f"threshold_flip={len(result.by_class('threshold_flip_tail'))} "
                 f"flip_contamination={len(result.by_class('threshold_flip_contamination'))} "
                 f"nan_footprint={result.nan_footprint_rows} "
                 f"unclassified={len(unclassified)} "
                 f"max_rel_diff={result.max_rel_diff:.3e}"
+            )
+            # The headline max is taken before any bucketing, so print it per
+            # class too: a big number that sits entirely inside a registered
+            # class must not read as an ungated tolerance (review NIT-1).
+            per_class = result.max_rel_by_class()
+            print(
+                "  max_rel by class: "
+                + (
+                    ", ".join(f"{k}={v:.3e}" for k, v in sorted(per_class.items()))
+                    if per_class
+                    else "(no differing cells)"
+                )
             )
             if result.warmup_by_direction:
                 print(f"  warmup by direction: {result.warmup_by_direction}")

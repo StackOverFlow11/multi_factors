@@ -281,6 +281,7 @@ def run_exec_basis_evaluation(
     stem: str,
     force_rebuild: bool = False,
     book_view: str = View.CLOSE.value,
+    with_book_suffix: str = "",
     extra_sections: Sequence[SectionLike] | None = None,
 ) -> ExecBasisEvaluation:
     """Build the exec-to-exec returns, sanity-check them, evaluate twice, report.
@@ -295,6 +296,18 @@ def run_exec_basis_evaluation(
     defect design §1.1 records and D7 closes. The decision-view book path passes
     ``decision`` explicitly. Only the caller knows this, so it is a parameter
     rather than something guessed here.
+
+    ``with_book_suffix`` (default ``""`` -> the legacy paths, byte-for-byte)
+    is appended to the WITH-BOOK artifact stem only, so a caller that runs the
+    same factor under two book views writes them to two different files IN ONE
+    STEP. It is a write-time parameter and never a post-hoc move: the D5 C5 F5
+    defect was exactly that — the close-book run wrote the shared
+    ``{stem}_exec_with_book.*`` names first and renamed them afterwards, so the
+    decision-book artifacts written by an earlier run were destroyed between
+    the write and the rename, and the reconcile's reports leg then failed on a
+    file that had existed minutes before. The no-book artifacts carry no book
+    at all and the sanity report is book-independent, so both keep the shared
+    stem regardless of this suffix.
 
     ``extra_sections`` (default None -> the legacy behavior, byte-for-byte) are
     add-Sections appended to BOTH exec reports before they are written — the
@@ -425,15 +438,14 @@ def run_exec_basis_evaluation(
         report_no_book = _with_extra_sections(report_no_book, extra_sections)
         report_with_book = _with_extra_sections(report_with_book, extra_sections)
 
+    with_book_stem = f"{stem}_exec_with_book{with_book_suffix}"
     nb_md, nb_json = _write_report(report_no_book, report_dir, f"{stem}_exec_no_book")
-    wb_md, wb_json = _write_report(
-        report_with_book, report_dir, f"{stem}_exec_with_book"
-    )
+    wb_md, wb_json = _write_report(report_with_book, report_dir, with_book_stem)
     nb_png = render_factor_dashboard(
         report_no_book, ir_no_book, report_dir / f"{stem}_exec_no_book_dashboard.png"
     )
     wb_png = render_factor_dashboard(
-        report_with_book, ir_with_book, report_dir / f"{stem}_exec_with_book_dashboard.png"
+        report_with_book, ir_with_book, report_dir / f"{with_book_stem}_dashboard.png"
     )
     return ExecBasisEvaluation(
         spec=exec_spec,

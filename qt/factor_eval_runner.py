@@ -69,9 +69,8 @@ the reversal + the served residual AFTER the panel read
 
 from __future__ import annotations
 
-import os
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -348,23 +347,25 @@ def _coverage_split(
     return tuple(sorted(covered)), tuple(empty)
 
 
-def _apply_bookclose_suffix(
-    exec_basis: ExecBasisEvaluation, report_dir: Path, stem: str
-) -> ExecBasisEvaluation:
-    """``book_mode='close'`` artifact isolation: ``..._exec_with_book_bookclose.*``.
+#: ``book_mode='close'`` artifact isolation: the with-book artifacts are
+#: written straight to ``..._exec_with_book_bookclose.*``. The no-book
+#: artifacts carry no book at all, so they keep the shared stem; the sanity
+#: report is book-independent for the same reason.
+#:
+#: D5 C5 F5: this used to be a POST-HOC ``os.replace`` of files first written
+#: under the shared ``_exec_with_book`` stem — which silently destroyed the
+#: DECISION-book artifacts of any earlier run, because the close run wrote
+#: over them before moving them aside. Running the two book modes in the order
+#: decision -> close therefore left no decision artifacts at all, and the
+#: reconcile's reports leg died on a bare FileNotFoundError. The suffix now
+#: travels INTO the write-out layer, so each book mode only ever writes its
+#: own file names and the run order stops mattering.
+_BOOKCLOSE_SUFFIX = "_bookclose"
 
-    The no-book artifacts carry no book at all, so they keep the shared stem;
-    the sanity report is book-independent for the same reason.
-    """
-    mapping = {
-        "with_book_md": report_dir / f"{stem}_exec_with_book_bookclose.md",
-        "with_book_json": report_dir / f"{stem}_exec_with_book_bookclose.json",
-        "with_book_dashboard": report_dir
-        / f"{stem}_exec_with_book_bookclose_dashboard.png",
-    }
-    for field_name, dst in mapping.items():
-        os.replace(getattr(exec_basis, field_name), dst)
-    return replace(exec_basis, **mapping)
+
+def _with_book_suffix(book_mode: str) -> str:
+    """The with-book artifact suffix for a book mode (see ``_BOOKCLOSE_SUFFIX``)."""
+    return _BOOKCLOSE_SUFFIX if book_mode == View.CLOSE.value else ""
 
 
 # --------------------------------------------------------------------------- #
@@ -477,12 +478,9 @@ def run_factor_eval(
         report_dir=Path(cfg.output.report_dir),
         stem=stem,
         book_view=book_mode,
+        with_book_suffix=_with_book_suffix(book_mode),
         extra_sections=extra_sections or None,
     )
-    if book_mode == View.CLOSE.value:
-        exec_basis = _apply_bookclose_suffix(
-            exec_basis, Path(cfg.output.report_dir), stem
-        )
 
     logger.info(
         "verdict exec no-book: %s (predictive=%s); with-book: %s (incremental=%s)",

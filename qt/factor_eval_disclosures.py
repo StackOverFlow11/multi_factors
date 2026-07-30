@@ -579,6 +579,17 @@ def summarize_neutralization(
 # --------------------------------------------------------------------------- #
 # The add-Section bridge (contract §3.6: may ADD, never drop a mandatory one)
 # --------------------------------------------------------------------------- #
+#: Payload keys that are computed PROPERTIES rather than dataclass fields, so
+#: ``asdict`` alone does not produce them. Author-once: the reconcile harness
+#: derives an add-Section's Markdown line prefixes from this same tuple, and a
+#: property listed in only one of the two places would silently unregister a
+#: rendered line (measured: three such lines failed the reports leg).
+DERIVED_PAYLOAD_PROPERTIES: tuple[str, ...] = (
+    "validity_rate",
+    "return_guard_attrition",
+)
+
+
 def to_section(name: str, coverage) -> Section:
     """Pack a coverage disclosure dataclass into an add-Section.
 
@@ -590,7 +601,7 @@ def to_section(name: str, coverage) -> Section:
     section added this way cannot move a verdict — pinned by test.
     """
     payload: dict[str, object] = dict(asdict(coverage))
-    for prop in ("validity_rate", "return_guard_attrition"):
+    for prop in DERIVED_PAYLOAD_PROPERTIES:
         if hasattr(coverage, prop):
             payload[prop] = getattr(coverage, prop)
     return Section(name=name, payload=payload, note=coverage.render())
@@ -652,6 +663,7 @@ def publishes_neutralization_disclosure(factor) -> bool:
 
 
 __all__ = [
+    "DERIVED_PAYLOAD_PROPERTIES",
     "DisclosureBinding",
     "NEUTRALIZATION_SECTION_NAME",
     "NeutralizationCoverage",

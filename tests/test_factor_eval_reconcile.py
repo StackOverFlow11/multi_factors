@@ -15,6 +15,9 @@ import pandas as pd
 import pytest
 
 from qt.factor_eval_reconcile import (
+    REGISTERED_EXTRA_SECTIONS,
+    REGISTERED_SPEC_DESCRIPTION_REWRITES,
+    SPARSE_VALID_DAY_TAIL_SYMBOLS,
     ReconciliationError,
     check_new_pair_consistency,
     classify_anchor_row,
@@ -23,6 +26,7 @@ from qt.factor_eval_reconcile import (
     diff_report_md,
     frozen_panel_path,
     require_baseline_verified,
+    require_report_inputs,
 )
 
 # --------------------------------------------------------------------------- #
@@ -481,7 +485,9 @@ _NEUTRALIZATION_MD = (
 def test_md_registered_section_lines_pass_for_vpq():
     from qt.factor_eval_reconcile import _registered_section_md_prefixes
 
-    prefixes = _registered_section_md_prefixes(("neutralization_coverage",))
+    prefixes = _registered_section_md_prefixes(
+        "valley_price_quantile_20", ("neutralization_coverage",)
+    )
     result = diff_report_md(
         _MD_OLD, _MD_OLD + _NEUTRALIZATION_MD, name="t", correction_expected=False,
         registered_section_lines=prefixes,
@@ -505,7 +511,9 @@ def test_md_section_prefixes_are_derived_from_the_dataclass_fields():
     from qt.factor_eval_disclosures import NeutralizationCoverage
     from qt.factor_eval_reconcile import _registered_section_md_prefixes
 
-    prefixes = _registered_section_md_prefixes(("neutralization_coverage",))
+    prefixes = _registered_section_md_prefixes(
+        "valley_price_quantile_20", ("neutralization_coverage",)
+    )
     for f in dc_fields(NeutralizationCoverage):
         assert f"- {f.name}:" in prefixes
     # the note prefix really is the render() format's head (not a stale copy)
@@ -521,7 +529,9 @@ def test_md_section_prefixes_reject_an_unknown_section():
     from qt.factor_eval_reconcile import _registered_section_md_prefixes
 
     with pytest.raises(ValueError, match="no MD rendering is registered"):
-        _registered_section_md_prefixes(("bogus_coverage",))
+        _registered_section_md_prefixes(
+            "valley_price_quantile_20", ("bogus_coverage",)
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -1236,3 +1246,931 @@ def test_anchor_jump_mismatch_inside_warmup_is_warmup_not_definition_failure():
         hand=0.46, service=0.35, is_pooled=False, tol=1e-12, warmup_dates=warmup,
     )
     assert row.classification == "warmup_left_extension"
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F4 — the ABSOLUTE float-dust predicate runs BEFORE every region branch.
+#
+# Machine-precision dust exists uniformly across the grid; when the region
+# branches ran first, the few dust cells that happened to land in the warmup
+# region were counted as warmup cells and their monthly counts failed the
+# pooled non-increasing gate on pure noise (measured intraday_amp_cut:
+# 2021-08/09/10 = 8/3/9 cells, every one |diff| <= 1e-12).
+# --------------------------------------------------------------------------- #
+def test_panels_float_dust_inside_the_warmup_boundary_is_dust_not_warmup():
+    # A 1e-13 absolute move on the grid's first w-1 dates: dust, whatever
+    # region it sits in.
+    frozen = _frozen_panel(
+        [("2021-07-01", "A", 1e-5), ("2021-07-02", "A", 1.0), ("2021-07-03", "A", 1.0)],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-01", "A", 1e-5 + 1e-13), ("2021-07-02", "A", 1.0), ("2021-07-03", "A", 1.0)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("float_reordering_tail")) == 1
+    assert result.by_class("warmup_left_extension") == []
+
+
+def test_panels_a_real_move_inside_the_warmup_boundary_is_still_warmup():
+    # REVERSE of the above: raise the SAME cell's move above the dust floor
+    # and it goes back to the warmup class. The reorder must not have turned
+    # the warmup class off.
+    frozen = _frozen_panel(
+        [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.0), ("2021-07-03", "A", 1.0)],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-01", "A", 1.05), ("2021-07-02", "A", 1.0), ("2021-07-03", "A", 1.0)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_left_extension")) == 1
+    assert result.by_class("float_reordering_tail") == []
+
+
+def test_panels_pooled_monthly_gate_is_not_failed_by_float_dust():
+    # The measured F4 shape: a big genuine warmup month, then later months
+    # carrying ONLY dust. Under the old ordering those dust cells were warmup
+    # cells and 1 -> 2 across months failed the non-increasing gate.
+    rows_f = [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.0)]
+    rows_f += [(f"2021-08-{d:02d}", "A", 1e-5) for d in (2, 3)]
+    rows_f += [(f"2021-09-{d:02d}", "A", 1e-5) for d in (1, 2, 3)]
+    rows_f += [("2021-12-01", "A", 1.0)]
+    frozen = _frozen_panel(rows_f, "f")
+    # July: the structurally exempt month (first finite value) + a real warmup
+    # move on 07-02; Aug/Sep: dust only, in a RISING count (2 then 3).
+    rows_n = [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.4)]
+    rows_n += [(f"2021-08-{d:02d}", "A", 1e-5 + 1e-13) for d in (2, 3)]
+    rows_n += [(f"2021-09-{d:02d}", "A", 1e-5 + 1e-13) for d in (1, 2, 3)]
+    rows_n += [("2021-12-01", "A", 1.0)]
+    new = _new_series(rows_n)
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert result.warmup_by_month == {"2021-07": 1}
+    assert result.warmup_monotonic is True
+    assert len(result.by_class("float_reordering_tail")) == 5
+
+
+def test_panels_pooled_monthly_gate_still_fails_on_real_rising_counts():
+    # REVERSE: the same shape with the Aug/Sep cells moved ABOVE the dust
+    # floor. The gate must still fire — the reorder removed noise from the
+    # counts, it did not weaken the gate.
+    rows_f = [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.0)]
+    rows_f += [(f"2021-08-{d:02d}", "A", 1.0) for d in (2, 3)]
+    rows_f += [(f"2021-09-{d:02d}", "A", 1.0) for d in (1, 2, 3)]
+    rows_f += [("2021-12-01", "A", 1.0)]
+    frozen = _frozen_panel(rows_f, "f")
+    rows_n = [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.4)]
+    rows_n += [(f"2021-08-{d:02d}", "A", 1.2) for d in (2, 3)]
+    rows_n += [(f"2021-09-{d:02d}", "A", 1.2) for d in (1, 2, 3)]
+    rows_n += [("2021-12-01", "A", 1.0)]
+    new = _new_series(rows_n)
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert not result.ok
+    assert result.warmup_by_month == {"2021-07": 1, "2021-08": 2, "2021-09": 3}
+    assert result.warmup_monotonic is False
+
+
+def test_panels_float_dust_inside_the_contamination_window_is_dust():
+    # The reorder also precedes the contamination window (measured: all 17 of
+    # intraday_amp_cut's "contamination" cells were dust and now say so).
+    frozen = _frozen_panel(
+        [("2023-06-15", "600623.SH", 1e-5), ("2023-06-16", "600623.SH", 1.0)], "f"
+    )
+    new = _new_series(
+        [("2023-06-15", "600623.SH", 1e-5 + 1e-13), ("2023-06-16", "600623.SH", 1.0)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1,
+        is_cross_sectional=True,
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("float_reordering_tail")) == 1
+    assert result.by_class("threshold_flip_contamination") == []
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F2 — threshold_flip_contamination, BARS-ONLY arm (per-factor REL bound)
+# --------------------------------------------------------------------------- #
+def _flip_cells(factor_id: str, rel: float, n: int, *, symbol="600623.SH"):
+    """n cells on ``symbol`` inside the registered flip window, at ~``rel``."""
+    dates = pd.date_range("2023-06-15", periods=n, freq="D").strftime("%Y-%m-%d")
+    frozen = _frozen_panel([(d, symbol, 1.0) for d in dates], factor_id)
+    new = _new_series([(d, symbol, 1.0 / (1.0 - rel)) for d in dates])
+    return new, frozen
+
+
+def test_panels_bars_only_flip_contamination_within_the_per_factor_bound():
+    new, frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1,
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("threshold_flip_contamination")) == 3
+
+
+def test_panels_bars_only_flip_above_the_per_factor_bound_fails():
+    # REVERSE: one order of magnitude past kurtosis's 5e-3 bound.
+    new, frozen = _flip_cells("peak_interval_kurtosis_20", 5e-02, 3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+def test_panels_bars_only_flip_bound_is_PER_FACTOR():
+    # The same 1e-3 cell passes for kurtosis (bound 5e-3) and FAILS for
+    # valley_relative_vwap (bound 1e-5) — a single shared bound calibrated on
+    # either factor would be wrong about the other.
+    kurt_new, kurt_frozen = _flip_cells("peak_interval_kurtosis_20", 1e-03, 2)
+    kurt = classify_panel_differences(
+        kurt_new, kurt_frozen, factor_id="peak_interval_kurtosis_20",
+        is_pooled=True, lookback_depth=1,
+    )
+    vwap_new, vwap_frozen = _flip_cells("valley_relative_vwap_20", 1e-03, 2)
+    vwap = classify_panel_differences(
+        vwap_new, vwap_frozen, factor_id="valley_relative_vwap_20",
+        is_pooled=True, lookback_depth=1,
+    )
+    assert kurt.ok and len(kurt.by_class("threshold_flip_contamination")) == 2
+    assert not vwap.ok
+    assert len(vwap.by_class("unclassified_finite_vs_finite")) == 2
+
+
+def test_panels_bars_only_flip_is_not_available_to_an_unregistered_factor():
+    # REVERSE: jump lives in the same window with the same magnitude and is
+    # NOT in the registry -> it never gets the class.
+    new, frozen = _flip_cells("jump_amount_corr_20", 2.9e-03, 3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="jump_amount_corr_20", is_pooled=False,
+        lookback_depth=1,
+    )
+    assert not result.ok
+    assert result.by_class("threshold_flip_contamination") == []
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+def test_panels_bars_only_flip_is_only_the_directly_affected_symbol():
+    # REVERSE: a bars-only factor has no per-date OLS to spread the flip, so
+    # another symbol moving inside the window is a NEW FACT, not contamination.
+    new, frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 3, symbol="600000.SH")
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1,
+    )
+    assert not result.ok
+    assert result.by_class("threshold_flip_contamination") == []
+
+
+def test_panels_bars_only_flip_outside_the_window_fails():
+    # REVERSE: same symbol, same magnitude, one day past the window's end.
+    frozen = _frozen_panel([("2023-07-17", "600623.SH", 1.0)], "peak_interval_kurtosis_20")
+    new = _new_series([("2023-07-17", "600623.SH", 1.0029)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_bars_only_flip_cell_cap():
+    at_cap_new, at_cap_frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 25)
+    at_cap = classify_panel_differences(
+        at_cap_new, at_cap_frozen, factor_id="peak_interval_kurtosis_20",
+        is_pooled=True, lookback_depth=1,
+    )
+    over_new, over_frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 26)
+    over = classify_panel_differences(
+        over_new, over_frozen, factor_id="peak_interval_kurtosis_20",
+        is_pooled=True, lookback_depth=1,
+    )
+    assert at_cap.ok and len(at_cap.by_class("threshold_flip_contamination")) == 25
+    # every cell still CLASSIFIES; the cap is a count gate on the class
+    assert len(over.by_class("threshold_flip_contamination")) == 26
+    assert not over.ok
+
+
+def test_panels_bars_only_bound_never_applies_to_a_cross_sectional_factor():
+    # Exclusivity: a cross-sectional factor uses the ABSOLUTE arm even if its
+    # id is in the bars-only registry. rel 2.9e-3 on a value of 1.0 is
+    # |diff| 2.9e-3, past the direct-symbol 2e-4 absolute bound -> FAIL.
+    new, frozen = _flip_cells("peak_interval_kurtosis_20", 2.9e-03, 3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="peak_interval_kurtosis_20", is_pooled=True,
+        lookback_depth=1, is_cross_sectional=True,
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F3 (1) — frozen-finite -> new-NaN joins the warmup direction set, for
+# VALID-DAY POOLED factors inside the early region only.
+# --------------------------------------------------------------------------- #
+def test_panels_pooled_frozen_finite_new_nan_in_the_early_region_is_warmup():
+    frozen = _frozen_panel(
+        [("2021-08-20", "688276.SH", 0.42), ("2021-12-01", "688276.SH", 0.5)], "f"
+    )
+    new = _new_series(
+        [("2021-08-20", "688276.SH", NAN), ("2021-12-01", "688276.SH", 0.5)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert result.warmup_by_direction == {"frozen_finite_new_nan": 1}
+    assert result.warmup_by_month == {"2021-08": 1}
+
+
+def test_panels_bounded_frozen_finite_new_nan_is_never_warmup():
+    # REVERSE: a bounded factor has no valid-day counting gate that could
+    # legitimately drop a value — inside its own warmup boundary or not.
+    frozen = _frozen_panel(
+        [("2021-08-20", "688276.SH", 0.42), ("2021-12-01", "688276.SH", 0.5)], "f"
+    )
+    new = _new_series(
+        [("2021-08-20", "688276.SH", NAN), ("2021-12-01", "688276.SH", 0.5)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=40
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_frozen_finite_new_nan")) == 1
+
+
+def test_panels_pooled_frozen_finite_new_nan_outside_the_early_region_fails():
+    # REVERSE: the same disappearance one month past the early region.
+    frozen = _frozen_panel(
+        [("2021-11-20", "688276.SH", 0.42), ("2021-12-01", "688276.SH", 0.5)], "f"
+    )
+    new = _new_series(
+        [("2021-11-20", "688276.SH", NAN), ("2021-12-01", "688276.SH", 0.5)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_frozen_finite_new_nan")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F3 (2) — warmup_sparse_valid_day_tail
+# --------------------------------------------------------------------------- #
+def _sparse_tail_cells(n: int, *, symbol="000402.SZ", start="2021-11-01", value=-0.5):
+    dates = pd.bdate_range(start, periods=n).strftime("%Y-%m-%d")
+    frozen = _frozen_panel([(d, symbol, 0.5) for d in dates], "f")
+    new = _new_series([(d, symbol, value) for d in dates])
+    return new, frozen
+
+
+def test_panels_sparse_valid_day_tail_is_registered_for_pooled_factors():
+    # Amplitude is deliberately unbounded inside the class: the measured
+    # ridge_minute_return cells include a sign flip (rel 1.96).
+    new, frozen = _sparse_tail_cells(3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_sparse_valid_day_tail")) == 3
+
+
+def test_panels_sparse_valid_day_tail_is_not_available_to_bounded_factors():
+    new, frozen = _sparse_tail_cells(3)
+    result = classify_panel_differences(
+        # lookback_depth=1 -> no warmup dates at all, so the only class that
+        # could take these cells is the sparse tail, and a bounded factor
+        # must not get it.
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=1
+    )
+    assert not result.ok
+    assert result.by_class("warmup_sparse_valid_day_tail") == []
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+def test_panels_sparse_valid_day_tail_symbol_whitelist_has_teeth():
+    # REVERSE: a name that is not on the sparse whitelist, same window.
+    new, frozen = _sparse_tail_cells(3, symbol="600519.SH")
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 3
+
+
+def test_panels_sparse_valid_day_tail_window_has_teeth():
+    # REVERSE, re-cut for the re-derived boundary: the window now ends
+    # 2021-11-15 (a Monday), so the first date OUTSIDE it is 2021-11-16.
+    frozen = _frozen_panel([("2021-11-16", "000402.SZ", 0.5)], "f")
+    new = _new_series([("2021-11-16", "000402.SZ", -0.5)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert not result.ok
+    assert len(result.by_class("unclassified_finite_vs_finite")) == 1
+
+
+def test_panels_sparse_valid_day_tail_cell_cap():
+    at_cap_new, at_cap_frozen = _sparse_tail_cells(20)
+    over_new, over_frozen = _sparse_tail_cells(21)
+    at_cap = classify_panel_differences(
+        at_cap_new, at_cap_frozen, factor_id="f", is_pooled=True, lookback_depth=40,
+        sparse_tail_hi=pd.Timestamp("2021-12-31"),
+    )
+    over = classify_panel_differences(
+        over_new, over_frozen, factor_id="f", is_pooled=True, lookback_depth=40,
+        sparse_tail_hi=pd.Timestamp("2021-12-31"),
+    )
+    assert at_cap.ok and len(at_cap.by_class("warmup_sparse_valid_day_tail")) == 20
+    assert len(over.by_class("warmup_sparse_valid_day_tail")) == 21
+    assert not over.ok
+
+
+def test_panels_sparse_valid_day_tail_does_not_enter_the_monthly_warmup_counts():
+    # It sits OUTSIDE the early region by construction; feeding it into the
+    # monthly non-increasing machinery would fail that gate by definition.
+    new, frozen = _sparse_tail_cells(3)
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.warmup_by_month == {}
+    assert result.warmup_by_direction == {}
+
+
+# --------------------------------------------------------------------------- #
+# D5 C4a review NIT-1 — per-class max rel in the run summary
+# --------------------------------------------------------------------------- #
+def test_max_rel_by_class_separates_a_registered_headline_from_the_gate():
+    # The headline max_rel_diff is taken before any bucketing; here it is
+    # 0.5 and belongs ENTIRELY to the warmup class, while the only other
+    # differing cell is dust. Printed alone the headline reads like an
+    # ungated tolerance.
+    frozen = _frozen_panel(
+        [("2021-07-01", "A", 1.0), ("2021-07-02", "A", 1.0), ("2021-09-01", "A", 1e-5)],
+        "f",
+    )
+    new = _new_series(
+        [("2021-07-01", "A", 2.0), ("2021-07-02", "A", 1.0), ("2021-09-01", "A", 1e-5 + 1e-13)]
+    )
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert result.ok, result.diffs
+    assert result.max_rel_diff == pytest.approx(0.5)
+    by_class = result.max_rel_by_class()
+    assert by_class["warmup_left_extension"] == pytest.approx(0.5)
+    # ... while the other differing cell is seven orders of magnitude smaller
+    # (its RATIO is 1e-8 — it qualifies on the absolute arm, which is exactly
+    # why reading the headline as "the tolerance" is wrong).
+    assert by_class["float_reordering_tail"] < 1e-6
+
+
+def test_max_rel_by_class_reports_inf_for_one_sided_cells():
+    # A NaN -> finite cell has no ratio; reporting 0.0 would read as "these
+    # cells agree".
+    frozen = _frozen_panel([("2021-07-01", "A", NAN), ("2021-07-02", "A", 1.0)], "f")
+    new = _new_series([("2021-07-01", "A", 0.7), ("2021-07-02", "A", 1.0)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=False, lookback_depth=3
+    )
+    assert result.max_rel_by_class()["warmup_left_extension"] == float("inf")
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 F5 — the reports leg names its missing inputs instead of dying on the
+# first one it happens to open.
+# --------------------------------------------------------------------------- #
+def _write_report_set(report_dir: Path, factor_id: str, *, bookclose: bool):
+    report_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"factor_eval_{factor_id}"
+    names = [
+        f"{stem}_exec_no_book.json", f"{stem}_exec_no_book.md",
+        f"{stem}_exec_with_book.json", f"{stem}_exec_with_book.md",
+    ]
+    if bookclose:
+        names += [
+            f"{stem}_exec_with_book_bookclose.json",
+            f"{stem}_exec_with_book_bookclose.md",
+        ]
+    for name in names:
+        (report_dir / name).write_text("{}", encoding="utf-8")
+    return stem
+
+
+def test_report_inputs_complete_decision_set_passes_with_or_without_bookclose(tmp_path):
+    for bookclose in (False, True):
+        d = tmp_path / f"bc_{bookclose}"
+        _write_report_set(d, "jump_amount_corr_20", bookclose=bookclose)
+        require_report_inputs(d, "jump_amount_corr_20", "config/x.yaml")
+
+
+def test_report_inputs_names_every_missing_decision_artifact(tmp_path):
+    stem = _write_report_set(tmp_path, "jump_amount_corr_20", bookclose=True)
+    (tmp_path / f"{stem}_exec_with_book.json").unlink()
+    (tmp_path / f"{stem}_exec_with_book.md").unlink()
+    with pytest.raises(ReconciliationError) as excinfo:
+        require_report_inputs(tmp_path, "jump_amount_corr_20", "config/x.yaml")
+    message = str(excinfo.value)
+    # BOTH missing files are named (the bare FileNotFoundError named one) ...
+    assert f"{stem}_exec_with_book.json" in message
+    assert f"{stem}_exec_with_book.md" in message
+    # ... and the message says what to run, with the config it was given.
+    assert "--book-mode decision" in message
+    assert "config/x.yaml" in message
+
+
+def test_report_inputs_reject_a_half_written_bookclose_pair(tmp_path):
+    stem = _write_report_set(tmp_path, "jump_amount_corr_20", bookclose=True)
+    (tmp_path / f"{stem}_exec_with_book_bookclose.md").unlink()
+    with pytest.raises(ReconciliationError, match="HALF-written"):
+        require_report_inputs(tmp_path, "jump_amount_corr_20", "config/x.yaml")
+
+
+def test_panels_sparse_valid_day_tail_last_registered_day_is_inside():
+    # The re-derived window's LAST day must be inside it (the boundary moved
+    # to 2021-11-15 because one real cell sat there); paired with the reverse
+    # test above, the two pin the edge from both sides.
+    frozen = _frozen_panel([("2021-11-15", "000402.SZ", 0.5)], "f")
+    new = _new_series([("2021-11-15", "000402.SZ", -0.5)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_sparse_valid_day_tail")) == 1
+
+
+#: The re-derived membership, written out INDEPENDENTLY of the constant.
+#: Parametrizing over ``SPARSE_VALID_DAY_TAIL_SYMBOLS`` itself cannot detect a
+#: name being dropped — the case simply disappears and the suite still passes
+#: (measured: removing 600906.SH took the run from 9 passed to 8 passed, green
+#: both times). A test whose expectations are read from the thing under test
+#: is the shape this repo has been bitten by repeatedly.
+_EXPECTED_SPARSE_TAIL_SYMBOLS = (
+    "000034.SZ", "000402.SZ", "000999.SZ", "002281.SZ", "002375.SZ",
+    "002653.SZ", "300857.SZ", "600906.SH", "688183.SH",
+)
+
+
+def test_the_sparse_tail_whitelist_is_exactly_the_re_derived_membership():
+    assert SPARSE_VALID_DAY_TAIL_SYMBOLS == frozenset(_EXPECTED_SPARSE_TAIL_SYMBOLS)
+    assert len(_EXPECTED_SPARSE_TAIL_SYMBOLS) == 9
+
+
+@pytest.mark.parametrize("symbol", _EXPECTED_SPARSE_TAIL_SYMBOLS)
+def test_panels_sparse_tail_whitelist_members_are_each_accepted(symbol):
+    # Every registered name is really usable (a typo'd ticker would sit in the
+    # constant looking authoritative while never matching anything).
+    frozen = _frozen_panel([("2021-11-02", symbol, 0.5)], "f")
+    new = _new_series([("2021-11-02", symbol, -0.5)])
+    result = classify_panel_differences(
+        new, frozen, factor_id="f", is_pooled=True, lookback_depth=40
+    )
+    assert result.ok, result.diffs
+    assert len(result.by_class("warmup_sparse_valid_day_tail")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# The sparse-tail class's NECESSARY-CONDITION GUARD, checked against the real
+# frozen panels. The claim it guards is stated ONCE, on
+# ``SPARSE_VALID_DAY_TAIL_SYMBOLS`` in qt/factor_eval_reconcile.py; this banner
+# deliberately does not restate it, because the same sentence written in four
+# places is how three of the four got corrected and the fourth kept asserting
+# a median gate fifteen lines above code that reads p25.
+# --------------------------------------------------------------------------- #
+_SPARSE_TAIL_FACTORS = (
+    "ridge_minute_return_20",
+    "valley_ridge_vwap_ratio_20",
+    "peak_ridge_amount_ratio_20",
+)
+#: The emission window the percentiles are taken over: the early region plus
+#: the November cluster the class covers.
+_DENSITY_LO, _DENSITY_HI = "2021-07-01", "2021-11-30"
+_FROZEN_PANELS = Path("artifacts/refactor_baseline/panels")
+
+requires_frozen_panels = pytest.mark.skipif(
+    not all((_FROZEN_PANELS / f"{f}.parquet").exists() for f in _SPARSE_TAIL_FACTORS),
+    reason="frozen D1 panels not on disk (artifacts/ is gitignored)",
+)
+
+
+def _emission_density(factor_id: str) -> tuple[dict[str, int], float]:
+    """(symbol -> emitted days, the factor's p25) over the density window.
+
+    The threshold is the 25th percentile, NOT the median. A median gate is
+    nearly vacuous by construction — half the universe passes it — so a guard
+    built on it could hardly fail. Measured, all in-class pairs sit below p25
+    (worst percentile rank 21.7%, 15 of 18 below 3%), so tightening costs
+    nothing here and turns an almost-unfailable check into one with teeth.
+    """
+    frame = pd.read_parquet(_FROZEN_PANELS / f"{factor_id}.parquet")
+    frame["date"] = pd.to_datetime(frame["date"])
+    window = frame[(frame["date"] >= _DENSITY_LO) & (frame["date"] <= _DENSITY_HI)]
+    emitted = window.groupby("symbol")[factor_id].apply(lambda s: int(s.notna().sum()))
+    return emitted.to_dict(), float(emitted.quantile(0.25))
+
+
+@requires_frozen_panels
+def test_every_sparse_tail_name_is_sparse_on_some_affected_factor():
+    """Each whitelisted name must satisfy the NECESSARY condition somewhere.
+
+    This is a guard on the enumeration, not a rule that produces it: the
+    predicate admits roughly 69x as many (factor, symbol) pairs as the class
+    covers, so passing it says only that no member contradicts the story.
+    A name at or above p25 on all three affected factors WOULD contradict it —
+    the class would then be admitting that name for some reason nobody has
+    stated. The ruling on that is explicit: STOP, do not widen.
+    """
+    density = {f: _emission_density(f) for f in _SPARSE_TAIL_FACTORS}
+    offenders = {}
+    for symbol in sorted(SPARSE_VALID_DAY_TAIL_SYMBOLS):
+        seen = {
+            f: (emitted.get(symbol), median)
+            for f, (emitted, median) in density.items()
+            if symbol in emitted
+        }
+        if not any(e < m for e, m in seen.values()):
+            offenders[symbol] = seen
+    assert not offenders, (
+        "whitelisted name(s) are NOT sparse on any affected factor, so the "
+        f"class is not describing the mechanism it claims: {offenders}"
+    )
+
+
+@requires_frozen_panels
+def test_the_density_criterion_predicts_where_600906_appears_and_where_it_does_not():
+    """The asymmetry, with its reach: only the NEGATIVE direction holds.
+
+    600906.SH is below p25 on peak_ridge and above the median on ridge — and it
+    shows up in the former's November cluster and not in the latter's. What
+    that supports is "dense => absent" (the control group volume_peak_count_20
+    corroborates it: zero cells on all nine names). It does NOT support
+    "sparse => present", which is false by roughly 69x. It is also ONE data
+    point, dense by a single day.
+    """
+    peak_emitted, peak_p25 = _emission_density("peak_ridge_amount_ratio_20")
+    ridge_emitted, _ridge_p25 = _emission_density("ridge_minute_return_20")
+    assert peak_emitted["600906.SH"] < peak_p25
+    # The dense side is stated against the MEDIAN and clears it by ONE DAY
+    # (42 vs 41) — a single data point, recorded with its reach rather than
+    # leaned on. Only the negative direction of the prediction holds
+    # (dense => absent); sparse => present is false, by 69x.
+    assert ridge_emitted["600906.SH"] >= 41
+
+
+# --------------------------------------------------------------------------- #
+# D5 C5 phase B — the two drifts the reports leg had never shown anyone,
+# because until phase B it had never produced a judgement for these factors.
+#
+# A: the diagnostics-sink coverage disclosures arriving as an appended section.
+# B: the D2 provenance rewrite of spec.description, registered as EXACT PAIRS.
+# --------------------------------------------------------------------------- #
+def _json_with_sections(names: list[str]) -> dict:
+    doc = _frozen_like()
+    doc["sections"] = [{"name": n, "status": "ok", "payload": {"v": 1}} for n in names]
+    return doc
+
+
+def test_registered_disclosure_sections_are_additions_for_each_factor():
+    for factor_id, section in (
+        ("valley_ridge_vwap_ratio_20", "ridge_scarcity_coverage"),
+        ("ridge_minute_return_20", "ridge_scarcity_coverage"),
+        ("peak_ridge_amount_ratio_20", "peak_scarcity_coverage"),
+        ("valley_price_quantile_20", "neutralization_coverage"),
+    ):
+        old = _json_with_sections(["ic", "quantiles"])
+        new = _with_registered_additions(_json_with_sections(["ic", "quantiles", section]))
+        result = diff_report_json(
+            old, new, name=factor_id, strict=True, correction_expected=False,
+            registered_sections=REGISTERED_EXTRA_SECTIONS[factor_id],
+        )
+        assert result.ok, (factor_id, [d for d in result.diffs if "unregistered" in d.classification])
+        assert result.by_class("registered_section_addition")
+
+
+def test_an_unregistered_disclosure_section_still_fails():
+    # REVERSE: a section that is not in this factor's registered tuple.
+    old = _json_with_sections(["ic", "quantiles"])
+    new = _with_registered_additions(
+        _json_with_sections(["ic", "quantiles", "some_other_coverage"])
+    )
+    result = diff_report_json(
+        old, new, name="ridge_minute_return_20", strict=True, correction_expected=False,
+        registered_sections=REGISTERED_EXTRA_SECTIONS["ridge_minute_return_20"],
+    )
+    assert not result.ok
+    assert result.by_class("unregistered_addition")
+
+
+def test_a_section_registered_for_ANOTHER_factor_is_not_accepted_here():
+    # The map is per factor: ridge's disclosure must not pass for a factor
+    # whose registered tuple names a different section.
+    old = _json_with_sections(["ic", "quantiles"])
+    new = _with_registered_additions(
+        _json_with_sections(["ic", "quantiles", "ridge_scarcity_coverage"])
+    )
+    result = diff_report_json(
+        old, new, name="valley_price_quantile_20", strict=True,
+        correction_expected=False,
+        registered_sections=REGISTERED_EXTRA_SECTIONS["valley_price_quantile_20"],
+    )
+    assert not result.ok
+
+
+def test_a_section_INSERTED_mid_list_is_detected_not_absorbed():
+    """The check the lead asked for: index displacement must not pass silently.
+
+    Leaf paths are indexed, so a section inserted before the end shifts every
+    later one. If that were absorbed, "the other sections all match" would be
+    an illusion. Measured on the real artifacts the disclosures are APPENDED
+    (sections 8 -> 9, first eight names pairwise identical), and this test pins
+    what happens if that ever stops being true.
+    """
+    old = _json_with_sections(["ic", "quantiles", "verdict_inputs"])
+    new = _with_registered_additions(
+        _json_with_sections(["ic", "ridge_scarcity_coverage", "quantiles", "verdict_inputs"])
+    )
+    result = diff_report_json(
+        old, new, name="ridge_minute_return_20", strict=True, correction_expected=False,
+        registered_sections=REGISTERED_EXTRA_SECTIONS["ridge_minute_return_20"],
+    )
+    assert not result.ok
+    # Pin the MECHANISM, not just the failure: leaves are compared position by
+    # position, so a displaced section shows up as a changed `sections[k].name`.
+    # Asserting only "something was unregistered" passes for the wrong reason —
+    # the trailing extra index alone would satisfy it (measured: registering
+    # name changes left that weaker assertion green).
+    displaced_names = [
+        d for d in result.diffs
+        if d.path.endswith(".name")
+        and d.classification.startswith("unregistered")
+        and d.old is not None
+        and d.new is not None
+    ]
+    assert displaced_names, (
+        "a section inserted mid-list must surface as a changed sections[k].name; "
+        f"got {[(d.path, d.classification) for d in result.diffs]}"
+    )
+
+
+def test_registered_d2_description_rewrite_is_accepted_as_an_exact_pair():
+    for factor_id, (old_text, new_text) in REGISTERED_SPEC_DESCRIPTION_REWRITES.items():
+        old = _frozen_like()
+        old["spec"]["description"] = old_text
+        new = _with_registered_additions(_frozen_like())
+        new["spec"]["description"] = new_text
+        result = diff_report_json(
+            old, new, name=factor_id, strict=True, correction_expected=False,
+            description_rewrite=REGISTERED_SPEC_DESCRIPTION_REWRITES[factor_id],
+        )
+        assert result.ok, (factor_id, result.diffs)
+        assert len(result.by_class("registered_d2_provenance_rewrite")) == 1
+
+
+def test_a_DIFFERENT_description_rewrite_on_a_registered_factor_fails():
+    # REVERSE: the registered OLD text but some other new text. This is the
+    # case the exact pair exists for — the day a factor's stated meaning
+    # really changes must not ride in on a provenance registration.
+    factor_id = "peak_interval_kurtosis_20"
+    old_text, _ = REGISTERED_SPEC_DESCRIPTION_REWRITES[factor_id]
+    old = _frozen_like()
+    old["spec"]["description"] = old_text
+    new = _with_registered_additions(_frozen_like())
+    new["spec"]["description"] = "Now computes something else entirely."
+    result = diff_report_json(
+        old, new, name=factor_id, strict=True, correction_expected=False,
+        description_rewrite=REGISTERED_SPEC_DESCRIPTION_REWRITES[factor_id],
+    )
+    assert not result.ok
+    assert len(result.by_class("unregistered_change")) == 1
+
+
+def test_an_unregistered_factors_description_rewrite_fails():
+    # REVERSE: a factor with no registered pair at all (the default None).
+    old = _frozen_like()
+    old["spec"]["description"] = "A"
+    new = _with_registered_additions(_frozen_like())
+    new["spec"]["description"] = "B"
+    result = diff_report_json(
+        old, new, name="jump_amount_corr_20", strict=True, correction_expected=False,
+    )
+    assert not result.ok
+    assert len(result.by_class("unregistered_change")) == 1
+
+
+@requires_frozen_panels
+def test_the_registered_description_pairs_match_the_frozen_artifacts_exactly():
+    """The transcribed constants must equal the bytes on disk, character for
+    character. A pair that is one character off would leave the leg failing
+    while the registration looked right in review."""
+    from qt.exec_baseline_freeze import (
+        DEFAULT_FROZEN_ROOT,
+        DEFAULT_MANIFEST,
+        FrozenExecBaseline,
+    )
+    from qt.factor_eval_reconcile import _FACTOR_TO_REPORT_NAME
+
+    repo = Path(".").resolve()
+    baseline = FrozenExecBaseline(repo / DEFAULT_FROZEN_ROOT, repo / DEFAULT_MANIFEST)
+    for factor_id, (old_text, _new_text) in REGISTERED_SPEC_DESCRIPTION_REWRITES.items():
+        frozen = baseline.report_json(_FACTOR_TO_REPORT_NAME[factor_id], "no_book")
+        assert frozen["spec"]["description"] == old_text, factor_id
+
+
+def test_md_prefixes_are_derived_per_FACTOR_not_per_section_name():
+    """`ridge_scarcity_coverage` is published by two factors with DIFFERENT
+    payloads (RidgeCoverage vs RidgeReturnCoverage), so a section-name-only
+    lookup would hand one of them the other's field list."""
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    a = _registered_section_md_prefixes(
+        "valley_ridge_vwap_ratio_20", ("ridge_scarcity_coverage",)
+    )
+    b = _registered_section_md_prefixes(
+        "ridge_minute_return_20", ("ridge_scarcity_coverage",)
+    )
+    assert a[:2] == b[:2] == ("## + ridge_scarcity_coverage", "ridge scarcity:")
+    assert set(a) != set(b), "the two payloads must not produce the same fields"
+    assert "- valley_median:" in a and "- valley_median:" not in b
+    assert "- ridge_return_mean:" in b and "- ridge_return_mean:" not in a
+
+
+def test_md_prefixes_reject_a_factor_that_does_not_publish_that_section():
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+
+    with pytest.raises(ValueError, match="does not publish the add-Section"):
+        _registered_section_md_prefixes(
+            "jump_amount_corr_20", ("ridge_scarcity_coverage",)
+        )
+
+
+@pytest.mark.parametrize(
+    "section_name, payload_factory",
+    [
+        ("ridge_scarcity_coverage", "ridge"),
+        ("peak_scarcity_coverage", "peak"),
+        ("neutralization_coverage", "neutralization"),
+    ],
+)
+def test_the_registered_note_prefix_matches_what_render_actually_emits(
+    section_name, payload_factory
+):
+    """Pin the note prefixes by ASSERTION against a real rendering.
+
+    The constants exist so the gate is not coupled to the renderer's format by
+    construction; that only works if something checks they still agree.
+    """
+    from qt.factor_eval_reconcile import _SECTION_NOTE_PREFIXES
+
+    frame = pd.DataFrame(
+        {
+            "classifiable_bars": [240, 240],
+            "valley_bars": [200, 200],
+            "ridge_bars": [25, 30],
+            "peak_bars": [12, 14],
+            "ridge_return_bars": [25, 30],
+            "valid": [True, True],
+        },
+        index=pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2021-07-01"), "A"), (pd.Timestamp("2021-07-02"), "A")],
+            names=["date", "symbol"],
+        ),
+    )
+    if payload_factory == "ridge":
+        from qt.factor_eval_disclosures import summarize_ridge_coverage as fn
+
+        coverage = fn([frame])
+    elif payload_factory == "peak":
+        from qt.factor_eval_disclosures import summarize_peak_coverage as fn
+
+        coverage = fn([frame])
+    else:
+        from qt.factor_eval_disclosures import summarize_neutralization as fn
+
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2021-07-01"), f"S{i}") for i in range(12)],
+            names=["date", "symbol"],
+        )
+        series = pd.Series(range(12), index=idx, dtype=float)
+        coverage = fn(series, series, series, min_cross_section=10)
+    assert coverage.render().startswith(_SECTION_NOTE_PREFIXES[section_name])
+
+
+@pytest.mark.parametrize(
+    "factor_id, section_name",
+    [
+        ("valley_ridge_vwap_ratio_20", "ridge_scarcity_coverage"),
+        ("ridge_minute_return_20", "ridge_scarcity_coverage"),
+        ("peak_ridge_amount_ratio_20", "peak_scarcity_coverage"),
+        ("valley_price_quantile_20", "neutralization_coverage"),
+    ],
+)
+def test_md_prefixes_cover_EVERY_key_the_real_section_payload_carries(
+    factor_id, section_name
+):
+    """The registration must cover the payload a real run writes, key for key.
+
+    Deriving the prefixes from ``dataclasses.fields`` alone missed the two
+    COMPUTED properties ``to_section`` adds on top of ``asdict``, so three
+    rendered Markdown lines stayed unregistered and the reports leg kept
+    failing with the JSON side already green.
+
+    ⚠️ REACH, measured: this test does NOT guard
+    ``DERIVED_PAYLOAD_PROPERTIES`` itself. Both sides now read that tuple, so
+    deleting an entry from it leaves this test GREEN by construction (measured:
+    dropping ``validity_rate`` -> 4 passed). What catches that is the REAL
+    reports leg (all three Markdown grids fail) and
+    ``test_derived_payload_properties_are_exactly_the_coverage_properties``
+    below, which pins the tuple against the payload classes themselves. This
+    test's own job is narrower: a payload key with no dataclass field AND no
+    entry in that tuple fails here rather than on a two-hour run.
+    """
+    from qt.factor_eval_disclosures import (
+        NEUTRALIZATION_SECTION_NAME,
+        disclosure_binding_for,
+        summarize_neutralization,
+        to_section,
+    )
+    from qt.factor_eval_reconcile import _registered_section_md_prefixes
+    from factors import registry as factor_registry
+
+    frame = pd.DataFrame(
+        {
+            "classifiable_bars": [240, 240],
+            "valley_bars": [200, 200],
+            "ridge_bars": [25, 30],
+            "peak_bars": [12, 14],
+            "ridge_return_bars": [25, 30],
+            "valid": [True, True],
+        },
+        index=pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2021-07-01"), "A"), (pd.Timestamp("2021-07-02"), "A")],
+            names=["date", "symbol"],
+        ),
+    )
+    if section_name == NEUTRALIZATION_SECTION_NAME:
+        idx = pd.MultiIndex.from_tuples(
+            [(pd.Timestamp("2021-07-01"), f"S{i}") for i in range(12)],
+            names=["date", "symbol"],
+        )
+        series = pd.Series(range(12), index=idx, dtype=float)
+        coverage = summarize_neutralization(series, series, series, min_cross_section=10)
+    else:
+        binding = disclosure_binding_for(factor_registry.build(factor_id))
+        coverage = binding.summarize([frame])
+
+    payload_keys = set(to_section(section_name, coverage).payload)
+    prefixes = set(_registered_section_md_prefixes(factor_id, (section_name,)))
+    missing = {k for k in payload_keys if f"- {k}:" not in prefixes}
+    assert not missing, (
+        f"{factor_id}/{section_name}: payload keys with no registered Markdown "
+        f"prefix -> their rendered lines would fail the reports leg: {sorted(missing)}"
+    )
+
+
+def test_derived_payload_properties_are_exactly_the_coverage_properties():
+    """Pin ``DERIVED_PAYLOAD_PROPERTIES`` to the payload classes themselves.
+
+    Both ``to_section`` and the reconcile prefix derivation read that tuple, so
+    every test comparing one against the other is equal BY CONSTRUCTION and
+    stays green when an entry is deleted (measured). The tuple therefore needs
+    an anchor that is not itself derived from it: the union of ``@property``
+    names declared on the coverage dataclasses. Delete an entry and this goes
+    red; add a property to a coverage class without registering it and this
+    goes red too — which is the direction that would otherwise ship an
+    unregistered Markdown line.
+    """
+    from qt.factor_eval_disclosures import (
+        DERIVED_PAYLOAD_PROPERTIES,
+        NeutralizationCoverage,
+        PeakCoverage,
+        RidgeCoverage,
+        RidgeReturnCoverage,
+    )
+
+    declared: set[str] = set()
+    for cls in (RidgeCoverage, RidgeReturnCoverage, PeakCoverage, NeutralizationCoverage):
+        declared |= {
+            name
+            for name, attr in vars(cls).items()
+            if isinstance(attr, property) and not name.startswith("_")
+        }
+    # ``render`` is a method, not a property, and is carried as the section's
+    # note rather than as a payload key — the set below is payload-bearing only.
+    assert set(DERIVED_PAYLOAD_PROPERTIES) == declared, (
+        "DERIVED_PAYLOAD_PROPERTIES must equal the coverage classes' property "
+        f"names; registered={sorted(DERIVED_PAYLOAD_PROPERTIES)} "
+        f"declared={sorted(declared)}"
+    )

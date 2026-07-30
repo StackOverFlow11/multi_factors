@@ -382,13 +382,26 @@ class _MinuteProv:
         return DATES[0]
 
 
-def _stub_exec_basis(report_dir, stem):
+def _stub_exec_basis(report_dir, stem, with_book_suffix="", book_view=""):
+    """Stand-in for the write-out layer, honouring its ``with_book_suffix``.
+
+    The suffix is applied HERE, at write time, exactly as
+    ``qt.exec_basis_eval.run_exec_basis_evaluation`` applies it — so a runner
+    that passes the wrong suffix writes the wrong file names and the callers'
+    assertions fail. The written content names the book view, so a test can
+    tell whose artifact a given file is.
+    """
     report_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
     for kind in ("no_book", "with_book"):
+        stem_for_kind = (
+            f"{stem}_exec_with_book{with_book_suffix}"
+            if kind == "with_book"
+            else f"{stem}_exec_no_book"
+        )
         for suffix, key in ((".md", "md"), (".json", "json"), ("_dashboard.png", "dashboard")):
-            p = report_dir / f"{stem}_exec_{kind}{suffix}"
-            p.write_text("stub", encoding="utf-8")
+            p = report_dir / f"{stem_for_kind}{suffix}"
+            p.write_text(f"stub {kind} book_view={book_view}", encoding="utf-8")
             paths[f"{kind}_{key}"] = p
     return ExecBasisEvaluation(
         spec=None, params=None, artifact_path=report_dir / "a.parquet",
@@ -424,7 +437,11 @@ def _wire(monkeypatch, tmp_path, captured):
         captured.update(
             factor_panel=factor_panel, spec=spec, eval_cfg=eval_cfg, book=book, **kwargs
         )
-        return _stub_exec_basis(kwargs["report_dir"], kwargs["stem"])
+        return _stub_exec_basis(
+            kwargs["report_dir"], kwargs["stem"],
+            with_book_suffix=kwargs.get("with_book_suffix", ""),
+            book_view=kwargs.get("book_view", ""),
+        )
 
     monkeypatch.setattr(
         "qt.factor_eval_runner.run_exec_basis_evaluation", fake_exec_eval
@@ -515,3 +532,42 @@ def test_disclosure_rides_the_diagnostics_sink_into_an_extra_section(
     # every requested symbol had a finite value in the fake panel
     assert result.covered_symbols == 2
     assert result.empty_symbols == 0
+
+
+def test_running_decision_then_close_leaves_the_decision_artifacts_intact(
+    monkeypatch, tmp_path
+):
+    """D5 C5 F5: the run ORDER must not decide which artifacts survive.
+
+    The close-book run used to write the shared ``_exec_with_book`` names and
+    rename them afterwards, so this exact order destroyed the decision run's
+    three with-book artifacts — every one of the eleven factors lost them in
+    the C5 full run, and the reconcile's reports leg then died on a bare
+    FileNotFoundError. The suffix now travels into the write-out layer, so
+    each book mode only ever writes its own names.
+    """
+    captured: dict = {}
+    _wire(monkeypatch, tmp_path, captured)
+
+    decision = run_factor_eval(
+        "ignored.yaml", "jump_amount_corr_20", book_mode="decision"
+    )
+    assert captured["with_book_suffix"] == ""
+    kept = {
+        p: p.read_bytes()
+        for p in (
+            decision.exec_basis.with_book_md,
+            decision.exec_basis.with_book_json,
+            decision.exec_basis.with_book_dashboard,
+        )
+    }
+    assert all(b"book_view=decision" in blob for blob in kept.values())
+
+    close = run_factor_eval("ignored.yaml", "jump_amount_corr_20", book_mode="close")
+    assert captured["with_book_suffix"] == "_bookclose"
+
+    for path, blob in kept.items():
+        assert path.exists(), f"the close run destroyed {path.name}"
+        assert path.read_bytes() == blob
+    assert close.exec_basis.with_book_md.name.endswith("_exec_with_book_bookclose.md")
+    assert b"book_view=close" in close.exec_basis.with_book_md.read_bytes()

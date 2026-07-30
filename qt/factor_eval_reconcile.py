@@ -49,21 +49,42 @@ gate that runs at every mode's entry:
        shape still FAILS. If the frozen panel has no finite value at all
        there is no exemption (the conservative direction). Months after the
        exempt month stay strictly gated.
+  1b. ``warmup_sparse_valid_day_tail`` — the SAME anchor-truncation family on
+     valid-day POOLED factors with a sparse emission grid, whose early-region
+     difference is carried forward past the early window instead of averaging
+     out inside it. AN ENUMERATION CLASS WITH A NECESSARY-CONDITION GUARD, not
+     a mechanism class — the full statement, with its measured numbers, is on
+     ``SPARSE_VALID_DAY_TAIL_SYMBOLS`` and is deliberately NOT repeated here.
+     Registered window
+     [2021-11-01, 2021-11-15], a symbol whitelist, at most 20 cells per
+     factor, pooled factors only; amplitude unbounded inside (the geometries
+     legitimately differ, as in the early region). MUST NOT BE WIDENED AGAIN,
+     and must NOT be extended by deriving from the density property — see the
+     constants' anti-ratchet note.
   2. ``float_reordering_tail`` — scattered finite-vs-finite cells with rel
      diff <= 5e-12 (rolling-correlation summation order; the JC1 1e-12 gate
      is the attributable floor, this is the measured tail above it), OR with
      abs diff <= 1e-12 regardless of rel (lead ruling 3: on near-zero
      cross-sectional OLS residuals the rel criterion is meaningless — the
-     measured dust is ~1e-16 machine precision on ~1e-5 residuals). The
-     class is CAPPED — 101 cells for bars-only factors (the measured jump
-     count), 1000 for cross-sectional ones (measured vpq 707 + headroom);
-     more fails.
+     measured dust is ~1e-16 machine precision on ~1e-5 residuals). The ABS
+     arm is evaluated FIRST in the ladder, ahead of every region branch
+     (C5 F4): dust is uniform across the grid, and letting the region decide
+     first made a handful of dust cells count as warmup cells and fail the
+     pooled monthly gate on noise. The class is CAPPED — 101 cells for
+     bars-only factors (the measured jump count), 1000 for cross-sectional
+     ones (measured vpq 707 + headroom); more fails.
   3. ``threshold_flip_tail`` — count factors (volume_peak): rolling-sigma
      float noise (~4e-10) times an integer volume sitting on the peak
      threshold flips the count by EXACTLY +/-1 on a sparse (symbol, day)
      cluster (measured: 20 cells, 600623.SH 2023-06-15..07-14). Bounds:
      |delta| == 1 exactly, rel <= 1e-2, at most 25 cells; more fails.
-  4. ``threshold_flip_contamination`` — CROSS-SECTIONAL factors only (lead
+  4. ``threshold_flip_contamination`` — two arms of one physical event.
+     BARS-ONLY arm (C5 F2): only the directly affected symbol (600623.SH)
+     inside the same window, bounded per factor by a RELATIVE tolerance
+     (``BARS_ONLY_FLIP_CONTAMINATION_REL_TOL``, at most 25 cells) — a
+     bars-only factor has no per-date OLS to spread the flip, so any other
+     symbol moving there is a new fact.
+     CROSS-SECTIONAL arm — (lead
      ruling 2, catalogue §七之五): the same PRV critical-bar flip family as
      (3), observed on vpq as a CONTINUOUS value change (valley VWAP ->
      q_day -> qbar) plus second-order contamination of the whole cross
@@ -80,9 +101,15 @@ gate that runs at every mode's entry:
      served one by the migrated primitives.
   5. the jump cutoff reference — handled by the reference-path selection above.
 
-  Anything else (finite->NaN, finite-vs-finite beyond every named tail, a
-  finite value on a row the frozen panel does not have outside the warmup
-  boundary) is UNCLASSIFIED and fails the mode. Extra all-NaN rows in the
+  Anything else (finite->NaN outside the one registered direction below,
+  finite-vs-finite beyond every named tail, a finite value on a row the frozen
+  panel does not have outside the warmup boundary) is UNCLASSIFIED and fails
+  the mode. The one registered finite->NaN direction is
+  ``warmup_left_extension``'s ``frozen_finite_new_nan`` (C5 F3), available to
+  VALID-DAY POOLED factors inside the early region only: their emission is
+  gated by a count of valid days, so the two geometries can accumulate a
+  different number of them at the anchor edge. A bounded factor has no such
+  gate and its finite->NaN stays unclassified. Extra all-NaN rows in the
   served panel are the D4c NaN footprint (registered drift #3) and are
   counted, not failed.
 
@@ -242,8 +269,113 @@ THRESHOLD_FLIP_CONTAMINATION_CROSS_ABS_TOL = 1e-06
 #: measured 19,143 cells -> cap 20,000
 THRESHOLD_FLIP_CONTAMINATION_MAX_CELLS = 20_000
 
+#: ``threshold_flip_contamination``, BARS-ONLY arm (C5 F2, lead ruling): the
+#: SAME physical event as the cross-sectional arm — the 600623.SH 2023-06-15
+#: 13:07 ``volume=13300.0`` integer bar sitting on the same-slot mu+sigma
+#: threshold, where pandas' rolling float accumulation is path-dependent on the
+#: load start (threshold differs by ~4e-13) and flips ``vol > thr``. On a
+#: bars-only factor there is no per-date OLS to propagate it, so ONLY the
+#: directly affected symbol can move; every other symbol inside the window
+#: keeps falling through to the generic tails and fails there if it is a real
+#: change. The bound is RELATIVE here (the cross-sectional arm's bound is
+#: absolute) because these two factors live on unrelated value scales: measured
+#: kurtosis rel 8.2e-5..2.9e-3 with |diff| up to 1.07e-02, relative_vwap a
+#: constant rel ~1.53e-06. An absolute bound calibrated on one is meaningless
+#: for the other. Per factor, so a factor that is not in this map gets NO
+#: bars-only contamination class at all.
+BARS_ONLY_FLIP_CONTAMINATION_REL_TOL: dict[str, float] = {
+    #: measured max rel 2.90e-03 -> bound 5e-03
+    "peak_interval_kurtosis_20": 5e-03,
+    #: measured max rel 1.53e-06 -> bound 1e-05
+    "valley_relative_vwap_20": 1e-05,
+}
+#: measured 20 cells per factor (the same 20 trading days as
+#: ``threshold_flip_tail``'s volume_peak cluster) -> cap 25
+BARS_ONLY_FLIP_CONTAMINATION_MAX_CELLS = 25
+
 EARLY_REGION_LO = pd.Timestamp("2021-07-01")
 EARLY_REGION_HI = pd.Timestamp("2021-10-31")
+
+#: ``warmup_sparse_valid_day_tail`` (C5 F3 ②, lead ruling): the SECOND surface
+#: of the same anchor-truncation family as ``warmup_left_extension``, on
+#: valid-day POOLED factors whose emission grid is sparse.
+#:
+#: THIS IS AN ENUMERATION CLASS WITH A NECESSARY-CONDITION GUARD — NOT a
+#: mechanism class. The distinction is operational, not stylistic: a mechanism
+#: class could be EXTENDED BY DERIVING from the mechanism, and this one must
+#: not be. Membership is the enumerated list below; the density property is a
+#: guard every member must satisfy, not a rule that produces the list.
+#:
+#: What the density property says:
+#:
+#:   1. Sparse emission is the PRECONDITION that lets an early-region
+#:      difference be carried PAST the early window: such a name publishes on
+#:      too few days for the difference to average out inside it. Necessary,
+#:      and NOWHERE NEAR SUFFICIENT — measured, the predicate ("emission below
+#:      that factor's own median") admits 420 + 404 + 426 = 1,250
+#:      (factor, symbol) pairs inside this window, against the 18 the class
+#:      actually covers. Roughly 69x.
+#:   2. Whether a sparse name ACTUALLY carries a difference forward also
+#:      depends on whether it had an early-region difference at all and on how
+#:      its valid days fall. So the predicate CONSTRAINS the member set and
+#:      does not DETERMINE it.
+#:   3. The whitelist is therefore the enumeration of the OBSERVED cells. What
+#:      is falsifiable and checked is the necessary condition: every member
+#:      satisfies it (18/18). THE CLASS IS DELIBERATELY NARROWER THAN THE
+#:      MECHANISM, and that is the point — see the anti-ratchet note.
+#:
+#: The guard is checked at the 25th PERCENTILE, not the median. A median gate
+#: is nearly vacuous by construction (half the universe passes it); measured,
+#: all 18 in-class pairs sit below their factor's own p25, with a worst
+#: percentile rank of 21.7% and 15 of 18 below 3%. Tightening it turns a guard
+#: that almost could not fail into one that can.
+#:
+#: Supporting ASYMMETRY, with its reach stated: 600906.SH emits 29 days on
+#: peak_ridge (below its p25) and 42 on ridge — and it appears in the former's
+#: cluster and NOT in the latter's. This is a CONDITIONAL prediction and only
+#: its NEGATIVE direction holds: dense => absent (corroborated by the control
+#: group volume_peak_count_20, a dense pooled factor at 83 of 92 days, which
+#: has zero cells on all nine names). Sparse => present does NOT hold — that
+#: is what the 69x above measures. And it is a SINGLE data point whose dense
+#: side clears its median by ONE DAY (42 vs 41), so it cannot carry more than
+#: it is carrying here.
+#: ``tests/test_factor_eval_reconcile.py`` re-runs the guard against the real
+#: frozen panels whenever the corpus is on disk.
+#:
+#: AMPLITUDE IS NOT BOUNDED inside the class (the measured ridge cells include a
+#: sign flip, rel 1.96): the two loading geometries legitimately disagree there
+#: for the same reason they do inside the early region. The teeth are the
+#: window, the symbol whitelist and the cell cap — all three are checked, and
+#: the class is only available to pooled factors.
+#:
+#: ⚠️ ANTI-RATCHET (lead ruling, C5): THIS CLASS MUST NOT BE WIDENED AGAIN.
+#: Keep relaxing a class and ``unclassified`` can always be driven to zero, at
+#: which point the class stops being a claim at all and becomes a description
+#: of the residual — and "an uncatalogued difference is a failure" (design
+#: §六.5) has been quietly repealed. If a future factor or cell needs this
+#: class, that need is ITSELF evidence of exactly that: STOP AND REPORT, do
+#: not patch the bounds — and in particular do NOT "derive" new members from
+#: the density property, which admits 69x what the class covers.
+#: Because no rule determines membership, this constraint is the ONLY guard
+#: this class has, which also PROMOTES THE REVERSE TESTS from a supporting
+#: role to the primary one: the assertions that a name outside the whitelist,
+#: a date outside the window, or a bounded factor must FAIL are what keep the
+#: enumeration an enumeration.
+SPARSE_VALID_DAY_TAIL_LO = pd.Timestamp("2021-11-01")
+SPARSE_VALID_DAY_TAIL_HI = pd.Timestamp("2021-11-15")
+#: THE MEMBER SET ITSELF — the observed cells across the THREE affected factors
+#: (ridge_minute_return / valley_ridge_vwap_ratio / peak_ridge_amount_ratio).
+#: Not derived from the density property and not derivable from it: see the
+#: three numbered points above.
+#: ⚠️ An earlier version of this constant held SIX names and ran to 11-12,
+#: derived from only TWO of those factors — because the third was FAILING at
+#: the time and had been recorded as passing (see catalogue §七之七).
+SPARSE_VALID_DAY_TAIL_SYMBOLS: frozenset[str] = frozenset({
+    "000034.SZ", "000402.SZ", "000999.SZ", "002281.SZ", "002375.SZ",
+    "002653.SZ", "300857.SZ", "600906.SH", "688183.SH",
+})
+#: measured 13 / 13 / 19 cells across the three factors -> cap 20
+SPARSE_VALID_DAY_TAIL_MAX_CELLS = 20
 
 #: factor_id -> the frozen exec artifact's report name (qt.exec_baseline_freeze
 #: FACTORS). Closed map: an unknown factor id is a readable error, never a guess.
@@ -303,45 +435,166 @@ ALLOWED_ADDED_MD_PREFIXES: tuple[str, ...] = (
 #: mechanism B — never an add-Section), so the unified runner's new section is
 #: an ADDITION against the frozen artifact, registered here per factor; any
 #: other added section stays unregistered and fails.
+#: ⚠️ THE ENUMERATION WAS INCOMPLETE, and for a reason worth stating: until the
+#: D5 C5 phase-B run, this leg had NEVER produced a judgement for ten of the
+#: eleven factors (every rc=1 was the F5 artifact destruction), so the four
+#: OTHER disclosure sections had simply never been seen by anyone. vpq was the
+#: only entry because vpq was the only factor whose reports leg had ever run.
+#: Registering them is not "widening": the map was fitted to a sample of one.
+#:
+#: Each addition below was RE-VERIFIED per factor and per grid, not assumed
+#: (lead ruling): (1) every leaf under the appended index is ``old=None``, a
+#: pure addition with no value rewrite; (2) the verdict labels are unchanged;
+#: (3) NO INDEX DISPLACEMENT — measured sections 8 -> 9 with the first eight
+#: names pairwise identical and the disclosure appended LAST. (3) matters
+#: because the leaf paths are indexed: a section inserted mid-list would shift
+#: every later one and "the rest of the sections match" would be an illusion.
+#: It is detected rather than assumed — a shifted ``sections[k].name`` shows up
+#: as an unregistered CHANGE and fails — and there is a test for that.
+#:
+#: ⚠️ ANTI-RATCHET (lead ruling): do NOT widen this map again. A further
+#: factor needing an entry is evidence that the registration is describing
+#: residuals rather than the diagnostics-sink mechanism: STOP AND REPORT.
 REGISTERED_EXTRA_SECTIONS: dict[str, tuple[str, ...]] = {
     "valley_price_quantile_20": ("neutralization_coverage",),
+    "valley_ridge_vwap_ratio_20": ("ridge_scarcity_coverage",),
+    "ridge_minute_return_20": ("ridge_scarcity_coverage",),
+    "peak_ridge_amount_ratio_20": ("peak_scarcity_coverage",),
 }
 
-#: The MD note-line prefix of ``NeutralizationCoverage.render()`` — the
-#: disclosure's one-line summary, rendered as the section's note. Kept as a
-#: constant with a pinning test (the alternative — re-rendering a zero
-#: instance — would couple the reconcile gate to the renderer's format by
-#: construction instead of by assertion).
-_NEUTRALIZATION_NOTE_PREFIX = "neutralization (T-1 rev20):"
+#: ``spec.description`` value rewrites — a DIFFERENT class from the §七
+#: registered spec drift, which covers ADDED KEYS only. This is an existing
+#: key whose VALUE changed, and `spec.description` is the field a reader uses
+#: to learn what the factor computes, so the registration is a per-factor
+#: EXACT PAIR rather than a predicate (lead ruling). A blanket "description
+#: rewrites are acceptable" rule would wave through the day someone really
+#: changes what a factor claims to compute; exact enumeration is the point,
+#: not clumsiness. ANY other rewrite — a fourth factor, or a different new
+#: text on these three — stays unregistered and fails.
+#:
+#: Cause: the D2 migration moved the peak/valley/ridge taxonomy out of
+#: ``data.clean.intraday_volume_prv`` into
+#: ``factors.compute.minute.primitives``, and each description was updated to
+#: name its new home. D2 itself was measured BITWISE identical (PR #89: 14/14
+#: panels at ``max_rel_diff=0.0``), so this is a PROVENANCE rewrite, not a
+#: semantic one — which is why it triggers no version bump and no correction
+#: carrier, by the same criterion applied to F1.
+#:
+#: The strings are the artifacts' stored values, i.e. already truncated by the
+#: report writer's value cap (both sides 214 chars, ending in the truncation
+#: marker). That is deliberate: the registration must match what a consumer
+#: opens. If the cap ever changes these pairs stop matching and this leg fails
+#: loudly, which is the correct direction.
+#:
+#: ⚠️ ANTI-RATCHET: do NOT add a fourth entry. See above.
+REGISTERED_SPEC_DESCRIPTION_REWRITES: dict[str, tuple[str, str]] = {
+    "peak_interval_kurtosis_20": (
+        "Volume-peak interval kurtosis (Kaiyuan microstructure series #27, "
+        "SECOND factor 量峰间隔峰度). SAME peak identification as PR-F "
+        "volume_peak_count (REUSED from data.clean.intraday_volume_prv, not "
+        "re-implemen...[truncated]",
+        "Volume-peak interval kurtosis (Kaiyuan microstructure series #27, "
+        "SECOND factor 量峰间隔峰度). SAME peak identification as PR-F "
+        "volume_peak_count (SHARED taxonomy in factors.compute.minute."
+        "primitives, not r...[truncated]",
+    ),
+    "valley_relative_vwap_20": (
+        "Valley-relative VWAP (Kaiyuan microstructure series #27, THIRD factor "
+        "量谷相对加权价格). SAME minute classification as PR-F volume_peak_count and "
+        "PR-H peak_interval_kurtosis (REUSED from data.clean.intraday_v..."
+        "[truncated]",
+        "Valley-relative VWAP (Kaiyuan microstructure series #27, THIRD factor "
+        "量谷相对加权价格). SAME minute classification as PR-F volume_peak_count and "
+        "PR-H peak_interval_kurtosis (SHARED taxonomy in factors.comput..."
+        "[truncated]",
+    ),
+    "valley_ridge_vwap_ratio_20": (
+        "Valley/ridge VWAP ratio (Kaiyuan microstructure series #27, FOURTH "
+        "factor 谷岭加权价格比). SAME minute classification as PR-F "
+        "volume_peak_count / PR-H peak_interval_kurtosis / PR-I "
+        "valley_relative_vwap (REUS...[truncated]",
+        "Valley/ridge VWAP ratio (Kaiyuan microstructure series #27, FOURTH "
+        "factor 谷岭加权价格比). SAME minute classification as PR-F "
+        "volume_peak_count / PR-H peak_interval_kurtosis / PR-I "
+        "valley_relative_vwap (SHAR...[truncated]",
+    ),
+}
+
+#: The MD note-line prefix of each registered disclosure's ``render()`` — the
+#: one-line summary rendered as the section's note. Kept as constants with a
+#: pinning test (the alternative — re-rendering a zero instance — would couple
+#: the reconcile gate to the renderer's format by construction instead of by
+#: assertion). An unlisted section name is a readable error, never a guess.
+_SECTION_NOTE_PREFIXES: dict[str, str] = {
+    "neutralization_coverage": "neutralization (T-1 rev20):",
+    "ridge_scarcity_coverage": "ridge scarcity:",
+    "peak_scarcity_coverage": "peak scarcity:",
+}
 
 
-def _registered_section_md_prefixes(section_names: tuple[str, ...]) -> tuple[str, ...]:
+def _registered_section_md_prefixes(
+    factor_id: str, section_names: tuple[str, ...]
+) -> tuple[str, ...]:
     """The MD line prefixes belonging to a registered add-Section's rendering.
 
     An extra section renders (``analytics/eval/render.py._render_section``) as
     an unnumbered ``## + <name>`` heading, the note line, and one
-    ``- <field>:`` payload line per dataclass field (derived from the
-    dataclass, so a field rename breaks the pinning test instead of silently
-    unregistering). An unknown section name is a readable error — registering
-    a section whose MD rendering is not catalogued would be a guess.
+    ``- <field>:`` payload line per dataclass field. The payload dataclass is
+    DERIVED, not listed again here: mechanism B is
+    ``NeutralizationCoverage``; mechanism A comes from the factor's own entry
+    in ``qt.factor_eval_disclosures._DISCLOSURE_BY_CLASS`` via its summarizer's
+    return annotation. That matters because ``ridge_scarcity_coverage`` is
+    published by TWO factors with DIFFERENT payloads (``RidgeCoverage`` vs
+    ``RidgeReturnCoverage``), so the prefixes are per FACTOR and a
+    section-name-only lookup would be wrong for one of them. A renamed field
+    or a summarizer returning something else breaks the pinning test instead
+    of silently unregistering.
+
+    An unknown section name is a readable error — registering a section whose
+    MD rendering is not catalogued would be a guess.
     """
-    from dataclasses import fields as dc_fields
+    from dataclasses import fields as dc_fields, is_dataclass
+    from typing import get_type_hints
 
     from qt.factor_eval_disclosures import (
+        DERIVED_PAYLOAD_PROPERTIES,
         NEUTRALIZATION_SECTION_NAME,
         NeutralizationCoverage,
+        disclosure_binding_for,
     )
 
     prefixes: list[str] = []
     for name in section_names:
-        if name == NEUTRALIZATION_SECTION_NAME:
-            prefixes.append(f"## + {NEUTRALIZATION_SECTION_NAME}")
-            prefixes.append(_NEUTRALIZATION_NOTE_PREFIX)
-            prefixes.extend(f"- {f.name}:" for f in dc_fields(NeutralizationCoverage))
-        else:
+        note = _SECTION_NOTE_PREFIXES.get(name)
+        if note is None:
             raise ValueError(
                 f"no MD rendering is registered for added section {name!r}."
             )
+        if name == NEUTRALIZATION_SECTION_NAME:
+            payload: type = NeutralizationCoverage
+        else:
+            binding = disclosure_binding_for(factor_registry.build(factor_id))
+            if binding is None or binding.section_name != name:
+                raise ValueError(
+                    f"{factor_id!r} does not publish the add-Section {name!r}; "
+                    "the registration and the disclosure table disagree."
+                )
+            payload = get_type_hints(binding.summarize)["return"]
+            if not is_dataclass(payload):
+                raise ValueError(
+                    f"the summarizer for {name!r} does not return a dataclass "
+                    f"({payload!r}), so its MD fields cannot be derived."
+                )
+        prefixes.append(f"## + {name}")
+        prefixes.append(note)
+        prefixes.extend(f"- {f.name}:" for f in dc_fields(payload))
+        # ... plus the payload's DERIVED properties, which asdict does not
+        # produce and which therefore have no dataclass field to be read from.
+        prefixes.extend(
+            f"- {prop}:"
+            for prop in DERIVED_PAYLOAD_PROPERTIES
+            if hasattr(payload, prop)
+        )
     return tuple(prefixes)
 
 
@@ -467,6 +720,7 @@ def _classify_value_change(
     correction_expected: bool,
     corrections_present: bool,
     strict: bool,
+    description_rewrite: tuple[str, str] | None = None,
 ) -> str:
     """Classify one changed leaf (both sides present, values differ).
 
@@ -498,6 +752,15 @@ def _classify_value_change(
         return "registered_sanity_stem_rename"
     if path.endswith(".exec_price_artifact_reused") and old_v is False and new_v is True:
         return "registered_run_order_artifact"
+    if (
+        path == "spec.description"
+        and description_rewrite is not None
+        and (old_v, new_v) == description_rewrite
+    ):
+        # The D2 provenance rewrite, matched as an EXACT PAIR. A different old
+        # or a different new on the same factor is a different fact and stays
+        # unregistered — which is the whole reason this is not a predicate.
+        return "registered_d2_provenance_rewrite"
     if correction_expected and corrections_present:
         return "registered_correction_effect"
     if not strict:
@@ -517,6 +780,7 @@ def diff_report_json(
     strict: bool,
     correction_expected: bool,
     registered_sections: tuple[str, ...] = (),
+    description_rewrite: tuple[str, str] | None = None,
 ) -> ReportDiff:
     """Diff one (frozen, new) JSON pair leaf by leaf against the registered list.
 
@@ -528,6 +792,8 @@ def diff_report_json(
     correction — accepted ONLY if the new JSON carries a ``corrections`` block.
     ``registered_sections``: add-Section names whose whole subtree is a
     registered addition (§七之四 — the frozen artifact predates the section).
+    ``description_rewrite``: this factor's registered EXACT (old, new)
+    ``spec.description`` pair (§七之八). Anything else on that path fails.
     """
     result = ReportDiff(name=name, strict=strict)
     old_flat, new_flat = _flatten(old), _flatten(new)
@@ -548,6 +814,7 @@ def diff_report_json(
                 correction_expected=correction_expected,
                 corrections_present=corrections_present,
                 strict=strict,
+                description_rewrite=description_rewrite,
             )
             result.diffs.append(LeafDiff(path, old_v, new_v, cls))
         elif in_new:
@@ -752,6 +1019,32 @@ class PanelDiff:
     def by_class(self, classification: str) -> list[PanelCellDiff]:
         return [d for d in self.diffs if d.classification == classification]
 
+    def max_rel_by_class(self) -> dict[str, float]:
+        """Per-class max relative difference, for the run summary.
+
+        ``max_rel_diff`` above is the headline over the WHOLE grid and is
+        updated before any bucketing, so it is routinely dominated by a
+        registered class (measured: a headline ``9.03e-01`` that sits entirely
+        inside ``warmup_left_extension``) while printed next to
+        ``unclassified=0``. Read alone that invites "the tolerance has no
+        teeth"; per class it is unambiguous, and since ``diffs`` is never
+        persisted it would otherwise have to be recomputed from a rerun
+        (D5 C4a review NIT-1).
+
+        A cell with a missing side (``nan_to_finite`` / ``new_only_finite`` /
+        ``frozen_finite_new_nan``) has no defined ratio and reports ``inf`` —
+        never 0.0, which would read as "these cells agree".
+        """
+        out: dict[str, float] = {}
+        for d in self.diffs:
+            if d.frozen is None or d.new is None:
+                rel = float("inf")
+            else:
+                denom = max(abs(d.frozen), abs(d.new))
+                rel = abs(d.frozen - d.new) / denom if denom > 0 else 0.0
+            out[d.classification] = max(out.get(d.classification, 0.0), rel)
+        return out
+
 
 def classify_panel_differences(
     new_values: pd.Series,
@@ -768,6 +1061,10 @@ def classify_panel_differences(
     float_tail_max: int | None = None,
     flip_rel_tol: float = THRESHOLD_FLIP_REL_TOL,
     flip_max: int = THRESHOLD_FLIP_MAX_CELLS,
+    sparse_tail_lo: pd.Timestamp = SPARSE_VALID_DAY_TAIL_LO,
+    sparse_tail_hi: pd.Timestamp = SPARSE_VALID_DAY_TAIL_HI,
+    sparse_tail_symbols: frozenset[str] = SPARSE_VALID_DAY_TAIL_SYMBOLS,
+    sparse_tail_max: int = SPARSE_VALID_DAY_TAIL_MAX_CELLS,
 ) -> PanelDiff:
     """Classify every cell difference between the served and the frozen panel.
 
@@ -817,6 +1114,17 @@ def classify_panel_differences(
             if is_cross_sectional
             else FLOAT_TAIL_MAX_CELLS
         )
+    # The bars-only contamination arm is per factor and NEVER available to a
+    # cross-sectional factor (that one has its own arm, with absolute bounds).
+    bars_only_flip_tol = (
+        None if is_cross_sectional
+        else BARS_ONLY_FLIP_CONTAMINATION_REL_TOL.get(factor_id)
+    )
+    contamination_max = (
+        THRESHOLD_FLIP_CONTAMINATION_MAX_CELLS
+        if is_cross_sectional
+        else BARS_ONLY_FLIP_CONTAMINATION_MAX_CELLS
+    )
     result = PanelDiff(factor_id=factor_id)
     frozen = frozen.copy()
     frozen["date"] = pd.to_datetime(frozen["date"])
@@ -902,8 +1210,40 @@ def classify_panel_differences(
             result.max_rel_diff = max(result.max_rel_diff, rel)
             if rel <= tol:
                 result.within_tolerance += 1
+            elif abs_diff <= FLOAT_TAIL_ABS_TOL:
+                # C5 F4 (lead ruling): the absolute float-dust predicate is
+                # evaluated BEFORE any REGION branch, so a cell is classified
+                # by its MECHANISM rather than by where it happens to sit.
+                # Machine-precision dust is uniform across the whole grid —
+                # measured on intraday_amp_cut: 798 cells spread over all 59
+                # months of the window, 3..28 per month (median 12), 100% of
+                # them on this absolute arm. When the region branches ran
+                # first, the cells that happened to land in the warmup region
+                # were counted as WARMUP cells, and their month counts (11, 3,
+                # 9 for 2021-08/09/10 — squarely inside that 3..28 spread)
+                # then failed the pooled non-increasing gate on pure noise.
+                # Moving the predicate up removes the dust from the warmup
+                # counts instead of weakening the gate, and puts it under the
+                # float-tail cap wherever it lands.
+                result.diffs.append(
+                    PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
+                                  float(new_v), "float_reordering_tail")
+                )
             elif _in_warmup(date, symbol):
                 _warmup_cell(date, symbol, frozen_v, new_v, "finite_to_finite")
+            elif (
+                is_pooled
+                and symbol in sparse_tail_symbols
+                and sparse_tail_lo <= date <= sparse_tail_hi
+            ):
+                # C5 F3 (2) — the sparse valid-day tail of the same anchor
+                # truncation. Pooled factors only, inside the registered
+                # window, on a registered sparse name; amplitude unbounded
+                # inside (see the constant's docstring), cell count capped.
+                result.diffs.append(
+                    PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
+                                  float(new_v), "warmup_sparse_valid_day_tail")
+                )
             elif (
                 is_cross_sectional
                 and THRESHOLD_FLIP_CONTAMINATION_LO
@@ -930,10 +1270,34 @@ def classify_panel_differences(
                     PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
                                   float(new_v), cls)
                 )
-            elif abs_diff <= FLOAT_TAIL_ABS_TOL or rel <= float_tail_tol:
-                # Lead ruling 3: |diff| <= 1e-12 is float dust REGARDLESS of
-                # rel (the rel criterion is meaningless on near-zero
-                # cross-sectional OLS residuals).
+            elif (
+                bars_only_flip_tol is not None
+                and symbol == THRESHOLD_FLIP_CONTAMINATION_SYMBOL
+                and THRESHOLD_FLIP_CONTAMINATION_LO
+                <= date
+                <= THRESHOLD_FLIP_CONTAMINATION_HI
+            ):
+                # C5 F2 (lead ruling): the bars-only arm of the same class.
+                # Only the DIRECTLY affected symbol qualifies — a bars-only
+                # factor has no per-date OLS to contaminate the rest of the
+                # cross section, so any other symbol moving inside this window
+                # would be a new fact and keeps falling through below. An
+                # overshoot of the per-factor bound is UNCLASSIFIED here and
+                # never falls through to the generic tails, exactly as in the
+                # cross-sectional arm.
+                cls = (
+                    "threshold_flip_contamination"
+                    if rel <= bars_only_flip_tol
+                    else "unclassified_finite_vs_finite"
+                )
+                result.diffs.append(
+                    PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
+                                  float(new_v), cls)
+                )
+            elif rel <= float_tail_tol:
+                # The REL arm of the float tail. (Lead ruling 3's ABS arm now
+                # runs at the top of the ladder — see the C5 F4 branch — so a
+                # dust cell is classified the same way wherever it lands.)
                 result.diffs.append(
                     PanelCellDiff(str(date.date()), str(symbol), float(frozen_v),
                                   float(new_v), "float_reordering_tail")
@@ -949,11 +1313,26 @@ def classify_panel_differences(
                                   float(new_v), "unclassified_finite_vs_finite")
                 )
             continue
-        if pd.notna(frozen_v):  # finite -> NaN: never in an allowed class
-            result.diffs.append(
-                PanelCellDiff(str(date.date()), str(symbol), float(frozen_v), None,
-                              "unclassified_frozen_finite_new_nan")
-            )
+        if pd.notna(frozen_v):
+            # frozen finite -> new NaN. C5 F3 (1) (lead ruling): this joins the
+            # warmup direction set for VALID-DAY POOLED factors INSIDE the
+            # early region, and nowhere else. Mechanism: those factors publish
+            # only on valid days and need ``min_valid_days`` of them, so at the
+            # anchor edge the two loading geometries can accumulate a different
+            # NUMBER of valid days (measured 688276.SH 2021-08-20: 10 under the
+            # old anchor -> a value, 8 under the saturated load -> NaN). It is
+            # the same left-extension geometry difference as the other three
+            # directions, in the one direction that can only appear on a
+            # factor whose emission is gated by a count. For a BOUNDED factor,
+            # or outside the early region, finite -> NaN remains unclassified:
+            # there is no counting gate that could legitimately drop a value.
+            if is_pooled and _in_warmup(date, symbol):
+                _warmup_cell(date, symbol, frozen_v, new_v, "frozen_finite_new_nan")
+            else:
+                result.diffs.append(
+                    PanelCellDiff(str(date.date()), str(symbol), float(frozen_v), None,
+                                  "unclassified_frozen_finite_new_nan")
+                )
             continue
         # frozen NaN -> new finite: the warmup class or unclassified.
         if _in_warmup(date, symbol):
@@ -997,8 +1376,8 @@ def classify_panel_differences(
         )
         and len(result.by_class("float_reordering_tail")) <= float_tail_max
         and len(result.by_class("threshold_flip_tail")) <= flip_max
-        and len(result.by_class("threshold_flip_contamination"))
-        <= THRESHOLD_FLIP_CONTAMINATION_MAX_CELLS
+        and len(result.by_class("threshold_flip_contamination")) <= contamination_max
+        and len(result.by_class("warmup_sparse_valid_day_tail")) <= sparse_tail_max
     )
     return result
 
@@ -1171,22 +1550,71 @@ def run_panels_mode(config_path: str, factor_id: str, repo_root: Path) -> PanelD
     )
     logger.info(
         "panels %s: rows frozen=%d new=%d equal=%d tol=%d warmup=%d(%s) "
-        "warmup_ceiling=%s exempt_month=%s "
+        "warmup_ceiling=%s exempt_month=%s sparse_tail=%d "
         "float_tail=%d threshold_flip=%d flip_contamination=%d footprint=%d "
-        "unclassified=%d max_rel=%.3e live_calls=%d ok=%s",
+        "unclassified=%d max_rel=%.3e max_rel_by_class=%s live_calls=%d ok=%s",
         factor_id, result.rows_frozen, result.rows_new, result.equal,
         result.within_tolerance, len(result.by_class("warmup_left_extension")),
         result.warmup_by_direction,
         result.warmup_max_cells,
         result.warmup_exempt_month,
+        len(result.by_class("warmup_sparse_valid_day_tail")),
         len(result.by_class("float_reordering_tail")),
         len(result.by_class("threshold_flip_tail")),
         len(result.by_class("threshold_flip_contamination")),
         result.nan_footprint_rows,
         len([d for d in result.diffs if d.classification.startswith("un")]),
-        result.max_rel_diff, live_calls, result.ok,
+        result.max_rel_diff,
+        {k: f"{v:.3e}" for k, v in sorted(result.max_rel_by_class().items())},
+        live_calls, result.ok,
     )
     return result
+
+
+def require_report_inputs(report_dir: Path, factor_id: str, config_path: str) -> None:
+    """Fail readably if the reports leg's inputs are not all on disk.
+
+    The four DECISION-book-mode artifacts are required. Before the D5 C5 F5
+    fix, running the two book modes in the order decision -> close DESTROYED
+    the decision with-book artifacts (the close run wrote the shared stem and
+    renamed it afterwards), and this leg then died on a bare
+    ``FileNotFoundError`` naming one file — which reads like a run that was
+    never done, not like a run whose output was deleted after the fact. Naming
+    every missing file and the command that produces it turns "which of the
+    six do I have?" into something the message answers.
+
+    The ``_bookclose`` trio stays OPTIONAL (that is the existing contract: a
+    decision-only run reconciles two grids instead of three), but a HALF
+    present pair is not — that state means a close-mode run died mid-write.
+    """
+    stem = f"factor_eval_{factor_id}"
+    required = [
+        report_dir / f"{stem}_exec_no_book.json",
+        report_dir / f"{stem}_exec_no_book.md",
+        report_dir / f"{stem}_exec_with_book.json",
+        report_dir / f"{stem}_exec_with_book.md",
+    ]
+    missing = [p for p in required if not p.exists()]
+    if missing:
+        raise ReconciliationError(
+            f"reports mode needs the decision-book artifacts of {factor_id!r}, "
+            f"but {len(missing)} of {len(required)} are absent: "
+            f"{[p.name for p in missing]}. Produce them first with: "
+            f"run-factor-eval --config {config_path} --factor {factor_id} "
+            "--book-mode decision"
+        )
+    bookclose = [
+        report_dir / f"{stem}_exec_with_book_bookclose.json",
+        report_dir / f"{stem}_exec_with_book_bookclose.md",
+    ]
+    present = [p for p in bookclose if p.exists()]
+    if len(present) == 1:
+        raise ReconciliationError(
+            f"{factor_id!r} has a HALF-written _bookclose pair "
+            f"({present[0].name} exists, its counterpart does not). Re-run: "
+            f"run-factor-eval --config {config_path} --factor {factor_id} "
+            "--book-mode close"
+        )
 
 
 def run_reports_mode(
@@ -1198,9 +1626,13 @@ def run_reports_mode(
     cfg = load_config(config_path)
     report_dir = report_dir or Path(cfg.output.report_dir)
     report_name = _report_name(factor_id)
+    require_report_inputs(report_dir, factor_id, config_path)
     correction_expected = factor_id == "jump_amount_corr_20"
     registered_sections = REGISTERED_EXTRA_SECTIONS.get(factor_id, ())
-    section_md_prefixes = _registered_section_md_prefixes(registered_sections)
+    section_md_prefixes = _registered_section_md_prefixes(
+        factor_id, registered_sections
+    )
+    description_rewrite = REGISTERED_SPEC_DESCRIPTION_REWRITES.get(factor_id)
     stem = f"factor_eval_{factor_id}"
 
     results: list[ReportDiff] = []
@@ -1225,6 +1657,7 @@ def run_reports_mode(
                 frozen_json, new_json, name=f"{stem}_exec_{book}.json[{label}]",
                 strict=strict, correction_expected=correction_expected,
                 registered_sections=registered_sections,
+                description_rewrite=description_rewrite,
             )
         )
         new_md = (report_dir / f"{stem}_exec_{book}{'_bookclose' if 'bookclose' in label else ''}.md").read_text()
@@ -1338,6 +1771,8 @@ __all__ = [
     "ALLOWED_ADDED_JSON_PATHS",
     "ALLOWED_ADDED_MD_PREFIXES",
     "AnchorsDiff",
+    "BARS_ONLY_FLIP_CONTAMINATION_MAX_CELLS",
+    "BARS_ONLY_FLIP_CONTAMINATION_REL_TOL",
     "EARLY_REGION_HI",
     "EARLY_REGION_LO",
     "FLOAT_TAIL_ABS_TOL",
@@ -1349,8 +1784,13 @@ __all__ = [
     "PANEL_REL_TOL",
     "PanelDiff",
     "REGISTERED_EXTRA_SECTIONS",
+    "REGISTERED_SPEC_DESCRIPTION_REWRITES",
     "ReconciliationError",
     "ReportDiff",
+    "SPARSE_VALID_DAY_TAIL_HI",
+    "SPARSE_VALID_DAY_TAIL_LO",
+    "SPARSE_VALID_DAY_TAIL_MAX_CELLS",
+    "SPARSE_VALID_DAY_TAIL_SYMBOLS",
     "THRESHOLD_FLIP_CONTAMINATION_CROSS_ABS_TOL",
     "THRESHOLD_FLIP_CONTAMINATION_DIRECT_ABS_TOL",
     "THRESHOLD_FLIP_CONTAMINATION_HI",
@@ -1368,6 +1808,7 @@ __all__ = [
     "load_anchor_rows",
     "load_verified_baseline",
     "require_baseline_verified",
+    "require_report_inputs",
     "run_anchors_mode",
     "run_panels_mode",
     "run_reports_mode",
