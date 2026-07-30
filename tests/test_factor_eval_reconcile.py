@@ -1743,19 +1743,20 @@ def test_panels_sparse_tail_whitelist_members_are_each_accepted(symbol):
 
 
 # --------------------------------------------------------------------------- #
-# The sparse-tail class's FALSIFIABLE CONTENT, checked against the real frozen
-# panels: membership is a MECHANISM (the symbol's valid-day emission density on
-# that factor is below that factor's own median), and the whitelist is only
-# that criterion's enumeration. A name that is dense everywhere would falsify
-# the mechanism story — which is the whole reason the class is allowed to exist.
+# The sparse-tail class's NECESSARY-CONDITION GUARD, checked against the real
+# frozen panels. The claim it guards is stated ONCE, on
+# ``SPARSE_VALID_DAY_TAIL_SYMBOLS`` in qt/factor_eval_reconcile.py; this banner
+# deliberately does not restate it, because the same sentence written in four
+# places is how three of the four got corrected and the fourth kept asserting
+# a median gate fifteen lines above code that reads p25.
 # --------------------------------------------------------------------------- #
 _SPARSE_TAIL_FACTORS = (
     "ridge_minute_return_20",
     "valley_ridge_vwap_ratio_20",
     "peak_ridge_amount_ratio_20",
 )
-#: The emission window the medians are taken over: the early region plus the
-#: November cluster the class covers.
+#: The emission window the percentiles are taken over: the early region plus
+#: the November cluster the class covers.
 _DENSITY_LO, _DENSITY_HI = "2021-07-01", "2021-11-30"
 _FROZEN_PANELS = Path("artifacts/refactor_baseline/panels")
 

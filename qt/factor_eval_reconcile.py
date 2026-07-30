@@ -53,10 +53,9 @@ gate that runs at every mode's entry:
      valid-day POOLED factors with a sparse emission grid, whose early-region
      difference is carried forward past the early window instead of averaging
      out inside it. AN ENUMERATION CLASS WITH A NECESSARY-CONDITION GUARD, not
-     a mechanism class: membership is the registered whitelist, and the
-     density property (emission below that factor's own p25) is a guard every
-     member satisfies (18/18) rather than a rule that produces the list — the
-     predicate alone admits ~69x as many pairs. Registered window
+     a mechanism class — the full statement, with its measured numbers, is on
+     ``SPARSE_VALID_DAY_TAIL_SYMBOLS`` and is deliberately NOT repeated here.
+     Registered window
      [2021-11-01, 2021-11-15], a symbol whitelist, at most 20 cells per
      factor, pooled factors only; amplitude unbounded inside (the geometries
      legitimately differ, as in the early region). MUST NOT BE WIDENED AGAIN,
@@ -364,8 +363,10 @@ EARLY_REGION_HI = pd.Timestamp("2021-10-31")
 #: enumeration an enumeration.
 SPARSE_VALID_DAY_TAIL_LO = pd.Timestamp("2021-11-01")
 SPARSE_VALID_DAY_TAIL_HI = pd.Timestamp("2021-11-15")
-#: The enumeration of the criterion above across the THREE affected factors
+#: THE MEMBER SET ITSELF — the observed cells across the THREE affected factors
 #: (ridge_minute_return / valley_ridge_vwap_ratio / peak_ridge_amount_ratio).
+#: Not derived from the density property and not derivable from it: see the
+#: three numbered points above.
 #: ⚠️ An earlier version of this constant held SIX names and ran to 11-12,
 #: derived from only TWO of those factors — because the third was FAILING at
 #: the time and had been recorded as passing (see catalogue §七之七).

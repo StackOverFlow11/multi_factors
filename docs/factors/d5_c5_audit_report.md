@@ -200,6 +200,7 @@ panels/anchors 的入口函数逐字节未变——见 §六.9）。
 | `jump_amount_corr_20` float_tail cap | 101 | **101** | **0 格** |
 | `warmup_sparse_valid_day_tail` 窗口右端 | 2021-11-15 | 该日**恰有 1 格** | **0 天** |
 | `warmup_sparse_valid_day_tail` cell cap | 20 | **19**（peak_ridge） | **1 格** |
+| **sparse tail 密度守卫（p25）** | **门槛 36 天** | **35 天**（`300857.SZ` × peak_ridge） | **1 天** |
 | bars-only flip contamination cap | 25 | 20 | 5 格 |
 | kurtosis 相对界 | 5e-3 | 2.904e-3 | 1.72× |
 | relative_vwap 相对界 | 1e-5 | 1.530e-6 | 6.54× |
@@ -211,6 +212,11 @@ panels/anchors 的入口函数逐字节未变——见 §六.9）。
 - **sparse-tail 窗口右端 0 天余量**：窗口收在 2021-11-15，**恰恰因为该日有且只有 1 格**
   （`688183.SH`）。窗口不是留了余地画的，是**贴着最后一格画的**。
 - **sparse-tail cap 只剩 1 格**：19/20。
+- **sparse-tail 的密度守卫也只剩 1 天**：门槛是各因子的 p25 = 36 个发行日，而最贴边的成员
+  `300857.SZ`（在 `peak_ridge_amount_ratio_20` 上）发行 **35** 天。⚠️ **这道门红了就是
+  STOP-AND-REPORT，不许把门槛放回中位**——那正是反棘轮明令禁止的动作，**而它红的时候恰恰
+  最诱人**（中位门会放行，于是"改一个数就绿了"）。这道门是本轮返工**自己新加的**，性质与
+  上面三条零/近零余量完全相同，所以一并登记在此。
 
 这三处**都不许因为"贴边"而放宽**——反棘轮的裁定正是"顶破了就停下上报"，贴边意味着**下一次
 触发会很快到来且必须被当真**。
@@ -387,13 +393,13 @@ close 书 + 新引擎，与 A 同口径可比）· **C** = decision 书 · **C�
    F1 修复后重跑 rc=0，六格差异全落在已登记类内）。**B 阶段是这一腿的首次观测**；§四的
    A/B/C 分解因此**只有冻结基线一个参照物**（见 §四的告示）。B 中若 reports 出现类外差异：
    **停下上报，不扩类**。
-9. **jump 与 `with_book(decision)` 两格对"值改动"实际不设闸**（背景，**非本 PR 引入**，登记
+8. **jump 与 `with_book(decision)` 两格对"值改动"实际不设闸**（背景，**非本 PR 引入**，登记
    即可、本 PR 不改）：jump 的 reports 腿 593 个 diff 里 **518 个**归入既有登记 #11 的
    `registered_correction_effect`（契约 v1.1 的更正承载一旦存在，值差异即被接受）；
    `with_book(decision)` 格同理是 report-only（登记 #13，`book_view_effect` 全量报告不设闸）。
    **结构性增删（未登记的新增/删除、未登记的 section）仍然设闸。** 读判定时应以
    `no_book` / `bookclose` 两个 strict 格 + panels 腿为值级依据。
-10. **`_make_logger` 是 truncate 模式 —— 重跑会静默销毁同名日志的唯一副本**（登记为已知
+9. **`_make_logger` 是 truncate 模式 —— 重跑会静默销毁同名日志的唯一副本**（登记为已知
    运维风险，**本 PR 不改**：那是行为改动，属另一个 PR）。本轮已被它咬过一次：为验证判据
    改动而重跑 `intraday_amp_cut_10` / `peak_interval_kurtosis_20` 的 panels 腿，覆盖掉了这
    两条 C5 原始日志行（值经"覆盖前逐字抓取 + 离线独立重算"双路复原，见 §二之二 出处）。
