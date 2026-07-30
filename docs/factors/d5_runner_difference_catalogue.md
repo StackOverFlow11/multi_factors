@@ -860,3 +860,87 @@ description 相应改名（`REUSED from ...` → `SHARED taxonomy in ...`）；�
 `classify_panel_differences` / `classify_anchor_row` / `run_panels_mode` / `run_anchors_mode`
 / `load_anchor_rows` / `frozen_panel_path` / `_build_bundle` **一个字节未变** ⇒ panels 与
 anchors 的结论不受影响，**只重跑 reports 腿**。
+
+## 六之三、C6 改造期登记的三件事（lead 2026-07-30 裁定，本节只登记不修）
+
+### (1) D2 手算锚的 engine 比较记录已被冲掉——**丢的是可再验证性，不是结论**
+
+`artifacts/refactor_baseline/hand_anchors_d2.json` 现在只有 20 条 `daily_pending_engine`、
+**0 条 `daily_engine_compared`**：2026-07-25 18:04 一次 `python -m qt.hand_anchor_rows` 重跑
+（PR #103 的 jump 截断修正配套）把 engine 侧的比较结果整段覆盖掉了，而填回它的
+`qt.hand_anchors_engine_values` 已在 C6 退役。
+
+**必须分清的两件事**：
+
+- **D2 手算锚那条腿的结论仍然在案**——PR #89 正文与
+  [`docs/progress/07_factor_layer_refactor.md`](../progress/07_factor_layer_refactor.md) 的 D2 条目
+  白纸黑字记着「**88 行分层手算锚 0 失配**（脚本运行时守卫禁 import 引擎，曾自抓 3 个口径错）」。
+  D2 的验收**不因此动摇**。
+- **丢的是「今天再验一次」的能力**。四条 daily 锚（momentum/reversal/liquidity/overnight_mom）
+  的 engine 侧数字已不在盘上，退役后也无法重算。
+
+因此 `python -m qt.hand_anchors_engine_values --verify` **在今天的树上必然非零退出**，措辞是
+`NOT VERIFIED (nothing recorded)` 而**不是** `FAILED`——"没验"与"验了不过"是两回事，退出码只有
+一位，措辞必须补上这个区分。
+
+⚠️ **它不进标准 gates 清单**（lead 裁定）：一条永远不转绿的红，只会训练人忽略红。
+
+### (2) 冻结目录里有 7 个**不受任何哈希保护**的文件
+
+上一条暴露的问题比它自己大：`hand_anchors_d2.json` 就在
+`artifacts/refactor_baseline/`——那个被反复称作「绝不可覆盖」的目录——**而它确实被覆盖了**。
+于是普查了整个目录（113 个文件）：
+
+| 类别 | 数量 | 保护来源 |
+|---|---|---|
+| `exec_baseline/*` | 77 | **git**：`docs/factors/d5_exec_baseline_manifest.json` 逐文件 sha256 |
+| `panels/*.parquet` | 14 | **git**：`d1_panel_freeze_manifest.md` §六（canonical + file sha） |
+| `panels_d2/*.parquet` | 14 | **git**：同上表（canonical，经 `panel_reconcile --verify`） |
+| `pr_c_cutoff_fix/panels/*.parquet` | 1 | **git**：`pr_c_cutoff_fix_reference_panel.md` §五（canonical） |
+| **无任何哈希覆盖** | **7** | —— |
+
+那 7 个是：`hand_anchors_d2.json`、`manifest.json`、`manifest.md`、`manifest_d2.json`、
+`reconcile_d2.md`、`pr_c_cutoff_fix/manifest.json`、`pr_c_cutoff_fix/manifest.md`。
+**它们之间还有程度差别，不要一概而论**：
+
+- `manifest.json` / `manifest_d2.json` / `pr_c manifest.json` —— **自身字节未被钉，但内容受约束**：
+  `panel_freeze --verify` 把每一行（canonical / file sha / rows / 日期 / symbol 数 / NaN 数 /
+  mean / std）与 git 文档、与盘上面板三方互核，header 的 `producing_git_sha` 也与文档核。
+  改内容会被抓，改字节（重排、格式化）不会。
+- `manifest.md` / `reconcile_d2.md` / `pr_c manifest.md` —— 渲染产物，内容可从别处推导，风险低。
+- **`hand_anchors_d2.json` —— 真正无保护**：没有任何一处记着它该长什么样，而它是唯一一个
+  **已被实际覆盖**的。
+
+**要记住的那句话**：「本次改动冻结基线一个字节未写」是**关于今天这次操作**的陈述，
+**不是关于该目录不可变的陈述**。目录本身没有强制不可变性——上面这 7 个文件谁都能改，
+其中 1 个已经被改过。
+
+### (3) C5 对账 harness 读这两样东西时**不核任何哈希**
+
+- `qt/factor_eval_reconcile.py:1539` —— `pd.read_parquet(frozen_panel_path(...))` 裸读冻结 D1 面板；
+- `qt/factor_eval_reconcile.py:1467` —— 裸读 `hand_anchors_d2.json`（anchors 腿）。
+
+**两句话都必须写下，缺一句都会误导**：
+
+- **C5 的四腿全绿，是在一棵从未经过哈希核对的基线上得出的。** 而 (2) 已经证明这个目录**能**被写，
+  所以这不是假想风险。
+- **同时**：今天 `python -m qt.panel_freeze --verify` 对 15 个面板逐一重算 canonical hash 与整条
+  manifest 行、**15/15 通过**，`panel_reconcile --verify` 14/14 `max_rel=0.0`
+  ⇒ **面板此刻完好，C5 的结论不受影响**。
+
+**处置**：修在**下一个 PR（删除 PR）**——那个 PR 的主题正是「让 frozen-forever 名副其实」，
+把 `qt.panel_freeze.verify_frozen_panels` 接进 C5 harness 的读入点正属于它。**本 PR 不动 C5 harness。**
+
+### (4) 第三个工具的退役理由：一条如实记录的不对称
+
+C6 退役的三个工具对 11 个旧 runner 的依赖**不是一个量级**：
+
+| 工具 | 对旧 runner 的依赖 | 删 runner 后是否必然失效 |
+|---|---|---|
+| `qt/panel_freeze.py` | `minute_recipes()` import **全部 11 个模块**并调其私有 `_load_*_panel` | **是** |
+| `qt/panel_reconcile.py` | 走 `qt.panel_freeze` 的 recipes，同上 | **是** |
+| `qt/hand_anchors_engine_values.py` | 只用了 `qt.eval_jump_amount_corr._check_preconditions` **一个前置检查** | **否**——改指统一 runner 即可继续活着 |
+
+**裁定维持**（owner 2026-07-28 的裁定是「退役重生成能力、基线 frozen-forever」，那是**目的**，
+不是从「依赖 11 个 runner」推出来的推论；依赖强弱不改变裁定）。但如实记下：
+**第三条退役真的放弃了一个未必注定失效的能力**，这一点已单独提给 owner。
