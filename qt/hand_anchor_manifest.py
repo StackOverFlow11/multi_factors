@@ -51,6 +51,12 @@ INVENTORY_FIELDS = (
     "daily_pending_engine_rows",
     "daily_engine_compared_rows",
     "all_ok_frozen14",
+    # ``top_level_keys`` was STATED in the manifest but never compared, so a
+    # record could grow a key -- ``all_ok_daily``, say -- and be accepted with a
+    # refreshed sha, while the manifest's most prominent prose says that key is
+    # ABSENT. "Pinned is not complete" was resting on prose, and prose stops
+    # nothing. Counts alone cannot see a key appear or vanish; the key SET can.
+    "top_level_keys",
 )
 
 
@@ -74,6 +80,7 @@ def record_inventory(payload: dict) -> dict:
         "daily_pending_engine_rows": len(payload.get("daily_pending_engine", []) or []),
         "daily_engine_compared_rows": len(payload.get("daily_engine_compared", []) or []),
         "all_ok_frozen14": payload.get("all_ok_frozen14"),
+        "top_level_keys": sorted(payload),
     }
 
 

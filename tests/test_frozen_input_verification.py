@@ -331,3 +331,118 @@ def test_both_frozen_panel_reads_go_through_the_gateway():
         body = ast.get_source_segment(source, func) or ""
         assert "read_parquet" in body, f"{name} no longer reads a panel"
         assert "verified_frozen_panel_path" in body, f"{name} bypasses the gateway"
+
+
+# --------------------------------------------------------------------------- #
+# The anchors read site: that the check is WIRED, not merely that it works
+# --------------------------------------------------------------------------- #
+def _anchor_repo(tmp_path: Path, *, tamper: bool) -> Path:
+    """A miniature repo_root holding the record and its git-tracked manifest.
+
+    Built through the production inventory helper, so the manifest states what
+    the record actually contains — then optionally tampered AFTER the manifest
+    is written, which is the real-world shape (bytes drift, expectation does
+    not).
+    """
+    import hashlib
+
+    from qt.factor_eval_reconcile import ANCHORS_JSON
+    from qt.hand_anchor_manifest import DEFAULT_MANIFEST
+
+    payload = {
+        "seed": 1,
+        "tolerance": 1e-12,
+        "frozen14": [
+            {"factor_id": "alpha_20", "date": "2024-01-02", "symbol": "000001.SZ",
+             "hand": 1.0, "engine": 1.0, "rel_diff": 0.0, "ok": True},
+        ],
+        "daily_pending_engine": [],
+        "all_ok_frozen14": True,
+    }
+    record = tmp_path / ANCHORS_JSON
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    manifest = tmp_path / DEFAULT_MANIFEST
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema": MANIFEST_SCHEMA,
+                "sha256": hashlib.sha256(record.read_bytes()).hexdigest(),
+                "contents": record_inventory(payload),
+            }
+        ),
+        encoding="utf-8",
+    )
+    if tamper:
+        payload["frozen14"][0]["ok"] = False  # flip a verdict after pinning
+        record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return tmp_path
+
+
+def test_the_anchors_read_site_returns_rows_when_the_record_is_intact(tmp_path: Path):
+    """GREEN CONTROL. Without it, the refusal test below could pass simply
+    because load_anchor_rows raises on everything."""
+    from qt.factor_eval_reconcile import load_anchor_rows
+
+    rows = load_anchor_rows("alpha_20", _anchor_repo(tmp_path, tamper=False))
+    assert len(rows) == 1 and rows[0]["symbol"] == "000001.SZ"
+
+
+def test_the_anchors_read_site_refuses_a_record_that_disagrees_with_its_manifest(
+    tmp_path: Path,
+):
+    """BEHAVIOURAL, on purpose — this pins the WIRING, which is what was missing.
+
+    The verifier itself was thoroughly tested while nothing asserted that
+    ``load_anchor_rows`` calls it: replacing that call with ``pass`` left the
+    whole suite green. That is the identical shape as the first A/B mutation
+    (function pinned, wiring not), surviving in the third read site after the
+    other two were fixed.
+
+    An AST assertion would only show the call is written down. A call with the
+    wrong argument, or one whose exception is swallowed, passes AST and fails
+    here — so the load-bearing test is the one that actually feeds the function
+    a bad record and demands a refusal.
+    """
+    from qt.factor_eval_reconcile import ReconciliationError, load_anchor_rows
+
+    with pytest.raises(ReconciliationError, match="sha256"):
+        load_anchor_rows("alpha_20", _anchor_repo(tmp_path, tamper=True))
+
+
+def test_the_anchors_read_site_refuses_before_it_parses(tmp_path: Path):
+    """Order matters: a corrupt record must be refused for the RIGHT reason.
+    If parsing came first, a tampered-and-unparseable record would surface as a
+    JSON error and the integrity failure would never be named."""
+    from qt.factor_eval_reconcile import ANCHORS_JSON, ReconciliationError, load_anchor_rows
+
+    repo = _anchor_repo(tmp_path, tamper=False)
+    (repo / ANCHORS_JSON).write_text("{ not json at all", encoding="utf-8")
+    with pytest.raises(ReconciliationError, match="sha256"):  # not a JSONDecodeError
+        load_anchor_rows("alpha_20", repo)
+
+
+def test_a_new_key_cannot_appear_without_the_manifest_noticing(tmp_path: Path):
+    """LOW-1: counts alone cannot see a key APPEAR.
+
+    The reviewer added ``all_ok_daily: true`` to the record, refreshed the sha,
+    and it was accepted — while the manifest's most prominent prose says exactly
+    that key is absent. The key SET is now compared, so "pinned is not complete"
+    no longer rests on prose.
+    """
+    import hashlib
+
+    record, manifest = _record(tmp_path)
+    assert verify_anchor_record(record, manifest)  # green control
+
+    payload = json.loads(record.read_text())
+    payload["all_ok_daily"] = True  # the key the manifest says is ABSENT
+    record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    refreshed = json.loads(manifest.read_text())
+    refreshed["sha256"] = hashlib.sha256(record.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(refreshed), encoding="utf-8")
+
+    with pytest.raises(AnchorRecordMismatch, match="top_level_keys"):
+        verify_anchor_record(record, manifest)
