@@ -6,11 +6,13 @@ NEVER IMPORT ``factors.*`` OR ``data.clean.*`` (the #79 rule: a hand check
 that imports the engine inherits the engine's bugs); a runtime guard at the
 bottom of the module raises if any such module is loaded. The engine side of
 each comparison is read FROM DISK (the ``panels_d2`` parquet files the D2
-reconciliation wrote) for the 14 frozen factors; the four ops-rewritten daily
+reconciliation wrote) for the 14 frozen factors. The four ops-rewritten daily
 factors without a frozen panel (momentum/reversal/liquidity/overnight_mom) are
-compared by the companion ``qt.hand_anchors_engine_values`` (which may import
-the engine — the INDEPENDENCE requirement binds the hand computation, not the
-comparer).
+selected and hand-computed here, but are NO LONGER COMPARED: the companion that
+did it, ``qt.hand_anchors_engine_values``, had its engine-side rebuild retired
+in D5 C6, so those rows stay in ``daily_pending_engine``. The independence rule
+that let the companion import the engine still reads correctly — it binds the
+hand computation, not the comparer — it simply has nothing left to license.
 
 Stratified sampling (R12): per factor, one row from each APPLICABLE boundary
 class — (a) the warm-up END (the symbol's first finite value; verified by hand
