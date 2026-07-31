@@ -30,15 +30,18 @@ RANGE OF THE INVENTORY CHECK -- read this before relying on it
 --------------------------------------------------------------
 Measured from the CURRENT pinned record (70 / 20 / 0 / False), not reasoned:
 
-* a plain ``qt.hand_anchor_rows`` rerun changes NO inventory field. Same seed,
-  same stratified selection, so the row counts and the key set come out
-  identical while the values inside move. Such a rerun is REFUSED while the sha
-  is stale and ACCEPTED the moment the sha is honestly refreshed -- so on that
-  path the inventory contributes nothing, and **the protection is the human
-  reading the git diff, not this check**;
-* it does still bite where counts or keys move: a record that GAINS
-  ``daily_engine_compared`` rows, or grows an ``all_ok_daily`` key, is refused
-  even with a matching sha.
+* it bites wherever the recorded SHAPE moves, which is more than row counts:
+  the three counts, the KEY SET, and the ``all_ok_frozen14`` verdict flag are
+  all compared. A record that gains ``daily_engine_compared`` rows, grows an
+  ``all_ok_daily`` key, or flips that flag is refused even with a matching sha;
+* it contributes NOTHING when all five stay identical -- which is what a plain
+  ``qt.hand_anchor_rows`` rerun produces today. Same seed and same stratified
+  selection give the same counts and key set; the same inputs give the same
+  flag; only the values inside move. Such a rerun is REFUSED while the sha is
+  stale and ACCEPTED the moment the sha is honestly refreshed, so on that path
+  **the protection is the human reading the git diff, not this check**.
+  (A rerun whose verdict flag DID flip would be caught -- the exemption is the
+  unchanged shape, not the act of rerunning.)
 
 The direction that motivated the check -- ``daily_engine_compared`` silently
 going to zero, the 2026-07-25 accident -- is no longer reachable FROM HERE: that

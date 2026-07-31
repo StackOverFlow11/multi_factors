@@ -519,5 +519,41 @@ def test_the_range_section_states_where_the_protection_actually_is():
     assert "RANGE OF THE INVENTORY CHECK" in doc
     assert "the protection is the human reading the git diff" in doc
     assert "no longer reachable FROM HERE" in doc
+    # NOT NARROWER than reality either: the flag is neither a count nor a key,
+    # and it IS compared. Saying "counts or keys" would understate the guard and
+    # invite someone to add a redundant one.
+    assert "the ``all_ok_frozen14`` verdict flag" in doc
+    assert "more than row counts" in doc
     # the old overclaim must not survive in the function docstring either
     assert "silently went to zero" not in flat(module.verify_anchor_record.__doc__)
+
+
+def test_the_inventory_also_bites_when_the_verdict_flag_flips(tmp_path: Path):
+    """The direction that showed the first RANGE wording was too NARROW.
+
+    ``all_ok_frozen14`` is a bool: neither a row count nor a key. Describing the
+    guard as catching "counts or keys" understated it — and an understated range
+    is a defect in its own right, because it invites someone to add a redundant
+    guard for something already covered.
+    """
+    import hashlib
+
+    record, manifest = _record(tmp_path)
+    payload = json.loads(record.read_text())
+    before = record_inventory(payload)
+    payload["all_ok_frozen14"] = not payload["all_ok_frozen14"]
+    record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    after = record_inventory(payload)
+    assert after["top_level_keys"] == before["top_level_keys"], "premise: no key moved"
+    assert all(
+        after[k] == before[k]
+        for k in ("frozen14_rows", "daily_pending_engine_rows", "daily_engine_compared_rows")
+    ), "premise: no count moved"
+
+    refreshed = json.loads(manifest.read_text())
+    refreshed["sha256"] = hashlib.sha256(record.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(refreshed), encoding="utf-8")
+
+    with pytest.raises(AnchorRecordMismatch, match="all_ok_frozen14"):
+        verify_anchor_record(record, manifest)
