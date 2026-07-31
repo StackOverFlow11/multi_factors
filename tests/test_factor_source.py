@@ -288,7 +288,17 @@ def test_the_persisted_factor_panel_keeps_the_market_panel_grid(
 
     stored = pd.read_parquet(result.factor_path)
     market = pd.read_parquet(result.data_path)
-    assert len(stored) == len(market)
+
+    # The GRID, not the row count. `len(stored) == len(market)` was what this
+    # asserted, and it passes under a reduction that keeps the length and moves
+    # every label -- measured: shifting each date by one day left it green while
+    # three other tests went red. The row count is the weakest observable that
+    # this test's name could possibly have meant.
+    grid = ["date", "symbol"]
+    pd.testing.assert_index_equal(
+        stored.set_index(grid).index.sort_values(),
+        market.set_index(grid).index.sort_values(),
+    )
 
 
 def _write_cfg_file(tmp_path: Path, example_config_path: str, *, source: str) -> Path:
@@ -312,39 +322,11 @@ def _write_cfg_file(tmp_path: Path, example_config_path: str, *, source: str) ->
 # --------------------------------------------------------------------------- #
 # mid-migration: the runners D6a does not move must still be able to call
 # --------------------------------------------------------------------------- #
-#: Runners still on the pre-D6a ``_compute_factor_panel`` path. D6b empties this
-#: list; D6d deletes the function. It is spelled out here because those runners
-#: need real tushare data, so NOTHING in the suite executes their call — the
-#: first D6a draft changed the shared signature under them and every test stayed
-#: green (the break was found by reading the call sites, not by a failure).
-UNMIGRATED_RUNNERS = ("qt/oos_stability.py", "qt/subset_validation.py")
-
-
-@pytest.mark.parametrize("module_path", UNMIGRATED_RUNNERS)
-def test_an_unmigrated_runners_call_still_matches_the_legacy_signature(module_path):
-    """Their call is parsed from source and bound against the LIVE signature."""
-    import ast
-    import inspect
-
-    from qt import pipeline
-
-    repo_root = Path(__file__).resolve().parents[1]
-    tree = ast.parse((repo_root / module_path).read_text(encoding="utf-8"))
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_compute_factor_panel"
-    ]
-    assert calls, f"{module_path} no longer calls _compute_factor_panel"
-
-    signature = inspect.signature(pipeline._compute_factor_panel)
-    for call in calls:
-        signature.bind(
-            *["<arg>"] * len(call.args),
-            **{kw.arg: "<arg>" for kw in call.keywords if kw.arg},
-        )
+# WHICH files still call the pre-D6a entry point, and whether their calls still
+# bind, is guarded by ``tests/test_legacy_factor_panel_callers.py`` -- a census
+# DERIVED from the repo. It replaced a hand-kept pair of filenames here, which a
+# third caller in an unnamed file walked straight past. What stays here is the
+# only thing that actually EXERCISES the legacy path.
 
 
 def test_the_legacy_entry_point_still_computes(tmp_path, example_config_path):
