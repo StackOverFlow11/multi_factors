@@ -917,8 +917,17 @@ anchors 的结论不受影响，**只重跑 reports 腿**。
 
 ### (3) C5 对账 harness 读这两样东西时**不核任何哈希**
 
-- `qt/factor_eval_reconcile.py:1539` —— `pd.read_parquet(frozen_panel_path(...))` 裸读冻结 D1 面板；
-- `qt/factor_eval_reconcile.py:1467` —— 裸读 `hand_anchors_d2.json`（anchors 腿）。
+**三处**（`qt/factor_eval_reconcile.py`，**按符号名记，不记行号**——行号会随任何平移失效，
+本 PR 自己就是证据：初稿写的 `:1539` 取自 `main`，而本分支的 `711c0a8` 把该文件平移了 +3）：
+
+| 符号 | 读什么 | 何时是唯一读入点 |
+|---|---|---|
+| `run_panels_mode` | `pd.read_parquet(frozen_panel_path(...))` 冻结 D1 面板 | `--mode panels` |
+| `load_anchor_rows` | `hand_anchors_d2.json` | `--mode anchors` |
+| `run_anchors_mode` | 经 `frozen_panel_path()` 再读一次冻结 D1 面板，求 warmup 日期网格 | **`--mode anchors` 单跑时，这是唯一的冻结面板读入点** |
+
+⚠️ 第三处是评审补的，初稿漏了。**清单不全 = 那一处留着永远不验**——删除 PR 的处置正是
+「把 verify 接进读入点」，接两处而漏一处，等于给自己发一张只覆盖三分之二的通行证。
 
 **两句话都必须写下，缺一句都会误导**：
 
@@ -929,7 +938,21 @@ anchors 的结论不受影响，**只重跑 reports 腿**。
   ⇒ **面板此刻完好，C5 的结论不受影响**。
 
 **处置**：修在**下一个 PR（删除 PR）**——那个 PR 的主题正是「让 frozen-forever 名副其实」，
-把 `qt.panel_freeze.verify_frozen_panels` 接进 C5 harness 的读入点正属于它。**本 PR 不动 C5 harness。**
+把 `qt.panel_freeze.verify_frozen_panels` 接进 C5 harness 的**三个**读入点正属于它。
+**本 PR 不动 C5 harness。**
+
+### (3之二) `hand_anchor_rows` 的 payload 只写 pending、不写 compared —— 已知后果，本 PR 不改行为
+
+`qt/hand_anchor_rows.py::run_hand_anchors` 每次成功跑完都会把 `hand_anchors_d2.json` 整份重写，
+payload 只含 `daily_pending_engine`，**不含 `daily_engine_compared`** ⇒ **它正是 2026-07-25 冲掉
+engine 比较记录的那个动作**。而在本 PR 之前，它跑完还会 print 「run python -m
+qt.hand_anchors_engine_values」—— **用户刚把记录冲掉，程序就指他去跑一条现在会 raise 的命令**。
+
+- **那行 print 已在本 PR 改掉**（改为指向 `--verify` 并说明记录已无法重建；措辞
+  author-once 于 `qt.hand_anchors_d2.ENGINE_COMPARISON_POINTER`，printer 只组合不复述）。
+- **「`hand_anchor_rows` 是否应当被禁止覆盖冻结目录里的记录」属于行为变更**，与
+  §六之三(2) 的「该目录没有强制不可变性」是同一件事 ⇒ **并进删除 PR**（与上面三个读入点的
+  verify 接线一起做）。**本 PR 不改它的写入行为。**
 
 ### (4) 第三个工具的退役理由：一条如实记录的不对称
 

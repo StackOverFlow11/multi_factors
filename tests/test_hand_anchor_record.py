@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from qt.hand_anchors_d2 import TOL
+from qt.hand_anchors_d2 import TOL, pending_engine_line
 from qt.hand_anchors_engine_values import (
     DAILY_FACTORS,
     AnchorRecordVerification,
@@ -200,3 +200,114 @@ def test_verify_writes_nothing_into_the_record(tmp_path: Path):
 )
 def test_the_relative_difference_rule_matches_the_recorded_one(hand, engine, expected):
     assert relative_difference(hand, engine) == expected
+
+
+# --------------------------------------------------------------------------- #
+# The run-summary pointer (review MEDIUM-1)
+# --------------------------------------------------------------------------- #
+def test_the_pending_line_does_not_send_anyone_to_a_command_that_raises():
+    """`hand_anchor_rows` printed "(run python -m qt.hand_anchors_engine_values)"
+    on every successful run — and that command now raises.
+
+    Worse in context: the same function writes `daily_pending_engine` WITHOUT
+    `daily_engine_compared`, so it is the thing that empties the record. A user
+    had just wiped the comparison and was then pointed down a dead end.
+    """
+    line = pending_engine_line(20)
+    assert "20" in line
+    assert "python -m qt.hand_anchors_engine_values --verify" in line
+    assert "RETIRED" in line
+    assert "no longer be completed" in line
+    # the bare invocation must not appear as an instruction
+    assert "hand_anchors_engine_values)" not in line
+    assert "run python -m qt.hand_anchors_engine_values\n" not in line
+
+
+def test_the_pointer_is_composed_by_the_printer_not_restated():
+    """Author-once, structurally: the printing module must carry NO literal of
+    its own. A regex cannot assert that no other sentence points at the retired
+    command; "there is no other sentence in this file" can."""
+    source = (Path(__file__).resolve().parents[1] / "qt" / "hand_anchor_rows.py").read_text()
+    # The INVOCATION is what must exist once. Naming the module in prose is
+    # fine and useful; telling someone to run it is the thing that goes stale.
+    assert "python -m qt.hand_anchors_engine_values" not in source
+    assert "pending_engine_line" in source
+
+
+def test_the_pointer_lives_where_the_pure_side_can_reach_it():
+    """It is in `hand_anchors_d2`, not in the retired module, because the latter
+    imports the engine and the hand side must never load it. If this ever moves,
+    `hand_anchor_rows` would drag `data.clean` in and break hand-anchor purity."""
+    import qt.hand_anchors_d2 as pure
+
+    assert isinstance(pure.ENGINE_COMPARISON_POINTER, str)
+    # AST, not substring: the module has a COMMENT naming data.clean to explain
+    # why it stays out, and a text match cannot tell that from an import.
+    import ast
+
+    for name in ("hand_anchors_d2.py", "hand_anchor_rows.py"):
+        path = Path(__file__).resolve().parents[1] / "qt" / name
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            targets: list[str] = []
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                targets = [node.module or ""]
+            for target in targets:
+                assert not target.startswith(("factors", "data.clean")), (
+                    f"{name} imports the engine ({target}); the hand side must not"
+                )
+
+
+RETIRED_INVOCATIONS = (
+    "python -m qt.panel_freeze",
+    "python -m qt.panel_reconcile",
+    "python -m qt.hand_anchors_engine_values",
+)
+#: Sites allowed to name a retired invocation WITHOUT `--verify`, each because
+#: the tool is the SUBJECT of a retirement statement rather than an instruction.
+#: Reviewed one by one; anything new must be looked at, not appended blindly.
+NAMES_A_RETIRED_TOOL_AS_SUBJECT = {
+    "qt/panel_freeze.py",              # the `tool` argument of retirement_message
+    "qt/panel_reconcile.py",           # ditto
+    "qt/hand_anchors_engine_values.py",  # ditto
+    "docs/factors/d1_panel_freeze_manifest.md",  # "(不带 --verify) 现在是可读的报错"
+    "docs/factors/pr_c_cutoff_fix_reference_panel.md",  # archived [RETIRED, C6] block
+}
+
+
+def test_no_new_file_starts_instructing_people_to_run_a_retired_tool():
+    """An inventory net, NOT a meaning check — range stated so it is not trusted
+    further than it reaches.
+
+    It cannot tell an instruction from a description; it only notices when a NEW
+    file starts naming a retired invocation without `--verify`. That is worth
+    having because the defect it follows was a pre-existing line in a file the
+    author never scanned: fixing the two documents and missing the runtime print
+    is exactly the #82 shape — a guard that only looks where you already looked
+    confirms only what you already know. `docs/progress/` is excluded as a
+    historical archive: it records what was true then.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for path in sorted(repo.rglob("*")):
+        if path.suffix not in {".py", ".md", ".yaml", ".txt"} or not path.is_file():
+            continue
+        relative = path.relative_to(repo).as_posix()
+        if relative.startswith(("docs/progress/", ".git/", "tests/")):
+            continue
+        text = path.read_text(encoding="utf-8")
+        for call in RETIRED_INVOCATIONS:
+            start = text.find(call)
+            while start != -1:
+                # WINDOW, not line: these sentences wrap, so `--verify` routinely
+                # lands on the following source line.
+                window = text[start : start + len(call) + 40]
+                if "--verify" not in window and relative not in NAMES_A_RETIRED_TOOL_AS_SUBJECT:
+                    number = text.count("\n", 0, start) + 1
+                    offenders.append(f"{relative}:{number}: {call}")
+                start = text.find(call, start + 1)
+    assert not offenders, (
+        "these name a retired invocation without --verify, from a file not on the "
+        "reviewed subject list:\n  " + "\n  ".join(offenders)
+    )

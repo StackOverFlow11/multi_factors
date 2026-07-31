@@ -32,10 +32,14 @@ Hand reimplementation notes (all plain arithmetic, no engine helpers):
 * qfq for the daily factors: raw close x af / af(symbol's last panel day) —
   the ``front_adjust`` anchor convention, re-derived here from its definition.
 
-Run AFTER ``python -m qt.panel_reconcile`` produced ``panels_d2``:
+``panels_d2`` is FROZEN (D5 C6): ``qt.panel_reconcile`` no longer rebuilds it,
+so the files this module reads are simply there. Run:
 
     python -m qt.hand_anchors_d2            # select + hand-compute + compare (14)
-    python -m qt.hand_anchors_engine_values # compare the 4 daily factors
+
+The companion that filled in the four daily factors' engine values is RETIRED
+(D5 C6) -- see ``ENGINE_COMPARISON_POINTER`` below for what to run instead and
+why those rows can no longer be completed.
 """
 
 from __future__ import annotations
@@ -54,6 +58,27 @@ OUT_JSON = REPO / "artifacts/refactor_baseline/hand_anchors_d2.json"
 WINDOW_LO = pd.Timestamp("2021-07-01")
 WINDOW_HI = pd.Timestamp("2026-06-30")
 TOL = 1e-12
+
+#: The ONE authored sentence about what an operator can still do with the daily
+#: engine comparison, and what they cannot. ``qt.hand_anchor_rows`` composes it
+#: rather than restating it: a regex cannot assert that no other sentence points
+#: at the retired command, but "there is no other sentence" can (methodology #2).
+#:
+#: It lives HERE, not in ``qt.hand_anchors_engine_values``, because that module
+#: imports ``qt.panel_freeze`` -> ``data.clean.schema``, and the hand side must
+#: never load the engine (``assert_no_engine_imports`` below). An author-once
+#: home has to be reachable from the pure side.
+ENGINE_COMPARISON_POINTER = (
+    "the engine-side comparison is RETIRED (D5 C6) and these rows can no longer "
+    "be completed from this tree; run `python -m qt.hand_anchors_engine_values "
+    "--verify` to re-check whatever comparison is already recorded"
+)
+
+
+def pending_engine_line(n_pending: int) -> str:
+    """The run-summary line about daily rows awaiting an engine comparison."""
+    return f"daily rows pending engine comparison: {n_pending} — {ENGINE_COMPARISON_POINTER}"
+
 SEED = 20260724
 
 # ---- pinned definition constants, restated as PLAIN NUMBERS (the point of a
