@@ -937,9 +937,7 @@ anchors 的结论不受影响，**只重跑 reports 腿**。
   manifest 行、**15/15 通过**，`panel_reconcile --verify` 14/14 `max_rel=0.0`
   ⇒ **面板此刻完好，C5 的结论不受影响**。
 
-**处置**：修在**下一个 PR（删除 PR）**——那个 PR 的主题正是「让 frozen-forever 名副其实」，
-把 `qt.panel_freeze.verify_frozen_panels` 接进 C5 harness 的**三个**读入点正属于它。
-**本 PR 不动 C5 harness。**
+**处置：三处已在删除 PR（C6 part 2）接上，见下 §六之四。**
 
 ### (3之二) `hand_anchor_rows` 的 payload 只写 pending、不写 compared —— 已知后果，本 PR 不改行为
 
@@ -967,3 +965,56 @@ C6 退役的三个工具对 11 个旧 runner 的依赖**不是一个量级**：
 **裁定维持**（owner 2026-07-28 的裁定是「退役重生成能力、基线 frozen-forever」，那是**目的**，
 不是从「依赖 11 个 runner」推出来的推论；依赖强弱不改变裁定）。但如实记下：
 **第三条退役真的放弃了一个未必注定失效的能力**，这一点已单独提给 owner。
+
+
+## 六之四、C6 删除 PR 的收口（2026-07-31）
+
+### 已做：三个裸读点全部接上校验
+
+| 读入点 | 接了什么 | 失败形态 |
+|---|---|---|
+| `run_panels_mode` | `verified_frozen_panel_path()` → 按 **git 里的**哈希核该面板 | `ReconciliationError`，点名因子与两个哈希 |
+| `run_anchors_mode` | 同上（warmup 网格那次读） | 同上 |
+| `load_anchor_rows` | `verify_anchor_record()` → 核 `hand_anchors_d2.json` 的 **sha + 内容清单** | `ReconciliationError` |
+
+**按因子校验，不是整棵扫**：harness 本来就按因子跑，为读 1 个面板而验 15 个（3.0s vs 0.2s），
+是把校验变成大家会去关掉的东西；**一个因为太慢而被关掉的校验等于没有**。
+**jump 的分叉写在代码注释里**：两棵树都有 `jump_amount_corr_20.parquet` 而它们是**两个不同定义**
+（D1 是 v1.0 未截断、pr_c 是 v1.1 已截断），`frozen_panel_path()` 把 jump 路由到 pr_c，
+所以校验**按路径**跟着同一个分叉走（不按 factor_id 重新推导，两者因此不会漂）。
+
+### 已做：`hand_anchors_d2.json` 用 git 里的 manifest 钉住（方案 C-1）
+
+新 `docs/factors/d5_hand_anchor_record_manifest.json`（**入 git**，记录本身仍 gitignored）。
+**为什么是 C-1 而不是更强的 C-2**：C5 的 anchors 腿刚刚以 **11/11** 收口，比的正是盘上这份字节；
+C-2 需要重跑，**而重跑就会覆盖它** ⇒ C5 的一条腿会变成「对着一份已不存在的记录验过」。
+**所以先钉住 C5 实际跑过的那份**。
+
+⚠️ **manifest 明写这份被钉住的记录「有什么、没有什么」，并且清单是被程序核对的、不只是散文**：
+`daily_engine_compared` **为 0 行**、`all_ok_daily` 缺席。**钉住一份残缺记录可以，把它说成完整的不行。**
+（D2 手算锚的**结论**没丢——「88 行分层手算锚 0 失配」在 PR #89 与 `docs/progress/07` 在案；
+丢的是**重新验一次**的能力。）另记：`all_ok_frozen14` 为 false 是**预期**——5 行 jump 失配源于
+手算侧已按 PR #103 截断而冻结的 panels_d2 按约定保持未截断，见
+`pr_c_cutoff_fix_reference_panel.md` §六之四。
+
+### 已做：`hand_anchor_rows` 覆盖需显式表态（方案 D-1）
+
+目标已存在 → **拒绝**，除非 `--allow-overwrite`（或 `--selection` 写别处）。拒绝信息按**差集**
+算出「这次跑不会重新产生的键」，所以将来新增键**不靠谁记得**去维护清单；并说明
+`daily_engine_compared` 无法重建、以及覆盖后必须同 commit 更新 manifest（否则读侧会拒新字节）。
+**检查放在 ~7 分钟计算之前**，因为在长跑结束时才说"拒绝"，教出来的是反射性加 `--allow-overwrite`；
+`PRODUCED_RECORD_KEYS` 在写出时被断言等于实际 payload 键集，所以它不会与现实漂移。
+
+**D-3（把旧 `daily_engine_compared` carry forward）已否决，禁翻烧饼**：它会把**对着旧引擎值算出的**
+比较结果拼进**刚重算的** `frozen14` ⇒ **一份内部不自洽的记录，比诚实的缺失更糟**。
+记在案是因为**它很诱人**——把否决过的诱人选项写进案卷，比只写选中的那个有用。
+
+### 未做，留后续 PR（C-2 + D-4，是同一件事）
+
+1. **C-2 provenance**：让 `hand_anchor_rows` 把它读过的 `panels_d2` canonical hash 写进记录，
+   读侧核「锚是对着现在要比的这批面板算的」——**把记录绑到它所描述的东西**，而不只是「自钉住以来没变」。
+2. **D-4 搬家**：把该记录移出 `artifacts/refactor_baseline/`。它**可再生**（`hand_anchor_rows` 至今可跑），
+   而那个目录写着「无法再生、绝不覆盖」——**一条对 1/113 文件为假的规则**，正是本仓一直在猎的那类缺陷。
+
+两件必须一起做，且那个 PR **要连 anchors 腿一起重验**（C-2 要求重跑，重跑即覆盖 C5 验过的字节）。
+本 PR 主职是删除（已 −9,188 行），再叠文件搬迁 + 路径改 + 文档改，是在最不该出错的 PR 里加出错面。

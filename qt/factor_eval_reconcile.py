@@ -203,6 +203,12 @@ from qt.exec_baseline_freeze import (
     FACTORS as REPORT_FACTOR_NAMES,
     FrozenExecBaseline,
 )
+from qt.hand_anchor_manifest import (
+    DEFAULT_MANIFEST as ANCHOR_RECORD_MANIFEST,
+    AnchorRecordMismatch,
+    verify_anchor_record,
+)
+from qt.panel_freeze import FrozenPanelMismatch, verify_frozen_panel_file
 
 # --------------------------------------------------------------------------- #
 # Constants (each pre-registered in the handoff §3 / catalogue §七/§七之二)
@@ -1392,6 +1398,39 @@ def frozen_panel_path(factor_id: str, repo_root: Path) -> Path:
     return Path(repo_root) / FROZEN_PANELS_DIR / f"{factor_id}.parquet"
 
 
+def verified_frozen_panel_path(
+    factor_id: str, repo_root: Path, *, required: bool = True
+) -> Path | None:
+    """``frozen_panel_path`` + the git-tracked hash check, as THE only gateway.
+
+    Every read of a frozen panel in this module goes through here, so "did we
+    check this one?" cannot differ between read sites. Until D5 C6 nothing
+    checked them at all: the harness read the parquet directly, and the frozen
+    directory is demonstrably writable (one file in it was overwritten on
+    2026-07-25), so a drifted baseline would have reconciled silently.
+
+    The mismatch is re-raised as ``ReconciliationError`` because that is what the
+    CLI's error handling knows how to print; a bare RuntimeError would surface
+    as a traceback.
+
+    THE ONLY GATEWAY: ``frozen_panel_path`` must not be called anywhere else in
+    this module, and a test enforces that by AST. Otherwise "did we verify this
+    read?" becomes a per-site question, and the site that forgets is exactly the
+    one that will not announce itself.
+    """
+    path = frozen_panel_path(factor_id, repo_root)
+    if not path.exists() and not required:
+        # The anchors leg tolerates an absent panel (only bounded factors have a
+        # warmup grid to read). Absence is not drift; a missing file that WAS
+        # required is caught inside the verifier.
+        return None
+    try:
+        verify_frozen_panel_file(path, factor_id, repo_root=repo_root)
+    except FrozenPanelMismatch as exc:
+        raise ReconciliationError(str(exc)) from exc
+    return path
+
+
 # --------------------------------------------------------------------------- #
 # anchors mode: the service path vs the hand-computed anchor rows
 # --------------------------------------------------------------------------- #
@@ -1463,10 +1502,20 @@ def classify_anchor_row(
 
 
 def load_anchor_rows(factor_id: str, repo_root: Path) -> list[dict]:
-    """The factor's hand-anchor rows (placeholder rows carry no date/symbol)."""
+    """The factor's hand-anchor rows (placeholder rows carry no date/symbol).
+
+    The record is verified against its git-tracked manifest BEFORE it is parsed.
+    It is the one file under ``artifacts/refactor_baseline/`` that no manifest
+    covered, and also the one that actually got overwritten (2026-07-25), so
+    "the anchors leg read whatever was on disk" was not hypothetical.
+    """
     path = Path(repo_root) / ANCHORS_JSON
     if not path.exists():
         raise ReconciliationError(f"hand anchors not found: {path}")
+    try:
+        verify_anchor_record(path, Path(repo_root) / ANCHOR_RECORD_MANIFEST)
+    except AnchorRecordMismatch as exc:
+        raise ReconciliationError(str(exc)) from exc
     payload = json.loads(path.read_text(encoding="utf-8"))
     return [
         row
@@ -1539,7 +1588,7 @@ def run_panels_mode(config_path: str, factor_id: str, repo_root: Path) -> PanelD
             f"cache-only violated: stk_mins_live_calls={live_calls}. ABORT."
         )
     factor = factor_registry.build(factor_id)
-    frozen = pd.read_parquet(frozen_panel_path(factor_id, repo_root))
+    frozen = pd.read_parquet(verified_frozen_panel_path(factor_id, repo_root))
     from factors.materialize import stores_intermediate
 
     is_cross = stores_intermediate(factor)
@@ -1704,8 +1753,8 @@ def run_anchors_mode(config_path: str, factor_id: str, repo_root: Path) -> Ancho
     if is_minute and not pooled:
         # Bounded factors: the same warmup boundary as the panels leg — the
         # frozen grid's first (lookback_depth - 1) trading dates.
-        panel_path = frozen_panel_path(factor_id, repo_root)
-        if panel_path.exists():
+        panel_path = verified_frozen_panel_path(factor_id, repo_root, required=False)
+        if panel_path is not None:
             grid = pd.Index(
                 pd.unique(pd.to_datetime(pd.read_parquet(panel_path)["date"]))
             ).sort_values()

@@ -1,0 +1,23 @@
+{
+  "schema": "d5-hand-anchor-record/1",
+  "path": "artifacts/refactor_baseline/hand_anchors_d2.json",
+  "sha256": "6e779a3685c7e1edda237bd9a5297aa6601d634b9a27c3c4dd1b0d903f67b6f4",
+  "size_bytes": 23525,
+  "why_pinned": "The C5 anchors leg closed 11/11 against THESE bytes. The record carries no provenance of its own (it records no panels_d2 hash and no git SHA), and it lives in a directory documented as never-overwrite while being, unlike the panels, still regenerable -- qt.hand_anchor_rows rewrites it wholesale, which is how the engine comparison was lost on 2026-07-25. Pinning the sha in git is what makes a further overwrite loud on the READ side, and makes changing the expectation a reviewed action visible in git diff.",
+  "contents": {
+    "frozen14_rows": 70,
+    "daily_pending_engine_rows": 20,
+    "daily_engine_compared_rows": 0,
+    "all_ok_frozen14": false,
+    "top_level_keys": [
+      "all_ok_frozen14",
+      "daily_pending_engine",
+      "elapsed_seconds",
+      "frozen14",
+      "seed",
+      "tolerance"
+    ]
+  },
+  "what_this_record_does_NOT_contain": "daily_engine_compared is EMPTY (0 rows) and all_ok_daily is absent. The four ops-rewritten daily factors are selected and hand-computed but NOT compared: the companion that compared them was retired in D5 C6, so those 20 rows stay pending and cannot be completed from this tree. Pinning an INCOMPLETE record is fine; reading 'it is pinned' as 'it is complete' is not. The D2 hand-anchor conclusion itself is not lost -- '88 hand anchors, 0 mismatches' is on file in PR #89 and docs/progress/07_factor_layer_refactor.md. What was lost is the ability to re-derive it.",
+  "all_ok_frozen14_is_false_on_purpose": "all_ok_frozen14 is false: 5 jump_amount_corr_20 rows mismatch because the hand side was truncated to 14:50 by PR #103 while the frozen panels_d2 panel is the pre-truncation one, held unchanged by convention. See docs/factors/pr_c_cutoff_fix_reference_panel.md section 6-4."
+}

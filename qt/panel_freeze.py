@@ -636,6 +636,68 @@ def _verify_one_panel(
     )
 
 
+class FrozenPanelMismatch(RuntimeError):
+    """A frozen panel on disk is not the one the git-tracked manifest describes."""
+
+
+def doc_for_frozen_panel(path: Path | str, repo_root: Path | str | None = None) -> Path:
+    """Which git-tracked manifest holds the expectation for THIS panel file.
+
+    Two frozen trees carry a panel named ``jump_amount_corr_20.parquet`` and they
+    are DIFFERENT factor definitions: the D1 baseline holds v1.0 (no 14:50
+    truncation) and ``pr_c_cutoff_fix/`` holds v1.1 (truncated). The reconciler's
+    ``frozen_panel_path()`` routes jump to the PR-C tree, so verification has to
+    follow the same fork or it would check a panel against the other panel's
+    hash and fail for the wrong reason. The routing decision is read off the
+    PATH rather than re-derived from the factor id, so the two cannot drift.
+    """
+    path = Path(path)
+    root = Path(repo_root) if repo_root is not None else repo_root_for(path.parent)
+    in_pr_c = PR_C_SUBDIR in path.parts
+    return root / (PR_C_MANIFEST_DOC if in_pr_c else D1_MANIFEST_DOC)
+
+
+def verify_frozen_panel_file(
+    path: Path | str,
+    factor_id: str,
+    *,
+    repo_root: Path | str | None = None,
+    doc_path: Path | str | None = None,
+) -> str:
+    """Check ONE frozen panel against the hash authored in git; return that hash.
+
+    Raises :class:`FrozenPanelMismatch` on any disagreement — a caller cannot
+    accidentally ignore the result the way it could ignore a returned list.
+
+    ``doc_path`` overrides which manifest supplies the expectation; it exists so
+    the tests can build a small frozen tree with its own document instead of
+    being forced through the fourteen real factors.
+
+    Deliberately per-panel rather than a whole-tree sweep. The reconciliation
+    harness runs per factor, and making it verify fifteen panels to read one
+    turns the check into something people switch off; a check that is disabled
+    because it is slow protects nothing.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FrozenPanelMismatch(f"frozen panel missing from disk: {path}")
+    doc = Path(doc_path) if doc_path is not None else doc_for_frozen_panel(path, repo_root)
+    expected = parse_doc_manifest(doc).get(factor_id)
+    if expected is None:
+        raise FrozenPanelMismatch(
+            f"{doc.name} carries no expectation for {factor_id!r}; refusing to "
+            "reconcile against an unverified panel."
+        )
+    actual = canonical_content_hash(read_frozen_panel(path, factor_id))
+    if actual != expected.canonical_sha256:
+        raise FrozenPanelMismatch(
+            f"{path.name}: canonical content hash {actual} != the git-tracked "
+            f"{expected.canonical_sha256} (from {doc.name}). These are NOT the "
+            "frozen bytes; a reconciliation against them would be meaningless."
+        )
+    return actual
+
+
 def verify_all(
     baseline_root: Path | str = DEFAULT_OUTPUT_ROOT,
     *,
