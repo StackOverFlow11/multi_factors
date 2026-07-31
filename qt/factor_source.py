@@ -240,9 +240,20 @@ def factor_values(
     ASKED about, carrying an explicit NaN where the factor has no value (D4c's
     fill footprint, which is what lets a warm store tell computed-empty from
     never-computed). An index universe's symbol list is the union of historical
-    constituents, so that grid is strictly larger than the loaded panel: measured
-    on the real panels, 2.2% larger for CSI300 and 4.0% for CSI500. Every one of
-    those extra rows is all-NaN, so no VALUE changes either way — but a consumer
+    constituents, so that grid is strictly larger than the loaded panel.
+
+    HOW MUCH larger, and where that number comes from: 2.2% for CSI300 and 4.0%
+    for CSI500. Those are SCOUTING-PHASE measurements, not products of this
+    change and not reproducible from anything it emits — they were read off two
+    local (gitignored) daily panels, ``artifacts/data/i5e_csi300_daily.parquet``
+    (569,736 rows over 1,210 dates x 481 symbols) and
+    ``artifacts/data/d1_panel_freeze_daily.parquet`` (1,158,912 over 1,210 x
+    996), as ``dates * symbols / rows - 1``. They size the effect; they are not
+    evidence about this code. The phase2 panel this step actually reconciles on
+    is exactly dense (68 x 241 = 16,388), so its footprint count is zero — the
+    non-zero case is covered by ``tests/test_factor_source.py`` instead.
+
+    Every one of those extra rows is all-NaN, so no VALUE changes either way — but a consumer
     that counts rows (``per_factor[...]["coverage"]`` is ``notna().mean()``) is
     looking at a different denominator, and a published diagnostic must not move
     because the values arrived by a different route (red line #8). The count of

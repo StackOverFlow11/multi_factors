@@ -13,6 +13,47 @@ would no longer be a single candidate explanation.
 
 ---
 
+## D6a-0 — INVARIANT (not a deferral): every daily factor is per-symbol
+
+**Status:** now guarded by
+`tests/test_daily_factor_universe_independence.py`. **Owner:** anyone adding a
+daily factor.
+
+The store key is `(factor_id, params, code, view)` and has **no universe
+dimension** — deliberately, and it cannot have one: a PIT universe over a date
+range is a time-varying *set*, not a value a key dimension could hold (design
+revision A2). That is sound only while a stored value is universe-independent.
+
+On the minute plane this failed once already and was measured: `intraday_amp_cut`
+ran its cross-sectional z-score during materialization, so its stored value *was*
+a function of the loaded universe while the key said otherwise — fill a store
+with 12 names, read it back asking for 24, and 24 wrong cells were served with
+zero recompute, zero error, zero disclosure. **D4c** fixed it by storing the
+per-symbol intermediate and moving the combine to read-assembly.
+
+**The daily plane never inherited that fix, because until D6a no daily factor
+value was ever stored.** D6a is the step that puts them in the shared store, so
+the property that keeps the daily plane sound becomes load-bearing here. It held
+before by accident of what happened to be written; from here it holds on purpose.
+
+The guard is **behavioural**, not a source scan: it computes every registered
+daily factor over a 5-name universe and a 3-name subset and requires the shared
+symbols to be bit-identical. A scan for `groupby(level="date")` / `.rank(` is
+both too strict (`groupby(level="symbol").rank()` is a per-symbol time-series
+rank) and too loose — mutation evidence: a cross-sectional demean written as
+`x.unstack().sub(x.unstack().mean(axis=1), axis=0).stack()` turns the census red
+while containing **zero** of those tokens.
+
+**A red here is STOP-AND-REPORT.** The fix is D4c's — store the per-symbol
+intermediate, combine at read-assembly — **not** an exemption list, which would
+rebuild exactly the silent-wrong-value failure D4c closed.
+
+Note this is a different question from [D6a-1](#d6a-1--provenance-dimension-on-the-store-key)
+below: that one is about telling two *real vintages* apart, this one is about
+whether a value is a function of *who else was loaded*.
+
+---
+
 ## D6a-1 — provenance dimension on the store key
 
 **Status:** deferred, structural follow-up. **Owner:** not yet assigned.
@@ -125,3 +166,25 @@ fetched **live** on this path (see D6a-3) and both subject to upstream revision.
 **Consequence for anyone reading a reconciliation:** the archived numbers are not
 a valid baseline for a code change made today. Compare a capture you took
 yourself, on the tree you are changing, immediately before you change it.
+
+### The premise D6a's own reconciliation rests on, stated
+
+The same live-covariate mechanism puts a condition on D6a's before/after
+comparison, and it should be written down rather than left implicit:
+
+> **The reconciliation is valid only if the covariates were not revised upstream
+> between the two captures.**
+
+They were taken 18 minutes apart (legacy 11:23, served 11:41), and because those
+three endpoints are fetched live on this path (D6a-3), an upstream revision
+landing in that window would have moved the served run for a reason that has
+nothing to do with the change under test — in either direction, and equally able
+to *mask* a real difference as to invent one.
+
+Nothing of the sort happened here: the factor panel matched cell-for-cell and
+every headline metric matched at full precision, which is itself strong evidence
+that the covariates were stable across the window (a revision would have had to
+leave all of them exactly unchanged). But that is evidence collected *after* the
+fact, not a control designed in. A future reconciliation on this path that shows
+a small movement must rule this out **before** attributing it to the code —
+re-capture the legacy side and check legacy-vs-legacy first.
