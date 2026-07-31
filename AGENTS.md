@@ -66,15 +66,15 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 | 项 | 值 |
 |---|---|
-| `main` | 下表全部 gate 实测于 `a5bbbba`（PR #113，D5 C5 收口） |
-| `pytest -p no:warnings` | **2606 passed**（⚠️ 不要再传 `-q`：`pyproject.toml` 已含 `addopts="-q"`，叠成 `-qq` 会吞掉摘要行） |
+| `main` | 下表全部 gate 实测于 `4e73ac1`（PR #116，D5 C6 收口） |
+| `pytest -p no:warnings` | **2669 passed + 1 skipped**（⚠️ 不要再传 `-q`：`pyproject.toml` 已含 `addopts="-q"`，叠成 `-qq` 会吞掉摘要行） |
 | `ruff check .` | clean |
 | phase0 锚（`run-phase0 --config config/example.yaml`） | **ic 0.9600 / annual 0.8408**（自 P0 起从未变过，任何改动都不许动它） |
 | `qt.exec_baseline_freeze --verify` | **77/77 @ `45c14aa`** |
 | `validate-config` | 32/32 |
 | 唯一 OPEN 的 PR | #38（历史遗留，保持 OPEN） |
 
-**当前主线 = 因子层深度重构（设计 v3.2，D0–D7）。D5 C5 已收口（PR #113）：11 因子 × 3 模式 33 格全绿，C5 通过 ⇒ 满足 C6 前置条件之一。** F1 残桶前视缺陷另立 correctness PR #112 修复（panels `unclassified` 729,029 → 0）。**下一步 = Step 4 / C6：删 11 个旧 runner**（owner 2026-07-28 已裁定退役重生成能力；前置条件另有 R16 覆盖数非降的逐条核销，且改造 PR 与删除 PR 必须分开）。
+**当前主线 = 因子层深度重构（设计 v3.2，D0–D7）。D5 已全部收口**：C5 四腿对账 33 格全绿（#113），**C6 完成（#115 改造 + #116 删除）——11 个旧 runner 归零，决策③「杀第二条因子取数路径」收尾**，三个重生成工具退役为 verify-only、D1 基线 frozen-forever、校验已接进 C5 harness 的三个读入点。**下一步 = Step 5 / D6a–d 存量收口**（`aggregate → factors.minute` 的 shim 日落、`asof_daily_features` 的 `mmp_ew` hook 需要新家），然后 D7 收官全量重评估（**exec-only**）。
 
 > **接手必读（唯一入口）**：[`tmp/design/HANDOFF_2026-07-30_claude_code.md`](tmp/design/HANDOFF_2026-07-30_claude_code.md)
 > ——含当前截面、F1–F5 裁定速查表、六步路线、派发/评审/限额的具体操作法、陷阱清单。
@@ -146,6 +146,6 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 路线图
 
-1. **因子层重构收尾（当前主线）**：~~F1 残桶 correctness PR (#112)~~ → ~~C5 audit PR (#113)~~ → ~~C5 进度文档~~ → **C6 删 11 个旧 runner（下一步）** → D6a–d 存量收口 → D7 收官全量重评估（**exec-only**）。
+1. **因子层重构收尾（当前主线）**：~~F1 (#112)~~ → ~~C5 audit (#113)~~ → ~~C5 进度文档 (#114)~~ → ~~C6 改造 (#115) + C6 删除 (#116)~~ → **D6a–d 存量收口（下一步）** → D7 收官全量重评估（**exec-only**）。
 2. **因子研究**：十一因子无一到 Adopt ⇒ 下一步优先做**换手/成本敏感的组合层验证**与更长 holdout，而不是继续堆新因子；补 PR #79 的 review；修订 HTML compendium。
 3. **可选、须单独显式 goal**：I5g（强制 partial-fill / volume-cap）；数据层 D6（`PanelStore` append/partition，仅当因子研究需要可复用派生面板时才启动）；schema 守卫接 live `data-update`。

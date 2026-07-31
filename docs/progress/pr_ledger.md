@@ -21,3 +21,6 @@
 | #112 | `amp_marginal_anomaly_vol` 残桶 correctness fix（单独成 PR，非重构一部分） |
 | #113 | D5 C5 四腿全量对账收口（F2/F3/F4 扩类 + F5 修复 + NIT-1 + 审计报告） |
 | #114 | 进度文档（F1 + D5 C5） |
+| #115 | D5 C6 改造：三个重生成工具退役为 verify-only + CLI 收敛 + R16 核销 |
+| #116 | D5 C6 删除：删 11 个旧 runner + 10 测试，校验接进 C5 harness 三个读入点 |
+| #117 | 进度文档（D5 C6） |
