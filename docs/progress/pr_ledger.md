@@ -24,3 +24,6 @@
 | #115 | D5 C6 改造：三个重生成工具退役为 verify-only + CLI 收敛 + R16 核销 |
 | #116 | D5 C6 删除：删 11 个旧 runner + 10 测试，校验接进 C5 harness 三个读入点 |
 | #117 | 进度文档（D5 C6） |
+| #118 | D6a：phase0/phase2 切 FactorService（含 B1 demo-store 隔离、日频 universe 无关守卫、caller 派生普查） |
+| #119 | 修 retired-invocation 守卫的射程：文件清单从 git 派生而非目录遍历（`main` 曾红而 worktree 绿） |
+| #120 | 进度文档（D6a） |
