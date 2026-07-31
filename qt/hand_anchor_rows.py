@@ -151,7 +151,12 @@ def _peak_family_counts(column: str):
     return provider
 
 
-def run_hand_anchors(out_path: Path) -> int:
+def run_hand_anchors(out_path: Path, *, allow_overwrite: bool = False) -> int:
+    # BEFORE the work, not after it: this run takes minutes, and a refusal that
+    # arrives at the end teaches people to pass --allow-overwrite by reflex.
+    H.check_overwrite_allowed(
+        out_path, H.PRODUCED_RECORD_KEYS, allow_overwrite=allow_overwrite
+    )
     started = time.monotonic()
     rng = np.random.RandomState(SEED)
     results: list[dict] = []
@@ -454,6 +459,13 @@ def run_hand_anchors(out_path: Path) -> int:
         "daily_pending_engine": daily_rows,
         "all_ok_frozen14": all(r["ok"] for r in results),
     }
+    if frozenset(payload) != H.PRODUCED_RECORD_KEYS:
+        raise RuntimeError(
+            "payload keys drifted from PRODUCED_RECORD_KEYS "
+            f"({sorted(frozenset(payload) ^ H.PRODUCED_RECORD_KEYS)}); the "
+            "overwrite guard reasons about that set BEFORE this point, so a new "
+            "key must be declared there or it is protected by nothing."
+        )
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     n_bad = sum(1 for r in results if not r["ok"])
     print(f"hand anchors (frozen 14): {len(results)} rows, {n_bad} mismatches -> {out_path}")

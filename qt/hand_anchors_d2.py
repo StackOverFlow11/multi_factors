@@ -6,11 +6,13 @@ NEVER IMPORT ``factors.*`` OR ``data.clean.*`` (the #79 rule: a hand check
 that imports the engine inherits the engine's bugs); a runtime guard at the
 bottom of the module raises if any such module is loaded. The engine side of
 each comparison is read FROM DISK (the ``panels_d2`` parquet files the D2
-reconciliation wrote) for the 14 frozen factors; the four ops-rewritten daily
+reconciliation wrote) for the 14 frozen factors. The four ops-rewritten daily
 factors without a frozen panel (momentum/reversal/liquidity/overnight_mom) are
-compared by the companion ``qt.hand_anchors_engine_values`` (which may import
-the engine — the INDEPENDENCE requirement binds the hand computation, not the
-comparer).
+selected and hand-computed here, but are NO LONGER COMPARED: the companion that
+did it, ``qt.hand_anchors_engine_values``, had its engine-side rebuild retired
+in D5 C6, so those rows stay in ``daily_pending_engine``. The independence rule
+that let the companion import the engine still reads correctly — it binds the
+hand computation, not the comparer — it simply has nothing left to license.
 
 Stratified sampling (R12): per factor, one row from each APPLICABLE boundary
 class — (a) the warm-up END (the symbol's first finite value; verified by hand
@@ -45,6 +47,7 @@ why those rows can no longer be completed.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -73,6 +76,82 @@ ENGINE_COMPARISON_POINTER = (
     "be completed from this tree; run `python -m qt.hand_anchors_engine_values "
     "--verify` to re-check whatever comparison is already recorded"
 )
+
+
+#: The keys ``qt.hand_anchor_rows`` writes. Declared here so the overwrite
+#: refusal can run BEFORE the ~7 minutes of hand computation instead of after
+#: it -- being told "refused" at the end of a long run is how people learn to
+#: pass the override reflexively. The writer asserts its payload equals this
+#: set, so the constant cannot drift from what is actually produced.
+PRODUCED_RECORD_KEYS = frozenset({
+    "seed",
+    "tolerance",
+    "elapsed_seconds",
+    "frozen14",
+    "daily_pending_engine",
+    "all_ok_frozen14",
+})
+
+
+class RecordOverwriteRefused(RuntimeError):
+    """Refusing to overwrite an existing hand-anchor record without intent."""
+
+
+def check_overwrite_allowed(
+    out_path: Path, produced_keys: frozenset[str], *, allow_overwrite: bool
+) -> None:
+    """Refuse to clobber an existing record unless the caller says so.
+
+    This tool rewrites the record WHOLESALE, and the keys it produces are not
+    all the keys the file can hold. On 2026-07-25 that is exactly how the
+    engine-side comparison was destroyed: a rerun replaced a file containing
+    ``daily_engine_compared`` with one that does not, silently, and the
+    companion that could refill it has since been retired.
+
+    So the refusal is not "you may not write" -- the tool must be able to do its
+    job -- it is "say so, and here is what this run will not put back". The keys
+    at risk are computed by DIFFERENCE against what this run actually produces,
+    not from a hard-coded list, so a future key gets the same protection without
+    anyone remembering to add it.
+
+    Deliberately NOT a merge: carrying the old ``daily_engine_compared`` forward
+    onto a freshly recomputed ``frozen14`` would splice a comparison made against
+    older engine values into a record describing new ones -- internally
+    inconsistent, which is worse than honestly missing (lead ruling, D-3
+    rejected).
+    """
+    if allow_overwrite or not out_path.exists():
+        return
+    try:
+        existing = json.loads(out_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    at_risk = sorted(k for k in existing if k not in produced_keys)
+    if at_risk:
+        detail = (
+            f"it holds {at_risk}, which this run does NOT produce and would "
+            "therefore drop"
+        )
+        if "daily_engine_compared" in at_risk:
+            detail += (
+                " -- and `daily_engine_compared` CANNOT be rebuilt, because the "
+                "companion that produced it was retired in D5 C6"
+            )
+    else:
+        detail = (
+            "it holds no key this run would drop, but it is still a full rewrite "
+            "of a file the anchors reconciliation leg reads. (Its "
+            "`daily_engine_compared` is ALREADY empty and this run will not "
+            "restore it; that companion was retired in D5 C6.)"
+        )
+    raise RecordOverwriteRefused(
+        f"refusing to overwrite the existing hand-anchor record at {out_path}: "
+        f"{detail}. Re-run with --allow-overwrite if that is intended, or pass "
+        "--selection <other path> to write elsewhere; after an intended "
+        "overwrite, update docs/factors/d5_hand_anchor_record_manifest.json in "
+        "the same commit, or the anchors reconciliation leg will refuse the new "
+        "bytes."
+    )
 
 
 def pending_engine_line(n_pending: int) -> str:
@@ -718,11 +797,32 @@ def assert_no_engine_imports() -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--selection", default=str(OUT_JSON))
+    parser.add_argument(
+        "--allow-overwrite",
+        action="store_true",
+        help="overwrite an existing record (it is rewritten wholesale; keys "
+        "this run does not produce are lost and daily_engine_compared cannot "
+        "be rebuilt)",
+    )
     args = parser.parse_args(argv)
     assert_no_engine_imports()
     from qt.hand_anchor_rows import run_hand_anchors  # heavy driver, engine-free
 
-    return run_hand_anchors(Path(args.selection))
+    # Catch the CANONICAL class, not this module's. Under `python -m
+    # qt.hand_anchors_d2` this file is executed as ``__main__`` AND imported
+    # again as ``qt.hand_anchors_d2`` (hand_anchor_rows imports it), so there are
+    # two distinct class objects with the same name and a bare
+    # ``except RecordOverwriteRefused`` here catches the wrong one -- the guard
+    # then surfaced as a raw traceback despite the handler being right there.
+    from qt.hand_anchors_d2 import RecordOverwriteRefused as _Refused
+
+    try:
+        return run_hand_anchors(
+            Path(args.selection), allow_overwrite=args.allow_overwrite
+        )
+    except _Refused as exc:  # CLI-003: readable, not a traceback
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover - thin CLI shim
