@@ -4,9 +4,11 @@ Selects the stratified rows (R12), calls the plain-arithmetic hand computations
 of :mod:`qt.hand_anchors_d2`, compares each against the NEW-ENGINE value read
 from the ``panels_d2`` parquet files (file reads — never engine imports), and
 writes the selection + results JSON. The four ops-rewritten daily factors that
-have no frozen panel are SELECTED and hand-computed here too; their engine-side
-values are filled in by ``qt.hand_anchors_engine_values`` (the only module of
-the trio allowed to import the engine).
+have no frozen panel are SELECTED and hand-computed here too, and left in
+``daily_pending_engine``. The companion that USED to fill in their engine-side
+values was retired in D5 C6, so those rows now stay pending: see
+``qt.hand_anchors_d2.ENGINE_COMPARISON_POINTER``, which this module prints
+rather than restating.
 
 Selection sources (all engine-free): the ``panels_d2`` files give the finite /
 NaN pattern (warm-up ends, interior rows); the ``adj_factor`` cache gives the
@@ -455,8 +457,7 @@ def run_hand_anchors(out_path: Path) -> int:
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     n_bad = sum(1 for r in results if not r["ok"])
     print(f"hand anchors (frozen 14): {len(results)} rows, {n_bad} mismatches -> {out_path}")
-    print(f"daily rows pending engine comparison: {len(daily_rows)} "
-          f"(run python -m qt.hand_anchors_engine_values)")
+    print(H.pending_engine_line(len(daily_rows)))
     return 0 if n_bad == 0 else 1
 
 

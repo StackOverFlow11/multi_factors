@@ -1,24 +1,24 @@
-"""Network-free tests for qt.panel_freeze (the D1 raw-panel freeze tool).
+"""Network-free tests for qt.panel_freeze (VERIFY-ONLY since D5 C6).
 
-Synthetic panels only — the real-data obligations (determinism double-run,
-artifact reconciliation, live-call zero) are RUN-time verifications recorded in
-the freeze manifest, not unit tests. Here we pin the pure machinery:
+Synthetic panels only. Two halves:
 
-* canonical content hash: sensitive to any value / index change, row-order
-  independent, NaN-payload independent, +0/-0 distinct, loud on malformed input;
-* atomic parquet write: readers never see a partial file, failed writes leave
-  no tmp residue and never touch an existing target;
-* manifest row / renderer: field-complete, full-precision, deterministic;
-* eval-artifact reconciliation: exact-match discipline — a mismatch raises.
+* the pure machinery that DESCRIBES the frozen artifacts — canonical content
+  hash (sensitive to any value / index change, row-order independent,
+  NaN-payload independent, +0/-0 distinct, loud on malformed input), the atomic
+  parquet write it was laid down with, the manifest row and its renderer;
+* verification — every way a frozen tree can be wrong must come back red, and
+  the retired regeneration entry point must fail loudly rather than no-op.
 
 Every invariance claim here is paired with a sensitivity assertion on the same
 axis (the shuffle test alone could be satisfied by a constant hash; the
-value/index sensitivity tests kill that degenerate implementation).
+value/index sensitivity tests kill that degenerate implementation). The same
+rule applies to the verification tests: each starts from a tree that verifies
+GREEN, so a red result is attributable to the tampering and not to a fixture
+that never verified in the first place.
 """
 
 from __future__ import annotations
 
-import json
 import struct
 from pathlib import Path
 
@@ -28,17 +28,24 @@ import pytest
 
 from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from qt.panel_freeze import (
-    DETERMINISM_FACTORS,
     MANIFEST_ROW_FIELDS,
+    RegenerationRetiredError,
     atomic_write_parquet,
     canonical_content_hash,
     file_sha256,
-    freezable_factor_ids,
+    main,
     manifest_row,
     read_frozen_panel,
-    reconcile_with_eval_artifact,
     render_manifest_markdown,
-    resolve_selection,
+    retirement_message,
+    run_panel_freeze,
+    verify_frozen_panels,
+)
+from tests.fixtures.frozen_baseline import (
+    build_frozen_tree,
+    make_panel,
+    patch_manifest,
+    rewrite_panel,
 )
 
 
@@ -240,114 +247,299 @@ def test_render_manifest_markdown_deterministic_and_full_precision():
     assert repr(row["mean"]) in text
 
 
-def test_determinism_subjects_cover_two_minute_and_one_book():
-    assert "value_ep" in DETERMINISM_FACTORS  # the book subject
-    minute = [f for f in DETERMINISM_FACTORS if f.endswith("_20")]
-    assert len(minute) >= 2  # two minute subjects (incl. the panel-consuming loader)
 
 
 # --------------------------------------------------------------------------- #
-# eval-artifact reconciliation
+# Retired regeneration entry point
 # --------------------------------------------------------------------------- #
-def _write_eval_json(reports_dir: Path, stem: str, payload: dict) -> None:
-    document = {"sections": [{"name": "data_coverage", "payload": payload}]}
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    (reports_dir / f"{stem}_no_book.json").write_text(
-        json.dumps(document), encoding="utf-8"
+def test_regeneration_raises_instead_of_quietly_doing_nothing():
+    with pytest.raises(RegenerationRetiredError, match="RETIRED"):
+        run_panel_freeze()
+
+
+def test_the_retirement_message_names_the_ruling_the_tool_and_the_way_forward():
+    with pytest.raises(RegenerationRetiredError) as caught:
+        run_panel_freeze("config/whatever.yaml")
+    text = str(caught.value)
+    assert "owner ruling 2026-07-28, D5 C6" in text
+    assert "python -m qt.panel_freeze --verify" in text
+    assert "no longer rebuilds" in text
+
+
+def test_the_retirement_core_is_composed_not_restated():
+    """The shared sentence is authored once and every tool composes it.
+
+    A regex cannot assert that no other sentence says the same thing; "there is
+    no other sentence" can (CLAUDE.md methodology #2). So: the core must come
+    out of ``retirement_message``, and the per-tool clauses must be the ONLY
+    difference between the three messages.
+    """
+    composed = retirement_message("tool-x", "product-y", "WHY.", "VERIFIES.")
+    assert composed.startswith("tool-x: regeneration is RETIRED")
+    assert "WHY." in composed and "VERIFIES." in composed
+    source = Path(__file__).resolve().parents[1] / "qt" / "panel_freeze.py"
+    body = source.read_text(encoding="utf-8")
+    assert body.count("regeneration is RETIRED (") == 1
+
+
+def test_the_old_command_line_still_parses_so_it_gets_the_explanation(capsys):
+    """``--resume`` / ``--only`` were the documented regeneration flags. Dropping
+    them from the parser would answer the old command with ``unrecognized
+    arguments``, which reads like a broken install rather than a retirement."""
+    assert main(["--resume", "--only", "value_ep"]) == 1
+    assert "RETIRED" in capsys.readouterr().err
+
+
+def test_a_bare_invocation_is_non_zero_and_explains_itself(capsys):
+    assert main([]) == 1
+    captured = capsys.readouterr()
+    assert "RETIRED" in captured.err and "--verify" in captured.err
+
+
+# --------------------------------------------------------------------------- #
+# Verification: the green control, then one tampering per failure mode
+# --------------------------------------------------------------------------- #
+def test_an_untouched_frozen_tree_verifies_green(tmp_path: Path):
+    doc = build_frozen_tree(tmp_path)
+    result = verify_frozen_panels(tmp_path, doc)
+    assert result.ok and result.n_ok == 2 and not result.problems
+
+
+def test_a_changed_cell_is_convicted_and_attributed_to_its_factor(tmp_path: Path):
+    doc = build_frozen_tree(tmp_path)
+    assert verify_frozen_panels(tmp_path, doc).ok  # green control
+
+    panel = make_panel("alpha_20")
+    panel.iloc[0] = float(panel.iloc[0]) + 1e-9
+    rewrite_panel(tmp_path, "alpha_20", panel)
+
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    bad = {panel.factor_id for panel in result.panels if not panel.ok}
+    assert bad == {"alpha_20"}
+    assert any("canonical content hash" in p for p in _problems(result, "alpha_20"))
+
+
+def test_moving_the_machine_manifest_too_does_not_buy_a_pass(tmp_path: Path):
+    """The failure mode the git/gitignore split exists for: a tree regenerated
+    together with its own manifest. Both local witnesses now agree with each
+    other; the git-tracked document must still convict."""
+    doc = build_frozen_tree(tmp_path)
+    panel = make_panel("alpha_20")
+    panel.iloc[0] = float(panel.iloc[0]) + 1e-9
+    rewrite_panel(tmp_path, "alpha_20", panel)
+    new_hash = canonical_content_hash(panel)
+    new_file_hash = file_sha256(tmp_path / "panels" / "alpha_20.parquet")
+
+    def _move(document):
+        for row in document["rows"]:
+            if row["factor_id"] == "alpha_20":
+                row.update(
+                    canonical_sha256=new_hash,
+                    file_sha256=new_file_hash,
+                    mean=float(panel.mean()),
+                    std=float(panel.std()),
+                )
+
+    patch_manifest(tmp_path, "manifest.json", _move)
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any("git-tracked" in p for p in _problems(result, "alpha_20"))
+
+
+def test_a_missing_panel_is_convicted(tmp_path: Path):
+    doc = build_frozen_tree(tmp_path)
+    (tmp_path / "panels" / "book_x.parquet").unlink()
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any("missing from disk" in p for p in _problems(result, "book_x"))
+
+
+def test_an_extra_panel_is_convicted_rather_than_ignored(tmp_path: Path):
+    """An unregistered panel is a problem, not a bonus: the frozen inventory is
+    defined by the document, so an extra file means someone wrote into the
+    frozen tree."""
+    doc = build_frozen_tree(tmp_path)
+    atomic_write_parquet(make_panel("intruder_20"), tmp_path / "panels" / "intruder_20.parquet")
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any("unregistered panel" in p for p in result.problems)
+
+
+def test_a_missing_machine_manifest_is_convicted(tmp_path: Path):
+    doc = build_frozen_tree(tmp_path)
+    (tmp_path / "manifest.json").unlink()
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any("machine manifest missing" in p for p in result.problems)
+
+
+def test_a_producing_sha_that_disagrees_with_the_document_is_convicted(tmp_path: Path):
+    doc = build_frozen_tree(tmp_path, producing_sha="a" * 40)
+    patch_manifest(
+        tmp_path, "manifest.json",
+        lambda d: d["header"].update(producing_git_sha="b" * 40),
     )
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any("producing SHA mismatch" in p for p in result.problems)
 
 
-def _matching_payload(processed: pd.Series, declared: list[str]) -> dict:
-    values = processed.to_numpy(dtype=float)
-    evaluated = set(processed.index.get_level_values(SYMBOL_LEVEL))
-    return {
-        "panel_rows": int(len(processed)),
-        "evaluation_periods": int(
-            pd.unique(processed.index.get_level_values(DATE_LEVEL)).size
-        ),
-        "symbols_evaluated": len(evaluated),
-        "universe_symbols_declared": len(declared),
-        "dropped_symbols_count": len(set(declared) - evaluated),
-        "factor_nan_rate": round(1.0 - np.isfinite(values).sum() / len(values), 6),
+def test_a_reconciliation_recorded_as_not_ok_is_convicted(tmp_path: Path):
+    """A divergent panel must never have been frozen; a manifest edited to say
+    otherwise is exactly what this check is for."""
+    doc = build_frozen_tree(tmp_path)
+
+    def _fail_one(document):
+        document["reconciliation"]["alpha_20"]["checks"]["panel_rows"]["ok"] = False
+
+    patch_manifest(tmp_path, "manifest.json", _fail_one)
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any("recorded as NOT ok" in p for p in result.problems)
+
+
+def test_a_dropped_reconciliation_check_is_convicted(tmp_path: Path):
+    doc = build_frozen_tree(tmp_path)
+    patch_manifest(
+        tmp_path, "manifest.json",
+        lambda d: d["reconciliation"]["alpha_20"]["checks"].pop("factor_nan_rate"),
+    )
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any("missing the 'factor_nan_rate' check" in p for p in result.problems)
+
+
+def test_a_rewritten_but_content_identical_file_is_still_reported(tmp_path: Path):
+    """Same values, new bytes. A frozen-forever file has no legitimate reason to
+    be rewritten, so this is reported — and the message says which of the two it
+    is, so nobody reads it as a value change."""
+    doc = build_frozen_tree(tmp_path)
+    target = tmp_path / "panels" / "alpha_20.parquet"
+    before = file_sha256(target)
+    frame = pd.read_parquet(target)
+    frame.to_parquet(target, engine="pyarrow", index=False, compression="gzip")
+    assert file_sha256(target) != before  # the mutation landed
+
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    problems = _problems(result, "alpha_20")
+    assert any("file sha256" in p and "CONTENT still matches" in p for p in problems)
+    assert not any("canonical content hash" in p for p in problems)
+
+
+def test_verify_writes_nothing_into_the_tree_it_checks(tmp_path: Path):
+    doc = build_frozen_tree(tmp_path, with_d2=True)
+    before = {
+        path: (path.stat().st_mtime_ns, path.stat().st_size)
+        for path in sorted(tmp_path.rglob("*")) if path.is_file()
     }
+    assert verify_frozen_panels(tmp_path, doc, show_manifest=True).ok
+    after = {
+        path: (path.stat().st_mtime_ns, path.stat().st_size)
+        for path in sorted(tmp_path.rglob("*")) if path.is_file()
+    }
+    assert after == before
 
 
-def test_reconcile_passes_on_exact_match(tmp_path: Path):
-    processed = _panel([1.0, np.nan, 3.0, 4.0], KEYS)
-    declared = ["000001.SZ", "600000.SH", "999999.SZ"]
-    _write_eval_json(tmp_path, "eval_x", _matching_payload(processed, declared))
-    out = reconcile_with_eval_artifact("eval_x", processed, declared, tmp_path)
-    assert out["artifact"] == "eval_x_no_book.json"
-    assert all(check["ok"] for check in out["checks"].values())
+def test_show_manifest_renders_the_table_from_the_panels_on_disk(tmp_path: Path):
+    doc = build_frozen_tree(tmp_path)
+    result = verify_frozen_panels(tmp_path, doc, show_manifest=True)
+    assert result.rendered_manifest is not None
+    assert "alpha_20" in result.rendered_manifest
+    assert verify_frozen_panels(tmp_path, doc).rendered_manifest is None
 
 
-def test_reconcile_raises_on_mismatch(tmp_path: Path):
-    processed = _panel([1.0, np.nan, 3.0, 4.0], KEYS)
-    declared = ["000001.SZ", "600000.SH"]
-    payload = _matching_payload(processed, declared)
-    payload["panel_rows"] += 1  # the artifact claims one more row than we froze
-    _write_eval_json(tmp_path, "eval_x", payload)
-    with pytest.raises(ValueError, match="panel_rows"):
-        reconcile_with_eval_artifact("eval_x", processed, declared, tmp_path)
+def _problems(result, factor_id: str) -> list[str]:
+    return [
+        problem
+        for panel in result.panels
+        if panel.factor_id == factor_id
+        for problem in panel.problems
+    ]
 
 
-def test_reconcile_raises_on_nan_rate_mismatch(tmp_path: Path):
-    processed = _panel([1.0, np.nan, 3.0, 4.0], KEYS)
-    declared = ["000001.SZ", "600000.SH"]
-    payload = _matching_payload(processed, declared)
-    payload["factor_nan_rate"] = round(payload["factor_nan_rate"] + 1e-6, 6)
-    _write_eval_json(tmp_path, "eval_x", payload)
-    with pytest.raises(ValueError, match="factor_nan_rate"):
-        reconcile_with_eval_artifact("eval_x", processed, declared, tmp_path)
+def test_a_machine_manifest_row_that_disagrees_with_its_panel_is_convicted(tmp_path: Path):
+    """The document carries the hashes; the machine manifest carries the fuller
+    statistical row. This case is the one only the SECOND witness can see: the
+    document still agrees with the panel, and only the recorded row does not."""
+    doc = build_frozen_tree(tmp_path)
+    assert verify_frozen_panels(tmp_path, doc).ok  # green control
+
+    def _lie(document):
+        for row in document["rows"]:
+            if row["factor_id"] == "alpha_20":
+                row["n_nan"] = row["n_nan"] + 7
+
+    patch_manifest(tmp_path, "manifest.json", _lie)
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    problems = _problems(result, "alpha_20")
+    assert any("manifest.json n_nan" in p for p in problems)
+    # nothing else fired: the git-tracked side is untouched and still agrees
+    assert not any("git-tracked" in p for p in problems)
 
 
-def test_reconcile_missing_artifact_is_loud(tmp_path: Path):
-    processed = _panel([1.0, 2.0, 3.0, 4.0], KEYS)
-    with pytest.raises(FileNotFoundError, match="no_book.json"):
-        reconcile_with_eval_artifact("eval_x", processed, ["000001.SZ"], tmp_path)
+def test_a_deleted_reconciliation_entry_is_convicted(tmp_path: Path):
+    """The gap this closes: iterating only the entries PRESENT cannot see one
+    that was removed. The next PR is a deletion PR, so a verifier blind to
+    removals would be blind exactly when it matters.
 
-
-def test_reconcile_missing_payload_is_loud(tmp_path: Path):
-    (tmp_path / "eval_x_no_book.json").write_text(
-        json.dumps({"sections": [{"name": "other", "payload": {"a": 1}}]}),
-        encoding="utf-8",
+    TWO minute factors on purpose. With one, deleting its entry empties the
+    block and the pre-existing "no reconciliation block" message fires — which
+    would let this test pass without the closed-set check existing at all. The
+    real case is 11 entries becoming 10, and that is what is built here.
+    """
+    doc = build_frozen_tree(
+        tmp_path, factors={"alpha_20": "minute", "beta_20": "minute", "book_x": "book"}
     )
-    processed = _panel([1.0, 2.0, 3.0, 4.0], KEYS)
-    with pytest.raises(ValueError, match="data_coverage"):
-        reconcile_with_eval_artifact("eval_x", processed, ["000001.SZ"], tmp_path)
+    assert verify_frozen_panels(tmp_path, doc).ok  # green control
+
+    def _drop_one(document):
+        removed = document["reconciliation"].pop("alpha_20")
+        assert removed, "fixture no longer has the entry this test removes"
+
+    patch_manifest(tmp_path, "manifest.json", _drop_one)
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any(
+        "reconciliation has no entry for alpha_20" in p for p in result.problems
+    ), result.problems
+    # The block is NOT empty, so the pre-existing "no reconciliation block"
+    # message cannot be what convicted here.
+    assert not any("carries no reconciliation block" in p for p in result.problems)
 
 
-# --------------------------------------------------------------------------- #
-# --only selection (added for the PR-C intraday-cutoff correctness re-freeze)
-# --------------------------------------------------------------------------- #
-def test_selection_default_is_none_so_the_full_freeze_is_untouched():
-    assert resolve_selection(None) is None
+def test_an_entry_for_a_non_minute_panel_is_convicted(tmp_path: Path):
+    """The other direction of the closed set: an invented entry."""
+    doc = build_frozen_tree(tmp_path)
+
+    def _invent(document):
+        document["reconciliation"]["book_x"] = {
+            "artifact": "eval_book_x_no_book.json",
+            "checks": {},
+        }
+
+    patch_manifest(tmp_path, "manifest.json", _invent)
+    result = verify_frozen_panels(tmp_path, doc)
+    assert not result.ok
+    assert any("carries an entry for book_x" in p for p in result.problems)
 
 
-def test_selection_keeps_the_given_order_and_accepts_book_and_minute_ids():
-    assert resolve_selection(["jump_amount_corr_20", "value_ep"]) == (
-        "jump_amount_corr_20",
-        "value_ep",
-    )
+def test_the_real_manifests_reconcile_exactly_their_minute_panels(tmp_path: Path):
+    """Coupling check: the closed set is only meaningful if the real frozen trees
+    actually satisfy it. Both do — D1 has 11 minute panels and 11 entries, the
+    PR-C tree 1 and 1 — so this check is a live constraint, not a rule the real
+    data was already exempt from."""
+    import json
 
-
-def test_selection_rejects_an_unknown_factor_id():
-    """A typo must cost a readable error, not an empty output root reported as
-    success — "froze 0 panels" is how a correctness re-freeze silently produces
-    nothing at all."""
-    with pytest.raises(ValueError, match="does not produce"):
-        resolve_selection(["jump_amount_corr"])  # missing the _20 window suffix
-
-
-def test_selection_rejects_an_empty_selection():
-    with pytest.raises(ValueError, match="empty selection"):
-        resolve_selection([])
-
-
-def test_freezable_ids_are_the_14_the_freeze_writes():
-    ids = freezable_factor_ids()
-    assert len(ids) == 14
-    assert {"value_ep", "value_bp", "volatility_20"} <= ids
-    # Every determinism subject must be freezable, or --only could silently drop
-    # the double-run subject the manifest still claims to have checked.
-    assert set(DETERMINISM_FACTORS) <= ids
+    root = Path(__file__).resolve().parents[1] / "artifacts" / "refactor_baseline"
+    if not (root / "manifest.json").exists():  # gitignored bulk tree
+        pytest.skip("frozen baseline not present in this checkout")
+    for relative in ("manifest.json", "pr_c_cutoff_fix/manifest.json"):
+        document = json.loads((root / relative).read_text(encoding="utf-8"))
+        minute = {
+            row["factor_id"] for row in document["rows"] if row["kind"] == "minute"
+        }
+        assert minute == set(document["reconciliation"]), relative
+        assert minute, relative

@@ -41,7 +41,7 @@
 | 产出 | D1 冻结 run（`main` @ `3669c90`），见 `d1_panel_freeze_manifest.md` | 见下 §四 |
 | 引擎 | pre-D2 runner loader | **同一条 runner loader**（`qt.panel_freeze` + `--only`） |
 | 用途 | **已发布内容的忠实记录**；D2 逐位对账的历史参照 | **D5 面板腿对该因子的有效参照** |
-| 是否可被覆盖 | **否**（本次改动只新增，一个字节没动） | 可再生（命令在 §四） |
+| 是否可被覆盖 | **否**（本次改动只新增，一个字节没动） | **否**（C6 起同样 frozen-forever；产生方式已退役，见 §四） |
 
 **为什么「旧引擎 + 截断输入」是干净的 refactor-only 对照**：本次改动是**纯输入截断**——
 被喂进相关系数计算的 bar 少了一批，`compute_jump_amount_corr` 里从 `amp` 到 Pearson
@@ -52,10 +52,17 @@
 **不要**把两份面板放进同一次对账去「取平均」或「看哪个更接近」：它们是两个不同定义的因子值，
 不是同一个量的两次测量。
 
-## 四、新参照面板的产生方式（可复跑）
+## 四、新参照面板的产生方式（**已于 D5 C6 退役**，此处存档）
+
+⚠️ **下面这条命令不再可用**：owner 2026-07-28 裁定退役重生成能力，`--only` 连同整个冻结
+路径一并退役（它依赖 11 个旧 runner 的私有 loader，C6 删除它们后必然失效）。本面板与 D1
+基线一样 **frozen-forever**；验证走
+`python -m qt.panel_freeze --verify`，它会把本文 §五 表格里的 `canonical_sha256` 当作
+git 里的权威期望值，对盘上这个面板逐格重算核对。原命令留在这里是 provenance 的一部分——
+它记录的是这份面板**当初怎么来的**，不是现在怎么再来一次。
 
 ```
-cd <repo root>            # 缓存根 artifacts/cache/tushare/v1 就位
+cd <repo root>            # 缓存根 artifacts/cache/tushare/v1 就位   [RETIRED, C6]
 /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.panel_freeze \
     --config config/phase_c_jump_amount_corr.yaml \
     --output-root artifacts/refactor_baseline/pr_c_cutoff_fix \

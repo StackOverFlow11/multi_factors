@@ -19,15 +19,24 @@
   的结构性预防。具体操作：checkout `3669c90`，把本分支的 `qt/panel_freeze.py` 原样放入
   （它只 import、不改任何因子数学模块），再跑下方命令。**任何在 D2 之后的树上直接重跑
   本工具得到的"基线"都不是基线**，与冻结哈希不一致时以本文记录的哈希为准。
-- **重跑命令**（cwd = 仓库根，缓存根就位）：
+- ⚠️ **重生成能力已于 D5 C6 退役（owner 2026-07-28 裁定），本基线 frozen-forever。**
+  重生成路径调的是 11 个旧 eval runner 的私有 `_load_*_panel`，C6 删除它们后这条路必然
+  失效；与其留一条跑起来就会坏的代码，不如显式退役。`python -m qt.panel_freeze`
+  （不带 `--verify`）现在是**可读的报错**，不是静默 no-op。**从当前树重跑本来就不合法**
+  （见上一条 provenance 规则），所以失去的不是复核能力。
+
+- **现在能跑的是验证**（cwd = 仓库根）：
 
   ```
-  /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.panel_freeze
+  /home/shaofl/Development/env_tools/envs/quant_mf/bin/python -m qt.panel_freeze --verify
   ```
 
-  输出根默认 `artifacts/refactor_baseline`（`--output-root` 可改；`--resume` 语义见
-  模块 docstring——已存在的面板从冻结文件读回并**重新走 process + 对账**后才被接受，
-  绝不盲信旧文件）。
+  它对**两棵**冻结树（本基线 14 个面板 + `pr_c_cutoff_fix` 1 个）逐面板重算 canonical
+  content hash 与整条 manifest 行（rows / 日期范围 / symbol 数 / NaN 数 / mean / std /
+  file sha256），与**本文 §六表格**（git 里的权威）以及 `manifest.json`（gitignored 的第二
+  见证）双向核对，任一不符即非零退出。多出一个未登记的面板文件同样判负。
+  **本文的表格因此不只是记录，而是被程序读取的期望值**——改它就等于改验证结果，会出现在
+  `git diff` 里。
 
 ## 二、数据面（与十一因子评估循环同面）
 

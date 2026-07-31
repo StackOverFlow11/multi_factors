@@ -1980,12 +1980,12 @@ def test_the_registered_description_pairs_match_the_frozen_artifacts_exactly():
         DEFAULT_MANIFEST,
         FrozenExecBaseline,
     )
-    from qt.factor_eval_reconcile import _FACTOR_TO_REPORT_NAME
+    from qt.factor_eval_reconcile import FACTOR_TO_REPORT_NAME
 
     repo = Path(".").resolve()
     baseline = FrozenExecBaseline(repo / DEFAULT_FROZEN_ROOT, repo / DEFAULT_MANIFEST)
     for factor_id, (old_text, _new_text) in REGISTERED_SPEC_DESCRIPTION_REWRITES.items():
-        frozen = baseline.report_json(_FACTOR_TO_REPORT_NAME[factor_id], "no_book")
+        frozen = baseline.report_json(FACTOR_TO_REPORT_NAME[factor_id], "no_book")
         assert frozen["spec"]["description"] == old_text, factor_id
 
 
