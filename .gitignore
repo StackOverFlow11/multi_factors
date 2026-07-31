@@ -10,7 +10,18 @@ venv/
 .env
 
 # Data artifacts (quant: keep large data out of git)
-artifacts/
+#
+# NO TRAILING SLASH on purpose. `artifacts/` matches only a DIRECTORY, so it did
+# not match the `artifacts` SYMLINK the git worktrees carry (pointing at the main
+# checkout), leaving it untracked-but-addable -- and a `git add -A` duly committed
+# a machine-specific absolute-path symlink. Caught by
+# test_frozen_bytes_are_untracked_while_the_manifest_is_tracked, which guards the
+# split this repo's tamper checks rest on: if the frozen bytes and their hashes
+# both lived in git, one commit could move them together.
+artifacts
+# Local phase0 output. Named separately because `artifacts` does not match it,
+# and NO test guards it -- the same accident here would be silent.
+artifacts_local_phase0/
 *.parquet
 *.feather
 *.h5
