@@ -15,6 +15,7 @@ empty-reconciliation shape this repository has already committed once.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -287,14 +288,35 @@ def test_no_new_file_starts_instructing_people_to_run_a_retired_tool():
     is exactly the #82 shape — a guard that only looks where you already looked
     confirms only what you already know. `docs/progress/` is excluded as a
     historical archive: it records what was true then.
+
+    SCOPE OF THE FILE LIST. Derived from git (tracked ∪ untracked-not-ignored),
+    never from a directory walk. A walk sweeps in gitignored working material —
+    `tmp/context/**` holds `git archive` exports of PRE-RETIREMENT revisions, so
+    every one of them names the retired tools legitimately — and inside a
+    worktree it follows the `artifacts` symlink into a different checkout. Both
+    were observed: this guard was red on the main checkout while green in every
+    worktree, because a worktree structurally lacks the directories that break
+    it. Untracked-but-not-ignored IS included on purpose: a newly written file
+    is exactly the case this guard exists for, and it is usually not staged yet.
+
+    WHAT IT STILL CANNOT SEE: gitignored files (deliberate — they are not the
+    codebase), and invocation strings composed at runtime.
     """
     repo = Path(__file__).resolve().parents[1]
+
+    def _git(*args: str) -> list[str]:
+        out = subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+        ).stdout
+        return [line for line in out.splitlines() if line]
+
+    listed = set(_git("ls-files")) | set(_git("ls-files", "--others", "--exclude-standard"))
     offenders: list[str] = []
-    for path in sorted(repo.rglob("*")):
+    for relative in sorted(listed):
+        path = repo / relative
         if path.suffix not in {".py", ".md", ".yaml", ".txt"} or not path.is_file():
             continue
-        relative = path.relative_to(repo).as_posix()
-        if relative.startswith(("docs/progress/", ".git/", "tests/")):
+        if relative.startswith(("docs/progress/", "tests/")):
             continue
         text = path.read_text(encoding="utf-8")
         for call in RETIRED_INVOCATIONS:
