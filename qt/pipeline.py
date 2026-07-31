@@ -60,6 +60,7 @@ from factors.compute.financial import FinancialFactor
 from factors.process.orchestrate import covariates_from_panel, process_factor_panel
 from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
+from qt.factor_source import factor_values, open_factor_value_store
 from qt.reports import write_phase0_summary
 from runtime.backtest.driver import BacktestDriver
 from runtime.backtest.sim_execution import SimExecution
@@ -440,7 +441,8 @@ def run_phase0(config_path: str) -> Phase0Result:
     # P4-1/P4-2: one concise cache-stats line after every cached endpoint has run
     # (market bars + universe/tradability). A warm historical rerun shows all 0s.
     _log_run_cache_stats(cache, logger)
-    factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
+    with open_factor_value_store(cfg, logger) as store:
+        factor_panel = _serve_factor_panel(cfg, panel, factors, symbols, logger, store=store)
 
     processed = _process_factors(cfg, factor_panel, panel)
     alpha = _build_alpha(cfg)
@@ -929,18 +931,93 @@ def _maybe_enrich_listing(
     return panel
 
 
+def _factor_params_by_id(cfg: RootConfig, factors: list) -> dict[str, dict]:
+    """Config params keyed by the BUILT factor's id (what the store key hashes).
+
+    Keyed by the instance name rather than the config name: the registry already
+    refuses a config name that disagrees with its params (D1's three-point
+    check), and keying by the object the service is actually asked for leaves no
+    second spelling to drift. ``strict`` zip guards against this list and
+    :func:`_build_factors`' enabled list falling out of step.
+    """
+    enabled = [f for f in cfg.factors if f.enabled]
+    return {
+        factor.name: dict(spec.params)
+        for spec, factor in zip(enabled, factors, strict=True)
+    }
+
+
+def _serve_factor_panel(
+    cfg: RootConfig,
+    panel: pd.DataFrame,
+    factors: list,
+    symbols: list[str],
+    logger: logging.Logger,
+    *,
+    store,
+) -> pd.DataFrame:
+    """Get every factor's values from the SERVICE and persist the panel (D6a).
+
+    One column per enabled factor (P3-1); a single-factor config produces the
+    same one-column frame as before. All columns share the panel's
+    MultiIndex(date, symbol), so downstream processing stays per-date and
+    per-column.
+
+    D6a (factor-refactor): the values come from ``factors.service`` — the store
+    read-through onto the ONE materializer engine — instead of calling
+    ``factor.compute(panel)`` here, which was the second factor-sourcing path
+    the refactor exists to retire (design decision 3). The pairing is the close
+    view x close-to-close basis these runners already decide on, under which the
+    materializer applies no availability lag: a change of PATH, not of VALUES.
+    ``qt.factor_source.factor_values`` owns the wiring and the reduction back to
+    this panel's own grid; the rows that reduction drops are logged rather than
+    left invisible.
+
+    This is a SECOND entry point next to :func:`_compute_factor_panel` on
+    purpose, and only until D6b: the migration moves the runners one group at a
+    time, so for the length of that migration some runners are on the service
+    and some are not. Two differently-named functions make "which runners are
+    still on the old path" a grep instead of a reading exercise, where one
+    function with an optional ``store`` would have made the old path a silent
+    default (red line #9).
+    """
+    served = factor_values(
+        factors,
+        panel,
+        symbols,
+        store=store,
+        params_by_id=_factor_params_by_id(cfg, factors),
+    )
+    factor_panel = served.frame
+    _write_factor_panel(cfg, factor_panel)
+    logger.info(
+        "factors: %s served by the factor service (%d rows x %d columns; the "
+        "service answered %d requested (date, symbol) cell(s), %d of them "
+        "all-NaN footprint row(s) outside the market panel and reduced away)",
+        [f.name for f in factors], len(factor_panel), factor_panel.shape[1],
+        served.served_rows, served.footprint_rows_dropped,
+    )
+    return factor_panel
+
+
 def _compute_factor_panel(
     cfg: RootConfig,
     panel: pd.DataFrame,
     factors: list,
     logger: logging.Logger,
 ) -> pd.DataFrame:
-    """Compute every factor as its own column and persist the multi-column panel.
+    """PRE-D6a path: compute every factor here and persist the panel.
 
-    One column per enabled factor (P3-1); a single-factor config produces the
-    same one-column frame as before. All columns share the panel's
-    MultiIndex(date, symbol), so downstream processing stays per-date and
-    per-column.
+    Still the live path for the runners D6a does not migrate
+    (``qt.oos_stability``, ``qt.subset_validation``, and ``qt.robustness``
+    through the former). It is the second factor-sourcing path the refactor is
+    retiring; D6b moves those runners onto :func:`_serve_factor_panel` and D6d
+    removes this function. Do NOT add a new caller.
+
+    Kept behaviour-identical rather than adapted: routing those runners through
+    the service changes what their factor values come from, which needs its own
+    reconciliation on their universes and windows — it is D6b's work, not a side
+    effect of migrating phase0/phase2.
     """
     columns = [factor.compute(panel).rename(factor.name) for factor in factors]
     factor_panel = pd.concat(columns, axis=1)

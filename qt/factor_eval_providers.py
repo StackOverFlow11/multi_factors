@@ -11,8 +11,9 @@ exec-only ``FactorEvalRunner`` (the next C4 commit) consumes.
   ``qt.factor_hotpath_smoke`` (single source; the smoke and the probes import
   it from here now). Zero live calls: ``IntradayParquetStore.read_range`` has
   no fetch closure, so a missing month is an empty read, never a warm.
-* :class:`DailyEvalPanelProvider` — serves the pipeline's loaded daily panel
-  through the ``DailyPanelProvider`` protocol.
+* :class:`DailyEvalPanelProvider` — RE-EXPORTED from ``qt.factor_source``
+  (D6a moved it there so the daily runners share the one definition; this
+  module imports ``qt.pipeline``, so ``qt.pipeline`` cannot import from it).
 * :func:`build_eval_service` / :class:`EvalServiceBundle` — the one wiring of
   cache -> universe -> panel -> enrichments -> store + sources, in the SAME
   call order the legacy eval runners used (``qt/eval_jump_amount_corr.py``).
@@ -34,9 +35,9 @@ from data.clean.intraday_schema import (
     empty_intraday_bars,
     normalize_intraday_bars,
 )
-from data.clean.schema import DATE_LEVEL, SYMBOL_LEVEL
 from factors.materialize import MaterializeSources
 from factors.store import FactorValueStore
+from qt.factor_source import DailyEvalPanelProvider as _DailyEvalPanelProvider
 from qt.pipeline import (
     _build_cache,
     _build_universe,
@@ -97,38 +98,12 @@ class CacheMinuteProvider:
         return pd.concat(parts).sort_index(kind="mergesort")
 
 
-class DailyEvalPanelProvider:
-    """``DailyPanelProvider`` over the pipeline's loaded evaluation panel.
-
-    CLOSE-VIEW, NOT LAGGED — and that is exactly right: the materializer's own
-    daily path applies ``factors.view_lag.daily_decision_lag`` for the decision
-    view (the prev-day shift with the field-level ``open`` exception, R18), so
-    the provider must hand it values dated at their natural close date. A
-    pre-lagged panel would be shifted TWICE. ``qt.pipeline._load_panel``'s
-    product (raw bars enriched with tradability flags, front-adjusted in
-    memory) is precisely such an un-lagged close-view panel, so this provider
-    is a thin window/symbol slicer over it.
-
-    WINDOW SEMANTICS: the panel covers the configured ``[data.start, data.end]``
-    window (the same window the legacy runners loaded). A materializer load
-    request reaching before the panel's first date is served what exists —
-    the trailing-trading-day trim then treats the panel's left edge like the
-    data start (honest under-warm NaN), which reproduces the legacy runners'
-    warmup geometry rather than silently inventing deeper history.
-    """
-
-    def __init__(self, panel: pd.DataFrame) -> None:
-        self._panel = panel
-
-    def daily_panel(self, symbols, start, end):
-        if self._panel.empty:
-            return self._panel
-        dates = self._panel.index.get_level_values(DATE_LEVEL)
-        mask = (dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))
-        out = self._panel[mask]
-        keep = [str(s) for s in symbols]
-        syms = out.index.get_level_values(SYMBOL_LEVEL)
-        return out[syms.isin(keep)]
+#: RE-EXPORT, not a copy (D6a): the daily close-view provider now lives in
+#: ``qt.factor_source``, because the daily runners need it too and this module
+#: imports ``qt.pipeline`` (so ``qt.pipeline`` cannot import back from here).
+#: Its "close-view, NOT lagged" contract is load-bearing on both planes and is
+#: stated once, there. ``tests/test_factor_source.py`` pins the identity.
+DailyEvalPanelProvider = _DailyEvalPanelProvider
 
 
 @dataclass(frozen=True)
