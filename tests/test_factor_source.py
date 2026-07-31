@@ -158,14 +158,46 @@ def test_a_sparse_panel_reindexes_back_and_counts_what_that_dropped(tmp_path):
     sparse = panel[~((s == late) & (d < dates[10]))]
 
     out = _served(sparse, symbols, tmp_path)
+    factor = MomentumFactor(window=5)
 
     assert out.footprint_rows_dropped == 10
     assert out.served_rows == len(dates) * len(symbols)
     assert out.frame.index.equals(sparse.index)
+    # ... and the SURVIVING VALUES are right, not just the surviving labels.
+    # Asserting only the index would accept a reduction that lands the correct
+    # index carrying the wrong rows -- and that defect is invisible on a dense
+    # panel, where the reduction is a no-op, so no other test in this file can
+    # see it (mutation: reducing positionally instead of by label keeps the
+    # index assertion and the dense value test green and turns this red).
+    pd.testing.assert_frame_equal(
+        out.frame,
+        factor.compute(sparse).rename(factor.name).to_frame(),
+        check_exact=True,
+    )
 
 
-def test_the_reindex_preserves_every_value_the_service_served(tmp_path):
-    """Reindexing is a row selection, never a value change."""
+def test_the_served_values_do_not_depend_on_which_store_they_were_filled_into(
+    tmp_path,
+):
+    """Two cold stores, one request: the same values.
+
+    NAMED FOR WHAT IT MEASURES. It was called
+    ``test_the_reindex_preserves_every_value_the_service_served``, which it never
+    tested: both sides came from the same already-reindexed ``factor_values``
+    call, so the comparison reduced to ``frame == frame`` for that property and
+    could only ever have caught a difference between the two STORES.
+
+    That misnaming did real damage before it was caught: it was read (by its
+    author, then by a reviewer taking the author's word) as evidence that
+    reindex value-preservation was pinned, and on that basis nobody added the
+    assertion that actually pins it. It is now in
+    ``test_a_sparse_panel_reindexes_back_and_counts_what_that_dropped`` -- which
+    is where it belongs, next to the reduction it constrains.
+
+    What is left here is worth keeping on its own: a factor value must be a
+    function of (factor, panel, universe) alone, so filling store A and filling
+    store B must agree. That is the assumption the read-through rests on.
+    """
     panel = make_demo_panel()
     symbols = sorted(set(panel.index.get_level_values("symbol")))
     dates = pd.DatetimeIndex(sorted(set(panel.index.get_level_values("date"))))
@@ -173,8 +205,8 @@ def test_the_reindex_preserves_every_value_the_service_served(tmp_path):
     s = panel.index.get_level_values("symbol")
     sparse = panel[~((s == symbols[-1]) & (d < dates[10]))]
 
-    out = _served(sparse, symbols, tmp_path)
-    full = factor_values(
+    into_a = _served(sparse, symbols, tmp_path).frame
+    into_b = factor_values(
         [MomentumFactor(window=5)],
         sparse,
         symbols,
@@ -182,8 +214,7 @@ def test_the_reindex_preserves_every_value_the_service_served(tmp_path):
         params_by_id={"momentum_5": {"window": 5}},
     ).frame
 
-    common = out.frame.index
-    pd.testing.assert_frame_equal(out.frame, full.reindex(common))
+    pd.testing.assert_frame_equal(into_a, into_b, check_exact=True)
 
 
 def test_the_service_values_equal_a_direct_compute_on_the_same_panel(tmp_path):
