@@ -35,6 +35,7 @@ from factors.compute.financial import SUPPORTED_FIELDS as SUPPORTED_FINANCIAL_FI
 from factors.compute.financial import FinancialFactor
 from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
+from qt.factor_source import open_factor_value_store
 from qt.pipeline import (
     _FrameScores,
     _alpha_disclosure,
@@ -45,7 +46,7 @@ from qt.pipeline import (
     _build_scores,
     _build_universe,
     _collect_downgrades,
-    _compute_factor_panel,
+    _serve_factor_panel,
     _factor_analytics,
     _standard_analytics,
     _load_panel,
@@ -372,7 +373,8 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     panel = _maybe_enrich_listing(cfg, panel, symbols, logger, cache)
     # P4-1/P4-2: one cache-stats line after every cached endpoint has run.
     _log_run_cache_stats(cache, logger)
-    factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
+    with open_factor_value_store(cfg, logger) as store:
+        factor_panel = _serve_factor_panel(cfg, panel, factors, symbols, logger, store=store)
     processed = _process_factors(cfg, factor_panel, panel)
     alpha = _build_alpha(cfg)
     score_panel = _build_scores(
