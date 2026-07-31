@@ -26,6 +26,30 @@ retired in C6). Pinning an incomplete record is fine. Letting a later reader tak
 "it is pinned" for "it is complete" is not, so the shortfall is a field in the
 manifest and an assertion here rather than a sentence someone might not read.
 
+RANGE OF THE INVENTORY CHECK -- read this before relying on it
+--------------------------------------------------------------
+Measured from the CURRENT pinned record (70 / 20 / 0 / False), not reasoned:
+
+* a plain ``qt.hand_anchor_rows`` rerun changes NO inventory field. Same seed,
+  same stratified selection, so the row counts and the key set come out
+  identical while the values inside move. Such a rerun is REFUSED while the sha
+  is stale and ACCEPTED the moment the sha is honestly refreshed -- so on that
+  path the inventory contributes nothing, and **the protection is the human
+  reading the git diff, not this check**;
+* it does still bite where counts or keys move: a record that GAINS
+  ``daily_engine_compared`` rows, or grows an ``all_ok_daily`` key, is refused
+  even with a matching sha.
+
+The direction that motivated the check -- ``daily_engine_compared`` silently
+going to zero, the 2026-07-25 accident -- is no longer reachable FROM HERE: that
+loss already happened, and what is pinned is the state after it. The field is
+already on the floor. The check would catch that shape on a record that still
+had those rows; this record does not.
+
+Both facts are stated because either alone misleads. "The inventory is checked"
+invites more confidence than it earns on the rerun path; "the inventory is
+useless" is false in the other direction.
+
 A stronger form exists and is deliberately NOT built yet: have
 ``hand_anchor_rows`` record the ``panels_d2`` canonical hashes it computed
 against, so the record is tied to the panels it describes rather than merely
@@ -90,10 +114,17 @@ def verify_anchor_record(
 ) -> AnchorRecordCheck:
     """Verify the record's bytes AND its inventory against the git-tracked manifest.
 
-    Raises :class:`AnchorRecordMismatch` on any disagreement. Both halves matter:
-    the sha catches an edit, and the inventory catches a manifest that was
-    updated to match a new file without anyone noticing what changed inside it
-    (in particular, a ``daily_engine_compared`` that silently went to zero).
+    Raises :class:`AnchorRecordMismatch` on any disagreement. The two halves catch
+    different things and neither subsumes the other:
+
+    * the sha catches ANY byte change, including the one the inventory cannot see
+      -- a rerun that keeps every count identical while the values move;
+    * the inventory catches a manifest refreshed to match a record whose SHAPE
+      changed: rows gained or lost, a key appearing or vanishing.
+
+    See the module docstring's RANGE section for what this does NOT cover from
+    the currently pinned record. Short version: on the rerun-plus-refreshed-sha
+    path the inventory adds nothing, and the reviewed git diff is the guard.
     """
     record_path = Path(record_path)
     manifest_path = Path(manifest_path)

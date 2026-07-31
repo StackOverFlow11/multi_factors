@@ -446,3 +446,78 @@ def test_a_new_key_cannot_appear_without_the_manifest_noticing(tmp_path: Path):
 
     with pytest.raises(AnchorRecordMismatch, match="top_level_keys"):
         verify_anchor_record(record, manifest)
+
+
+def test_the_inventory_adds_nothing_on_the_rerun_path(tmp_path: Path):
+    """The documented RANGE, measured rather than asserted.
+
+    A plain `hand_anchor_rows` rerun keeps every count and the key set identical
+    (same seed, same stratified selection) while the values inside move. It is
+    refused with a stale sha and ACCEPTED once the sha is honestly refreshed --
+    so on that path the guard is the reviewed git diff, not this check.
+
+    This test therefore asserts a LIMITATION. If someone later strengthens the
+    check so this case is refused, this test fails -- and that is the intended
+    signal to update the module's RANGE section in the same commit, so the
+    docstring cannot drift wider than what the code does.
+    """
+    import hashlib
+
+    record, manifest = _record(tmp_path)
+    assert verify_anchor_record(record, manifest)  # green control
+
+    payload = json.loads(record.read_text())
+    before = record_inventory(payload)
+    payload["frozen14"][0]["engine"] = 999.0  # a value moves...
+    payload["frozen14"][0]["ok"] = False
+    record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    assert record_inventory(payload) == before, "premise broken: a count changed"
+
+    with pytest.raises(AnchorRecordMismatch, match="sha256"):
+        verify_anchor_record(record, manifest)  # ...caught only by the sha
+
+    refreshed = json.loads(manifest.read_text())
+    refreshed["sha256"] = hashlib.sha256(record.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(refreshed), encoding="utf-8")
+    verify_anchor_record(record, manifest)  # ACCEPTED — the documented limit
+
+
+def test_the_inventory_still_bites_where_the_shape_moves(tmp_path: Path):
+    """The other half of the range: it is limited, not useless.
+
+    Stating only the limitation would be its own overclaim in the opposite
+    direction.
+    """
+    import hashlib
+
+    record, manifest = _record(tmp_path)
+    payload = json.loads(record.read_text())
+    payload["daily_engine_compared"] = [{"ok": True}, {"ok": True}]  # rows gained
+    record.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    refreshed = json.loads(manifest.read_text())
+    refreshed["sha256"] = hashlib.sha256(record.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(refreshed), encoding="utf-8")
+
+    with pytest.raises(AnchorRecordMismatch, match="daily_engine_compared_rows"):
+        verify_anchor_record(record, manifest)
+
+
+def test_the_range_section_states_where_the_protection_actually_is():
+    """The claim and the code move together: the docstring must name the rerun
+    path as uncovered, and must not still promise the unreachable case."""
+    import re
+
+    import qt.hand_anchor_manifest as module
+
+    # Whitespace-normalised: these sentences WRAP in the source, so a raw
+    # substring match tests line breaks rather than the claim. (Same trap as the
+    # earlier wrapped-string scan in this suite.)
+    def flat(text: str) -> str:
+        return re.sub(r"\s+", " ", text or "")
+
+    doc = flat(module.__doc__)
+    assert "RANGE OF THE INVENTORY CHECK" in doc
+    assert "the protection is the human reading the git diff" in doc
+    assert "no longer reachable FROM HERE" in doc
+    # the old overclaim must not survive in the function docstring either
+    assert "silently went to zero" not in flat(module.verify_anchor_record.__doc__)
