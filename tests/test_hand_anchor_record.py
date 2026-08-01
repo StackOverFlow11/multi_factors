@@ -299,8 +299,19 @@ def test_no_new_file_starts_instructing_people_to_run_a_retired_tool():
     it. Untracked-but-not-ignored IS included on purpose: a newly written file
     is exactly the case this guard exists for, and it is usually not staged yet.
 
-    WHAT IT STILL CANNOT SEE: gitignored files (deliberate — they are not the
-    codebase), and invocation strings composed at runtime.
+    WHAT IT STILL CANNOT SEE, all four of them:
+      1. gitignored files (deliberate — they are not the codebase);
+      2. invocation strings composed at runtime;
+      3. any file whose suffix is outside the set below. This one has live
+         instances: `deploy/systemd/quant-data-update.service` exists to name a
+         command to run (`ExecStart=`), and `pyproject.toml` can too, yet
+         neither is scanned. Wiring a retired tool into a unit file or a
+         pyproject entry point would NOT turn this red. Widening the suffix set
+         is a change of reach, not a fix to this declaration — do it as its own
+         change, with its own evidence, or not at all;
+      4. `tests/` — excluded because RETIRED_INVOCATIONS itself lives there and
+         would self-match. Retired calls inside test files are therefore
+         invisible too.
     """
     repo = Path(__file__).resolve().parents[1]
 
