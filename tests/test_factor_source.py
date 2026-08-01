@@ -320,7 +320,7 @@ def _write_cfg_file(tmp_path: Path, example_config_path: str, *, source: str) ->
 
 
 # --------------------------------------------------------------------------- #
-# mid-migration: the runners D6a does not move must still be able to call
+# post-D6b: the legacy entry point's only remaining execution coverage
 # --------------------------------------------------------------------------- #
 # WHICH files still call the pre-D6a entry point, and whether their calls still
 # bind, is guarded by ``tests/test_legacy_factor_panel_callers.py`` -- a census
@@ -330,7 +330,7 @@ def _write_cfg_file(tmp_path: Path, example_config_path: str, *, source: str) ->
 
 
 def test_the_legacy_entry_point_still_computes(tmp_path, example_config_path):
-    """Real coverage for the path those runners are still on."""
+    """Real coverage for the legacy reference until D6d removes it."""
     from qt.pipeline import _compute_factor_panel
 
     cfg = _cfg(tmp_path, example_config_path, source="demo")
