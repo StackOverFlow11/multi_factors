@@ -37,3 +37,7 @@
 | #129 | D6d PR-1：shim import 全 repoint 到 `factors.compute.minute.*` + 删 legacy 取数路径（`_serve_factor_panel` 成独一入口）+ 继任守卫 AST census |
 | #130 | D6d PR-2：删 10 shim + `intraday_derived` + aggregate 因子数学（R14 通用核纯态；store schema-version 一次失效实测 46 key 恰 6 变） |
 | #131 | D6d PR-3：新锚转正——`test_phase0_anchor.py` FINAL 全精度三级比对，删 4dp 旧锚断言（1-ulp mutation 验证不削弱门禁） |
+| #132 | 进度文档（D6d） |
+| #133 | D6a-2：panel 富化从 isinstance 分派改声明式路由（`requirements_of` 首个生产消费者；行为等价 fixture + 真数据 oos/subset 对账 n_diffs=0 ×2） |
+| #134 | D7-PR0：run registry 首次接线（启动门 `sync_book_registry` + 评估后 append RunRecord + status 映射） |
+| #135 | 进度文档（D6a-2 + D7-PR0 + D7 收官） |
