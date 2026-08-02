@@ -30,16 +30,31 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from data.availability_policy import ReturnBasis, View
 from data.cache.intervals import subtract_intervals
 from data.cache.intraday_cache import ENDPOINT as INTRADAY_ENDPOINT
 from data.cache.intraday_cache import TushareIntradayCache
 from data.cache.intraday_coverage import IntradayCoverageLedger
 from data.cache.intraday_parquet_store import IntradayParquetStore
-from data.clean.intraday_aggregate import asof_daily_features, mmp_valid_minute_counts
-from data.clean.intraday_schema import RAW_INTRADAY_FREQ, normalize_intraday_bars
+from data.clean.intraday_schema import (
+    DATE_LEVEL,
+    RAW_INTRADAY_FREQ,
+    SYMBOL_LEVEL,
+    TIME_LEVEL,
+    normalize_intraday_bars,
+)
 from data.feed.tushare_flags import TushareFlagsFeed
+from factors import registry as factor_registry
+from factors import service as factor_service
+from factors.compute.minute.intraday_session_ret import SESSION_RET_FACTOR_NAME
+from factors.compute.minute.mmp import MMP_EW_FACTOR_NAME, mmp_valid_minute_counts
+from factors.materialize import MaterializeSources
+from factors.service import DecisionPoint
+from factors.view_lag import minute_decision_cutoff
 from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
+from qt.factor_eval_providers import CacheMinuteProvider
+from qt.factor_source import open_factor_value_store
 from qt.pipeline import (
     _FrameScores,
     _build_cache,
@@ -288,36 +303,183 @@ def _load_price_limits(
     return limits, gap_fetches
 
 
-def _score_panel(cfg: RootConfig, bars: pd.DataFrame, logger) -> tuple[pd.Series, str]:
-    """PIT-safe daily score = the configured I3 intraday feature (I5c).
+#: ``intraday.score_feature`` key -> the D6c-registered factor that serves it.
+#: The other three Literal values (``realized_vol`` / ``vwap`` / ``last30m_ret``)
+#: were catalogued in D6c PR-1 as NOT registered (no first-class factor), so they
+#: are a readable error here — never a silent fallback to a second compute path.
+_SCORE_FACTOR_IDS = {
+    "ret": SESSION_RET_FACTOR_NAME,
+    "mmp_ew": MMP_EW_FACTOR_NAME,
+}
 
-    ``asof_daily_features`` keeps only bars with ``available_time <= decision_time``
-    before aggregating to (date, symbol), so the score for date T is known at T's
-    14:50 cutoff — exactly the information a tail decision may use. The feature is
-    selected by ``intraday.score_feature`` (default ``ret`` reproduces I5a/I5b;
-    ``mmp_ew`` is the exploratory MMP factor); only that one feature is requested
-    and its returned column is used EXACTLY (no prefix matching). Returns the score
-    Series (named ``score``) and the source feature column name.
+
+def _visible_score_cells(bars: pd.DataFrame, decision_time: str) -> pd.MultiIndex:
+    """The (date, symbol) cells the legacy score panel carried, from the SAME cutoff.
+
+    ``minute_decision_cutoff`` is the single definition of "visible at the
+    decision" (``available_time <= trade_date + decision_time``); the legacy
+    ``asof_daily_features`` grouped exactly the surviving bars, so the unique
+    (date, symbol) set of the survivors IS its row set. Reusing the shared
+    filter rather than re-stating the predicate keeps the two from drifting.
+    """
+    empty = pd.MultiIndex.from_arrays(
+        [pd.DatetimeIndex([]), pd.Index([], dtype=object)],
+        names=[DATE_LEVEL, SYMBOL_LEVEL],
+    )
+    visible = minute_decision_cutoff(bars, decision_time=decision_time)
+    if visible.empty:
+        return empty
+    bar_end = visible.index.get_level_values(TIME_LEVEL)
+    cells = pd.MultiIndex.from_arrays(
+        [
+            pd.DatetimeIndex(bar_end).normalize(),
+            pd.Index(visible.index.get_level_values(SYMBOL_LEVEL)).astype(str),
+        ],
+        names=[DATE_LEVEL, SYMBOL_LEVEL],
+    )
+    return cells.unique().sort_values()
+
+
+def _serve_score_panel(
+    cfg: RootConfig,
+    bars: pd.DataFrame,
+    symbols_covered: list[str],
+    store,
+    logger,
+    *,
+    sparse_anchors: bool = False,
+) -> tuple[pd.Series, str]:
+    """The daily score from the FACTOR SERVICE (D6c), shaped as the legacy panel.
+
+    Values now come from ``factors.service`` over the D6c-registered factor
+    (:data:`_SCORE_FACTOR_IDS`) — the store read-through onto the ONE
+    materializer engine — replacing the direct ``asof_daily_features`` call,
+    which was the last second factor-sourcing path on the intraday plane
+    (design decision 3). The pairing is the decision view x exec-to-exec basis
+    these runners decide and settle on. The D6c PR-1 score leg
+    (``artifacts/refactor_baseline/d6c_i5``, frozen) proved the served values
+    cell-identical to the legacy hook (max_abs_diff = 0.0, six configs) BEFORE
+    this switch; what remains here is the SHAPE: the service answers every
+    requested (date, symbol) cell (explicit-NaN footprint rows included), so
+    the result is reindexed to exactly the legacy row set
+    (:func:`_visible_score_cells`) and the dropped footprint rows are logged,
+    keeping ``score_coverage`` (rows/valid/nan) on the same denominator.
+
+    GUARD. The store key carries no cutoff/session dimension, so a config whose
+    ``decision_time`` / ``session_open`` / ``data_lag`` differs from the
+    registered factor's spec would be served the spec-default values under a
+    colliding key with no error. Every shipped I5 config uses the defaults;
+    anything else is refused here, read off the factor's own spec (never a
+    second literal to drift).
+
+    FILL GEOMETRY. A store miss materializes the CONVEX HULL of the requested
+    dates, so a runner whose decisions are the near-continuous trading days of
+    its window (the tail runner) serves them in ONE ``panel`` call, while a
+    runner whose decisions are sparse monthly anchors (the group runner) asks
+    PER DAY (``sparse_anchors=True``) — one range fill over five years of
+    anchors would read the multi-year minute history the anchor-sliced loading
+    exists to avoid. Single-fill ≡ batch-fill is the pinned P8 property, so the
+    two geometries serve identical values.
+
+    Returns the score Series (named ``score``) and the serving factor id (which
+    IS the legacy column name, byte-for-byte — pinned by the D6c factor tests).
     """
     ic = cfg.intraday
     assert ic is not None
-    feats = asof_daily_features(
-        bars,
-        decision_time=ic.decision_time,
-        session_open=ic.session_open,
-        features=[ic.score_feature],
-    )
-    if feats.shape[1] != 1:
+    factor_id = _SCORE_FACTOR_IDS.get(ic.score_feature)
+    if factor_id is None:
         raise ValueError(
-            f"expected exactly one feature column for score_feature="
-            f"{ic.score_feature!r}, got {list(feats.columns)}."
+            f"intraday.score_feature={ic.score_feature!r} has no D6c-registered "
+            f"factor (registered: {sorted(_SCORE_FACTOR_IDS)}); the service "
+            "cannot serve it and this runner no longer computes scores itself. "
+            "Register the factor first (D6c PR-1 catalogued this key as "
+            "deliberately not registered)."
         )
-    col = feats.columns[0]
+    spec = factor_registry.build(factor_id, None).spec
+    mismatched = {
+        field: (got, want)
+        for field, got, want in (
+            ("decision_time", ic.decision_time, spec.decision_cutoff),
+            ("session_open", ic.session_open, spec.session_open),
+            ("data_lag", ic.data_lag, spec.data_lag),
+        )
+        if got != want
+    }
+    if mismatched:
+        detail = "; ".join(
+            f"{field}={got!r} (factor spec declares {want!r})"
+            for field, (got, want) in mismatched.items()
+        )
+        raise ValueError(
+            f"intraday config does not match the registered factor {factor_id!r}: "
+            f"{detail}. The factor value-store key carries no cutoff/session "
+            "dimension, so serving a non-default config would read/write the "
+            "spec-default values under a colliding key. Only the factor-spec "
+            "defaults are servable; use them or register a matching factor."
+        )
+
+    visible_cells = _visible_score_cells(bars, ic.decision_time)
+    if visible_cells.empty:
+        empty_score = pd.Series(
+            [], dtype=float, name="score",
+            index=pd.MultiIndex.from_arrays(
+                [pd.DatetimeIndex([]), pd.Index([], dtype=object)],
+                names=[DATE_LEVEL, SYMBOL_LEVEL],
+            ),
+        )
+        logger.info(
+            "intraday score: feature_key=%s, factor=%s — no bar visible at the "
+            "%s cutoff; empty score panel",
+            ic.score_feature, factor_id, ic.decision_time,
+        )
+        return empty_score, factor_id
+
+    decision_dates = pd.DatetimeIndex(
+        visible_cells.get_level_values(DATE_LEVEL).unique()
+    ).sort_values()
+    decisions = [
+        DecisionPoint(date=d, cutoff=ic.decision_time) for d in decision_dates
+    ]
+    provider = CacheMinuteProvider(cfg.data.cache.root_dir)
+    sources = MaterializeSources(minute=provider)
+    if sparse_anchors:
+        parts = [
+            factor_service.cross_section(
+                [factor_id], symbols_covered, dp,
+                store=store, sources=sources,
+                view=View.DECISION, basis=ReturnBasis.EXEC_TO_EXEC,
+            )
+            for dp in decisions
+        ]
+        served = pd.concat(parts)
+    else:
+        served = factor_service.panel(
+            [factor_id], symbols_covered, decisions,
+            store=store, sources=sources,
+            view=View.DECISION, basis=ReturnBasis.EXEC_TO_EXEC,
+        )
+    served_series = served[factor_id]
+
+    unserved = visible_cells.difference(served_series.index)
+    if len(unserved):
+        raise ValueError(
+            f"the factor service returned no row for {len(unserved)} "
+            f"(date, symbol) cell(s) with visible bars, e.g. "
+            f"{list(unserved[:3])}. A silently short score panel would drop "
+            "names from the cross-section (the I5a red line)."
+        )
+    footprint_dropped = int(len(served_series) - len(visible_cells))
+    score = served_series.reindex(visible_cells).rename("score")
     logger.info(
-        "intraday score: feature_key=%s, column=%s, %d (date,symbol) rows",
-        ic.score_feature, col, len(feats),
+        "intraday score: feature_key=%s, factor=%s, %d (date,symbol) rows over "
+        "%d decision date(s) served by the factor service (%d covered symbols "
+        "requested; %d footprint row(s) outside the visible cells reduced "
+        "away; minute provider calls=%d, live_calls=%d)",
+        ic.score_feature, factor_id, len(score), len(decision_dates),
+        len(symbols_covered), footprint_dropped,
+        provider.calls, provider.live_calls,
     )
-    return feats[col].rename("score"), col
+    return score, factor_id
 
 
 # Minimum cross-sectional sample for a meaningful Spearman IC; below it the IC is
@@ -426,7 +588,8 @@ def run_phase_i5a_intraday(config_path: str) -> I5aResult:
 
     exec_cfg = _exec_cfg_from(cfg)
     bars, covered, uncovered, live_calls = _load_minute_bars_cache_only(cfg, symbols, logger)
-    score_series, score_feature = _score_panel(cfg, bars, logger)
+    with open_factor_value_store(cfg, logger) as store:
+        score_series, score_feature = _serve_score_panel(cfg, bars, covered, store, logger)
     scores = _FrameScores(score_series)
 
     price_limits, stk_limit_gap_fetches = _load_price_limits(cfg, covered, cache, logger)

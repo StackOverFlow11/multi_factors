@@ -12,8 +12,8 @@ Covers the goal's test groups:
    prior-day tail feeds the new day's first-20 baseline.
 3. Config/runner — old I5a/I5b configs validate and default to the ``ret`` score;
    the I5c config selects ``mmp_ew``; an invalid score_feature fails readably;
-   ``_score_panel`` selects MMP without prefix matching; the report heading names
-   I5c; the config Literal mirrors INTRADAY_FEATURE_KEYS (drift guard).
+   ``_serve_score_panel`` selects MMP without prefix matching; the report heading
+   names I5c; the config Literal mirrors INTRADAY_FEATURE_KEYS (drift guard).
 """
 
 from __future__ import annotations
@@ -282,12 +282,27 @@ def test_i5c_score_feature_literal_mirrors_feature_keys():
     assert "mmp_ew" not in DEFAULT_FEATURE_KEYS  # selectable-only, not a default column
 
 
-def test_i5c_score_panel_selects_mmp_without_prefix_matching():
-    from qt.intraday_tail_framework import _score_panel
+def test_i5c_serve_score_panel_selects_mmp_without_prefix_matching(monkeypatch):
+    from factors import service as factor_service
+    from factors.compute.minute.mmp import compute_intraday_mmp_ew
+    from qt.intraday_tail_framework import _serve_score_panel
 
     cfg = load_config(str(_I5C_CONFIG))
     bars = _mbars(_controlled_day(n=25))
-    series, col = _score_panel(cfg, bars, logging.getLogger("test.i5c"))
+    calls: list[list[str]] = []
+
+    def fake_panel(factor_ids, universe, decisions, **kwargs):
+        calls.append(list(factor_ids))
+        # The registered factor's own raw compute (single MMP definition
+        # point) stands in for the service; what is asserted here is the
+        # runner's key->factor mapping and shape, not the math.
+        return compute_intraday_mmp_ew(bars).to_frame()
+
+    monkeypatch.setattr(factor_service, "panel", fake_panel)
+    series, col = _serve_score_panel(
+        cfg, bars, ["000001.SZ"], object(), logging.getLogger("test.i5c")
+    )
+    assert calls == [[_MMP_COL]]  # exactly the one factor id, no prefix matching
     assert col == _MMP_COL
     assert series.name == "score"
     assert (pd.Timestamp(_DAY), "000001.SZ") in series.index
