@@ -367,9 +367,9 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     panel = _load_panel(cfg, symbols, logger, cache)
     factors = _build_factors(cfg)
     primary = factors[0]
-    panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
-    panel = _maybe_enrich_value(cfg, panel, symbols, factors, logger)
-    panel = _maybe_enrich_covariates(cfg, panel, symbols, logger)
+    panel = _maybe_enrich_financials(cfg, panel, symbols, factors, logger, cache)
+    panel = _maybe_enrich_value(cfg, panel, symbols, factors, logger, cache)
+    panel = _maybe_enrich_covariates(cfg, panel, symbols, logger, cache)
     panel = _maybe_enrich_listing(cfg, panel, symbols, logger, cache)
     # P4-1/P4-2: one cache-stats line after every cached endpoint has run.
     _log_run_cache_stats(cache, logger)
@@ -441,7 +441,7 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
             diag_fields[0], [f.name for f in factors],
         )
         diag_panel = _maybe_enrich_financials(
-            cfg, panel, symbols, [FinancialFactor(diag_fields[0])], logger
+            cfg, panel, symbols, [FinancialFactor(diag_fields[0])], logger, cache
         )
     financial_coverage: dict[str, dict] = {}
     for field in diag_fields:

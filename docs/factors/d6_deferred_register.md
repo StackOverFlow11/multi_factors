@@ -105,10 +105,16 @@ so it is a real change with its own behaviour surface, not a rename.
 
 ## D6a-3 — three runners do not pass the shared cache to three enrichments
 
-**Status:** deferred, behaviour-preserving-on-purpose. **Owner:** D6b.
+**Status:** DISPOSED in D6b PR-1. The shared cache is now threaded through all
+three enrichments at every call site (`qt/oos_stability.py`,
+`qt/subset_validation.py`, `qt/phase2_baseline.py` — including the
+ann_date-coverage diagnostic path). Configs without a `data.cache` block still
+build `cache=None`, so for them the call-shape change is a byte-for-byte no-op
+(the P4 `cache=None` semantics are unchanged); configs with caching enabled no
+longer fetch `fina_indicator` / `daily_basic` / `index_member_all` live.
 
 `qt/phase2_baseline.py`, `qt/oos_stability.py` and `qt/subset_validation.py`
-call
+used to call
 
 ```
 _maybe_enrich_financials(cfg, panel, symbols, factors, logger)
@@ -116,27 +122,33 @@ _maybe_enrich_value(cfg, panel, symbols, factors, logger)
 _maybe_enrich_covariates(cfg, panel, symbols, logger)
 ```
 
-with five positional arguments, so the trailing `cache=None` default applies and
-those three endpoints (`fina_indicator`, `daily_basic`, `index_member_all`) are
+with five positional arguments, so the trailing `cache=None` default applied and
+those three endpoints (`fina_indicator`, `daily_basic`, `index_member_all`) were
 fetched **live on every run**, bypassing the P4 read-through cache.
-`qt.pipeline.run_phase0` passes the cache to all four.
+`qt.pipeline.run_phase0` passed the cache to all four.
 
-**Why not now:** passing it *is* a behaviour change (gap-fetch counts and wall
-time move, and a cached read can serve a different vintage than a live one), and
-D6a's whole claim is that nothing but the factor-sourcing path changed. Fixing it
-inside a path switch would mean a moved number with two candidate causes.
-
-D6b touches these three runners anyway.
+**Why it was not fixed inside D6a:** passing it *is* a behaviour change
+(gap-fetch counts and wall time move, and a cached read can serve a different
+vintage than a live one), and D6a's whole claim was that nothing but the
+factor-sourcing path changed. Fixing it inside a path switch would have meant a
+moved number with two candidate causes. D6b PR-1 owns the fix instead, paired
+with the L0/L1 capture that measures exactly this vintage question.
 
 ---
 
 ## D6a-4 — `config/phase2_real_baseline.yaml` has no cache block
 
-**Status:** noted. **Owner:** D6b or ops.
+**Status:** DISPOSED in D6b PR-1 (for the phase-3 class the item stood for).
 
 The un-cached phase2 config cannot run cache-only; `config/phase2_real_baseline_cached.yaml`
 is its cached twin (same universe, same window) and is what D6a's real-run
-reconciliation used.
+reconciliation used. The same gap existed on all five `config/phase3_real_*`
+validation configs (no `data.cache` block → every endpoint fetched live);
+D6b PR-1 adds their cached twins (`config/phase3_real_*_cached.yaml` — byte-
+identical except the added `data.cache` block), which is what the D6b L1/L1'
+cache-only captures run on. The ORIGINALS stay un-cached on purpose: they are
+the L0 (live legacy) capture configs, so the vintage question (D6a-5) is
+measured rather than assumed away.
 
 ---
 
