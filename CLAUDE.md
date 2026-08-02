@@ -66,15 +66,15 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 | 项 | 值 |
 |---|---|
-| `main` | 下表全部 gate 实测于 `bb59fdf`（PR #127） |
-| `pytest -p no:warnings` | **2796 passed + 1 skipped**（主 checkout 口径；⚠️ 不要再传 `-q`：`pyproject.toml` 已含 `addopts="-q"`，叠成 `-qq` 会吞掉摘要行） |
+| `main` | 下表全部 gate 实测于 `683ff63`（PR #131） |
+| `pytest -p no:warnings` | **2783 passed + 1 skipped**（主 checkout 口径；⚠️ 不要再传 `-q`：`pyproject.toml` 已含 `addopts="-q"`，叠成 `-qq` 会吞掉摘要行） |
 | `ruff check .` | clean |
-| phase0 锚（`run-phase0 --config config/example.yaml`） | **ic 0.9600 / annual 0.8408**（自 P0 起从未变过，任何改动都不许动它） |
+| phase0 锚（FINAL：`tests/test_phase0_anchor.py`，8 个全精度值三级比对） | **ic 0.9600 / annual 0.8408**（4dp 读数是 FINAL 全精度锚的推论；D6d #131 转正、4dp 旧断言已删，任何改动都不许动它） |
 | `qt.exec_baseline_freeze --verify` | **77/77 @ `45c14aa`** |
 | `validate-config` | 37/37（32 + 5 个 cached twin 配置） |
 | 唯一 OPEN 的 PR | #38（历史遗留，保持 OPEN） |
 
-**当前主线 = 因子层深度重构（设计 v3.2，D0–D7）。D5 已全部收口**：C5 四腿对账 33 格全绿（#113），**C6 完成（#115 改造 + #116 删除）——11 个旧 runner 归零，决策③「杀第二条因子取数路径」收尾**，三个重生成工具退役为 verify-only、D1 基线 frozen-forever、校验已接进 C5 harness 的三个读入点。**D6a 已收口（#118）**：phase0/phase2 切 FactorService，真实 phase2 逐格 `max_abs_diff=0.0`、锚未动（R10：新锚 D6d 才转正）；顺带堵死一个**已经在发生**的红线 #6 违反（demo 值写进共享 store）。**D6b 已收口（#122–#124）**：oos/subset/robustness 切 FactorService，**先抓 legacy 再切**（D6a-5 教训）——PR-1 基线工程（capture harness + cached twins + `d6b_phase3` 冻结基线）中抓出 fina 并列披露 tie-break 缺陷（#122 单独 PR）与 fina tail 泄漏（`fina_tail_days: 0` 封），PR-2 切换后 S1 冷/S2 暖 vs 冻结基线**全叶子 0**。**D6c 已收口（#126/#127）**：intraday 两 runner（tail + group）切 FactorService——PR-1 先把 `mmp_ew`/`ret` 注册为正式因子（factor_id=legacy 列名保报告逐字节；binding 显式条目致全部已存因子 key 一次性失效已披露）并冻结 `d6c_i5` 基线（**score 腿 6/6 max_abs_diff=0.0**，新因子 ≡ legacy hook 的真数据值级证据在切换前就落盘），PR-2 切换后 S1 冷/S2 暖 × 6 配置 vs L1 **12/12 n_diffs=0**、执行面零改动。**下一步 = D6d**（删 shim/死 helper/aggregate 因子数学 + 新锚转正，4 PR 切分已定），然后 D7 收官全量重评估（**exec-only**）。D6c 登记三条 follow-up（详见 `docs/progress/07_factor_layer_refactor.md` D6c 条）：store key 无 cutoff 维（现由 runner guard 挡住，结构性修复留 D6d/D7）、未注册 score_feature 报错前置 fast-fail、`ret` 数学留 aggregate（R14 通用核）。
+**当前主线 = 因子层深度重构（设计 v3.2，D0–D7）。D5 已全部收口**：C5 四腿对账 33 格全绿（#113），**C6 完成（#115 改造 + #116 删除）——11 个旧 runner 归零，决策③「杀第二条因子取数路径」收尾**，三个重生成工具退役为 verify-only、D1 基线 frozen-forever、校验已接进 C5 harness 的三个读入点。**D6a 已收口（#118）**：phase0/phase2 切 FactorService，真实 phase2 逐格 `max_abs_diff=0.0`、锚未动（R10：新锚 D6d 才转正）；顺带堵死一个**已经在发生**的红线 #6 违反（demo 值写进共享 store）。**D6b 已收口（#122–#124）**：oos/subset/robustness 切 FactorService，**先抓 legacy 再切**（D6a-5 教训）——PR-1 基线工程（capture harness + cached twins + `d6b_phase3` 冻结基线）中抓出 fina 并列披露 tie-break 缺陷（#122 单独 PR）与 fina tail 泄漏（`fina_tail_days: 0` 封），PR-2 切换后 S1 冷/S2 暖 vs 冻结基线**全叶子 0**。**D6c 已收口（#126/#127）**：intraday 两 runner（tail + group）切 FactorService——PR-1 先把 `mmp_ew`/`ret` 注册为正式因子（factor_id=legacy 列名保报告逐字节；binding 显式条目致全部已存因子 key 一次性失效已披露）并冻结 `d6c_i5` 基线（**score 腿 6/6 max_abs_diff=0.0**，新因子 ≡ legacy hook 的真数据值级证据在切换前就落盘），PR-2 切换后 S1 冷/S2 暖 × 6 配置 vs L1 **12/12 n_diffs=0**、执行面零改动。**D6d 已收口（#129–#131）——D6 全部收口**：legacy 取数路径删除（`_serve_factor_panel` 成独一入口）、10 shim + `intraday_derived` + aggregate 因子数学归零（R14 通用核纯态；store schema-version 一次失效实测 46 key 恰 6 变）、**phase0 锚转正为 FINAL 全精度锚**（#131）。**下一步 = D6a-2**（isinstance 分派清理，排在 D7 前），然后 D7 收官全量重评估（**exec-only**）。D6d 登记三条 follow-up（详见 `docs/progress/07_factor_layer_refactor.md` D6d 条）：fina_indicator 快照覆盖漂移（疑与 #122 后 fina 请求形状有关）、D6a-2 清理、`registry.requirements()` 保留不删（D6a-2 落地才有首个生产调用者）。D6c 登记三条 follow-up（详见 `docs/progress/07_factor_layer_refactor.md` D6c 条）：store key 无 cutoff 维（现由 runner guard 挡住，结构性修复留 D7）、未注册 score_feature 报错前置 fast-fail、`ret` 数学留 aggregate（R14 通用核）。
 
 > **接手必读（唯一入口）**：[`tmp/design/HANDOFF_2026-07-30_claude_code.md`](tmp/design/HANDOFF_2026-07-30_claude_code.md)
 > ——含当前截面、F1–F5 裁定速查表、六步路线、派发/评审/限额的具体操作法、陷阱清单。
@@ -146,6 +146,6 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 路线图
 
-1. **因子层重构收尾（当前主线）**：~~F1 (#112)~~ → ~~C5 audit (#113)~~ → ~~C5 进度文档 (#114)~~ → ~~C6 (#115+#116)~~ → ~~D6a (#118)~~ → ~~D6b (#122–#124)~~ → ~~D6c (#126/#127)~~ → **D6d（下一步：删 shim/死 helper/aggregate 因子数学 + 新锚转正，4 PR 切分已定）** → D7 收官全量重评估（**exec-only**）。
+1. **因子层重构收尾（当前主线）**：~~F1 (#112)~~ → ~~C5 audit (#113)~~ → ~~C5 进度文档 (#114)~~ → ~~C6 (#115+#116)~~ → ~~D6a (#118)~~ → ~~D6b (#122–#124)~~ → ~~D6c (#126/#127)~~ → ~~D6d (#129–#131)~~ → **D6a-2（下一步：isinstance 分派清理，D7 前）** → D7 收官全量重评估（**exec-only**）。
 2. **因子研究**：十一因子无一到 Adopt ⇒ 下一步优先做**换手/成本敏感的组合层验证**与更长 holdout，而不是继续堆新因子；补 PR #79 的 review；修订 HTML compendium。
 3. **可选、须单独显式 goal**：I5g（强制 partial-fill / volume-cap）；数据层 D6（`PanelStore` append/partition，仅当因子研究需要可复用派生面板时才启动）；schema 守卫接 live `data-update`。
