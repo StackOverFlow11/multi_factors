@@ -81,8 +81,14 @@ def test_phase0_equal_weight_default_numbers_unchanged(tmp_path, example_config_
     result = run_phase0(str(_write_cfg(tmp_path, example_config_path)))
     assert result.alpha_summary == {"model": "equal_weight"}
     assert result.alpha_weights is None
-    assert result.ic_mean == pytest.approx(0.96, abs=0.005)
-    assert result.performance["annual_return"] == pytest.approx(0.8408, abs=0.005)
+    # Coarse reading of the FINAL anchor (tests/test_phase0_anchor.py pins the
+    # same metrics at full precision; keep the two in one place by importing it).
+    from tests.test_phase0_anchor import PHASE0_ANCHOR
+
+    assert result.ic_mean == pytest.approx(PHASE0_ANCHOR["ic_mean"], abs=0.005)
+    assert result.performance["annual_return"] == pytest.approx(
+        PHASE0_ANCHOR["annual_return"], abs=0.005
+    )
     text = result.report_path.read_text(encoding="utf-8")
     assert "## Alpha model" in text and "`equal_weight`" in text
 
