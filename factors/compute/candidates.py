@@ -38,8 +38,11 @@ VALUE_FIELDS: tuple[str, ...] = ("value_ep", "value_bp")
 
 # The daily_basic source field behind each surfaced value column (D1 requires
 # declaration: the factor reads the enriched panel column, but the DATA it
-# needs is the published ratio on this endpoint field).
-_VALUE_SOURCE_FIELD: dict[str, str] = {"value_ep": "pe", "value_bp": "pb"}
+# needs is the published ratio on this endpoint field). Public: the pipeline's
+# enrichment routing (D6a-2) INVERTS this map to route a declared ``pe``/``pb``
+# requirement back to the derived ``value_ep``/``value_bp`` panel column —
+# authored once here, so the two directions can never drift apart.
+VALUE_SOURCE_FIELDS: dict[str, str] = {"value_ep": "pe", "value_bp": "pb"}
 
 # Per-field evaluation contract metadata for the value pack. expected_ic_sign=+1
 # for both: the classic value prior (cheap earns more than expensive), and the
@@ -405,7 +408,7 @@ class ValueFactor(Factor):
             return_basis="close_to_close",
             input_fields=(self._field,),
             requires=(
-                PanelField(_VALUE_SOURCE_FIELD[self._field], source=DAILY_BASIC),
+                PanelField(VALUE_SOURCE_FIELDS[self._field], source=DAILY_BASIC),
             ),
             adjustment="none",
             overnight_boundary="none",

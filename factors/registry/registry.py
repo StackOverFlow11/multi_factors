@@ -245,21 +245,40 @@ class FactorRegistry:
 
         Builds each factor (so every naming check applies — a window-named
         factor with a non-default window needs its params here exactly like
-        in ``build``) and unions ``spec.requires`` preserving first-seen
-        order. This is the D4 materializer's one-stop shopping list; in D1 it
-        only needs to be callable and correct.
+        in ``build``) and unions ``spec.requires`` via
+        :func:`requirements_of`, preserving first-seen order. This is the D4
+        materializer's one-stop shopping list; callers that already HOLD the
+        built instances (the pipeline's enrichment routing, D6a-2) aggregate
+        them through :func:`requirements_of` directly, so the union logic
+        still lives in exactly one place.
         """
         params_by_name = params_by_name or {}
-        seen: dict[PanelField, None] = {}
-        for name in names:
-            factor = self.build(name, params_by_name.get(name))
-            for requirement in factor.spec.requires or ():
-                seen.setdefault(requirement, None)
-        return tuple(seen)
+        return requirements_of(
+            self.build(name, params_by_name.get(name)) for name in names
+        )
 
 
 #: The process-wide registry ``factors/registry/builtin.py`` populates.
 DEFAULT_REGISTRY = FactorRegistry()
+
+
+def requirements_of(factors: Iterable[Factor]) -> tuple[PanelField, ...]:
+    """Union the ``spec.requires`` of BUILT factors, deduped in first-seen order.
+
+    The ONE requirements-aggregation loop in the codebase (author-once):
+    :meth:`FactorRegistry.requirements` builds factors from config names and
+    delegates here; callers that already hold the instances — the pipeline's
+    enrichment routing (D6a-2), which must read the declarations of the very
+    objects it is about to run, not rebuild them — aggregate through this
+    directly. Reading ``factor.spec`` also works for any concrete
+    :class:`~factors.base.Factor` subclass, registered or not: the routing is
+    driven by the DECLARATION, not by registry membership.
+    """
+    seen: dict[PanelField, None] = {}
+    for factor in factors:
+        for requirement in factor.spec.requires or ():
+            seen.setdefault(requirement, None)
+    return tuple(seen)
 
 
 def register(
@@ -311,6 +330,7 @@ __all__ = [
     "build",
     "register",
     "requirements",
+    "requirements_of",
     "require_legal_pairing",
     "resolve",
 ]

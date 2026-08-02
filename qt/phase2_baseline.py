@@ -46,6 +46,7 @@ from qt.pipeline import (
     _build_scores,
     _build_universe,
     _collect_downgrades,
+    _declared_fina_fields,
     _serve_factor_panel,
     _factor_analytics,
     _standard_analytics,
@@ -429,7 +430,7 @@ def run_phase2_baseline(config_path: str) -> Phase2Result:
     # ann_date coverage PER financial field (P3-1). Traded financial factors are
     # already on the panel (one batched fetch); a run with NO financial factor
     # still reports the default field as a pure diagnostic (extra fetch, not traded).
-    factor_fields = [f.name for f in factors if isinstance(f, FinancialFactor)]
+    factor_fields = _declared_fina_fields(factors)
     if factor_fields:
         diag_fields = list(factor_fields)
         diag_panel = panel
