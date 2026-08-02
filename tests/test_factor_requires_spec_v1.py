@@ -32,19 +32,27 @@ from factors.compute.candidates import (
     VolatilityFactor,
 )
 from factors.compute.financial import FinancialFactor
-from factors.compute.intraday_derived import (
+from factors.compute.minute.amp_marginal_anomaly_vol import (
     AmpMarginalAnomalyVolFactor,
-    IntradayAmpCutFactor,
-    JumpAmountCorrFactor,
-    MinuteIdealAmplitudeFactor,
-    PeakIntervalKurtosisFactor,
-    PeakRidgeAmountRatioFactor,
-    RidgeMinuteReturnFactor,
-    ValleyPriceQuantileFactor,
-    ValleyRelativeVwapFactor,
-    ValleyRidgeVwapRatioFactor,
-    VolumePeakCountFactor,
 )
+from factors.compute.minute.intraday_amp_cut import IntradayAmpCutFactor
+from factors.compute.minute.jump_amount_corr import JumpAmountCorrFactor
+from factors.compute.minute.minute_ideal_amplitude import (
+    MinuteIdealAmplitudeFactor,
+)
+from factors.compute.minute.peak_interval_kurtosis import (
+    PeakIntervalKurtosisFactor,
+)
+from factors.compute.minute.peak_ridge_amount_ratio import (
+    PeakRidgeAmountRatioFactor,
+)
+from factors.compute.minute.ridge_minute_return import RidgeMinuteReturnFactor
+from factors.compute.minute.valley_price_quantile import ValleyPriceQuantileFactor
+from factors.compute.minute.valley_relative_vwap import ValleyRelativeVwapFactor
+from factors.compute.minute.valley_ridge_vwap_ratio import (
+    ValleyRidgeVwapRatioFactor,
+)
+from factors.compute.minute.volume_peak_count import VolumePeakCountFactor
 from factors.compute.momentum import MomentumFactor
 from factors.spec import FactorSpec, PanelField
 

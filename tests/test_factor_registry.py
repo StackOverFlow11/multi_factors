@@ -33,8 +33,8 @@ from factors.compute.candidates import (
     VolatilityFactor,
 )
 from factors.compute.financial import FinancialFactor
-from factors.compute.intraday_derived import JumpAmountCorrFactor
 from factors.compute.minute.intraday_session_ret import IntradaySessionRetFactor
+from factors.compute.minute.jump_amount_corr import JumpAmountCorrFactor
 from factors.compute.minute.mmp import MmpEwFactor
 from factors.compute.momentum import MomentumFactor
 from factors.registry import (
