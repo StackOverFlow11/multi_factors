@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import logging
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from qt import phase_i5_capture as cap
 from qt.intraday_group_backtest import I5dResult
@@ -147,6 +150,54 @@ def test_compare_score_served_only_finite_value_fails():
     report = cap.compare_score_series(_legacy(), served)
     assert report["verdict_pass"] is False
     assert report["served_only_all_nan"] is False
+
+
+# --------------------------------------------------------------------------- #
+# D6d: the mmp_ew legacy reference reads the FROZEN D6c score leg
+# --------------------------------------------------------------------------- #
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+
+
+def _i5c_cfg():
+    from qt.config import load_config
+
+    cfg = load_config(str(_CONFIG_DIR / "phase_i5c_mmp_minute_factor.yaml"))
+    assert cfg.intraday is not None and cfg.intraday.score_feature == "mmp_ew"
+    return cfg
+
+
+@pytest.mark.skipif(
+    not (cap._FROZEN_SCORE_LEG_ROOT / "phase_i5c_mmp_minute_factor" / "legacy_score.parquet").is_file(),
+    reason="frozen d6c_i5 score leg is gitignored; present only on the run host",
+)
+def test_legacy_score_panel_mmp_reads_the_frozen_score_leg():
+    cfg = _i5c_cfg()
+    legacy, column = cap._legacy_score_panel(cfg, None, logging.getLogger("test"))
+    assert column == "intraday_mmp20_ew_0930_1450"
+    assert legacy.name == "score" and len(legacy) > 0
+    assert bool(legacy.notna().any())  # anti-vacuity: a real reference
+
+
+def test_legacy_score_panel_mmp_missing_frozen_leg_is_loud(tmp_path, monkeypatch):
+    monkeypatch.setattr(cap, "_FROZEN_SCORE_LEG_ROOT", tmp_path)
+    with pytest.raises(FileNotFoundError, match="frozen D6c score leg"):
+        cap._legacy_score_panel(_i5c_cfg(), None, logging.getLogger("test"))
+
+
+def test_legacy_score_panel_mmp_vacuous_frozen_leg_is_loud(tmp_path, monkeypatch):
+    # A present-but-all-NaN parquet must NOT pass as the legacy reference.
+    cfg = _i5c_cfg()
+    monkeypatch.setattr(cap, "_FROZEN_SCORE_LEG_ROOT", tmp_path)
+    d = tmp_path / cfg.output.intraday_report_name
+    d.mkdir(parents=True)
+    index = pd.MultiIndex.from_tuples(
+        [(pd.Timestamp("2026-03-31"), "000001.SZ")], names=["date", "symbol"]
+    )
+    pd.DataFrame({"score": [float("nan")]}, index=index).to_parquet(
+        d / "legacy_score.parquet"
+    )
+    with pytest.raises(ValueError, match="vacuous"):
+        cap._legacy_score_panel(cfg, None, logging.getLogger("test"))
 
 
 # --------------------------------------------------------------------------- #

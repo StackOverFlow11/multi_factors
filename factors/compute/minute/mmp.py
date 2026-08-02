@@ -2,18 +2,18 @@
 
 EXPLORATORY factor (never promoted; I5d's CSI500 monotonicity degraded on the
 corrected engine and I5e's CSI300 generalization failed — MMP is on hold). The
-math lives HERE since D2 (moved from ``data.clean.intraday_aggregate``, which
-re-exports it); the daily equal-weight aggregation is consumed through
-``asof_daily_features(features=["mmp_ew"])`` in the aggregate module's generic
-core, which imports :func:`mmp_ew_daily` from this module. D6c adds the
-first-class factor surface: :func:`compute_intraday_mmp_ew` (visible-filter +
-per-session groupby around the SAME ``mmp_ew_daily``) and
-:class:`MmpEwFactor`, whose id is the legacy aggregate column name.
+math lives HERE since D2 (moved from ``data.clean.intraday_aggregate``); the
+aggregate re-exported it through D6c, and D6d deleted both the re-exports and
+the aggregate's ``mmp_ew`` feature hook — this module is the ONLY definition
+point. D6c adds the first-class factor surface:
+:func:`compute_intraday_mmp_ew` (visible-filter + per-session groupby around
+the SAME ``mmp_ew_daily``) and :class:`MmpEwFactor`, whose id is the legacy
+aggregate column name.
 
 Layering note: this module must NEVER import ``data.clean.intraday_aggregate``
-— the aggregate module imports THIS one (re-export + feature hook), so an
-import back would be a genuine cycle. Everything shared lives in
-``data.clean.intraday_schema`` / ``factors.compute.minute.primitives``.
+— the aggregate's generic core and the factor modules both depend on
+``data.clean.intraday_schema`` / ``factors.compute.minute.primitives``, the
+single homes importable from both sides without a cycle.
 
 The window is part of the factor definition, not a tuned parameter.
 """
@@ -191,9 +191,10 @@ def mmp_valid_minute_counts(
 
 
 #: The factor id of the MMP equal-weight session score — byte-identical to the
-#: legacy I3 aggregate column name (``data.clean.intraday_aggregate._column_name``
-#: derives the same string from the same constants), because every shipped report
-#: is keyed on that column name verbatim. Pinned equal by test.
+#: legacy I3 aggregate column name (the pre-D6d
+#: ``data.clean.intraday_aggregate._column_name`` derived the same string from
+#: the same constants), because every shipped report is keyed on that column
+#: name verbatim. Pinned equal by test.
 MMP_EW_FACTOR_NAME = f"intraday_mmp{MMP_LOOKBACK}_ew_0930_1450"
 
 

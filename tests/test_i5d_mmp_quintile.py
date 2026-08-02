@@ -28,8 +28,8 @@ import pandas as pd
 import pytest
 
 from data.clean.intraday_schema import normalize_intraday_bars
-from data.clean.intraday_aggregate import asof_daily_features
 from data.clean.schema import normalize_panel
+from factors.compute.minute.mmp import compute_intraday_mmp_ew
 from qt.config import load_config
 from qt.intraday_group_backtest import (
     GroupRunResult,
@@ -221,9 +221,9 @@ def _mmp_assignment(extra_rows: list[dict] | None = None) -> dict:
     if extra_rows:
         rows += extra_rows
     bars = _bars(rows)
-    score = asof_daily_features(
-        bars, decision_time="14:50:00", session_open="09:30:00", features=["mmp_ew"]
-    ).iloc[:, 0].rename("score")
+    score = compute_intraday_mmp_ew(
+        bars, decision_time="14:50:00", session_open="09:30:00"
+    ).rename("score")
     panel = _daily_panel({(str(_JAN.date()), s): 10.0 for s in "ABC"})
     assignment = _build_group_assignment(
         score, StaticUniverse(["A", "B", "C"]), panel, [_JAN], {"A", "B", "C"}, 3

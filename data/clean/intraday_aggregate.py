@@ -30,13 +30,23 @@ portfolio / runtime, and never sees a token. Coarser intraday bars, if needed,
 are DERIVED here from 1min via :func:`resample_intraday_bars` (never raw-fetched),
 and a derived bar inherits ``available_time = max(source_1min.available_time)``.
 
-D2 MIXED-MODULE NOTE (design v3.2 §6.4 / R14): this module is the GENERIC CORE
-that stays real code — ``asof_daily_features`` / ``resample_intraday_bars`` and
-the feature-key machinery. The FACTOR math that used to live here migrated to
-``factors.compute.minute`` and is RE-EXPORTED below for the existing importers
-(deleted in D6d): the MMP per-bar math (``factors.compute.minute.mmp``) and the
-jump-amount-corr factor (``factors.compute.minute.jump_amount_corr``). The
-shared index/session constants moved one level down to
+GENERIC-CORE FINAL STATE (design v3.2 §6.4 / R14; D6d): this module is the
+GENERIC CORE and nothing else. The boundary rule, fixed in words:
+
+  * GENERIC CORE — the machinery that aggregates PIT-visible bars into daily
+    features / derives coarser bars, plus the cutoff execution semantics:
+    ``asof_daily_features`` (the four price features ``ret`` /
+    ``realized_vol`` / ``vwap`` / ``last30m_ret``) and
+    ``resample_intraday_bars``. It stays real code HERE (data layer).
+  * FACTOR MATH — any named definition that exists as a registered factor.
+    Its home is ``factors/`` (``factors.compute.minute.*``), NEVER here. The
+    MMP math (``factors.compute.minute.mmp``) and the jump-amount-corr factor
+    (``factors.compute.minute.jump_amount_corr``) moved out in D2; the D2-D6c
+    re-export aliases and the ``mmp_ew`` feature hook were DELETED in D6d — a
+    named factor reached through this module again is a resurrection, locked
+    against by ``tests/test_d6d_deleted_intraday_surface.py``.
+
+The shared index/session constants live one level down in
 ``data.clean.intraday_schema`` (single home importable from BOTH sides without
 a cycle) and are re-exported here unchanged.
 """
@@ -58,44 +68,19 @@ from data.clean.intraday_schema import (
     validate_intraday_bars,
 )
 
-# D2 re-exports: factor math now defined in factors.compute.minute (single
-# definition point from D2 on; these aliases are deleted with the shims in D6d).
-# The aggregate module may import factors.compute.minute.{mmp,jump_amount_corr}
-# because NEITHER of those modules imports this one (they depend only on
-# intraday_schema + primitives) — no import cycle.
-from factors.compute.minute.jump_amount_corr import (  # noqa: F401  (re-export)
-    JUMP_LOOKBACK_DAYS,
-    JUMP_MIN_PAIRS,
-    JUMP_Z,
-    compute_jump_amount_corr,
-)
-from factors.compute.minute.mmp import (  # noqa: F401  (re-export + feature hook)
-    DEFAULT_EPSILON,
-    MMP_LOOKBACK,
-    compute_minute_mmp,
-    mmp_ew_daily as _mmp_ew_daily_impl,
-    mmp_valid_minute_counts,
-)
-
-# All selectable feature keys (validated against the ``features`` argument and
-# mirrored by qt.config.IntradayCfg.score_feature). Column NAMES below encode the
-# cutoff and are derived from the time arguments.
+# All selectable feature keys (validated against the ``features`` argument).
+# Column NAMES below encode the cutoff and are derived from the time arguments.
+# These are the GENERIC CORE's four price features only (D6d): the ``mmp_ew``
+# feature hook is deleted — MMP exists solely as the registered factor
+# ``factors.compute.minute.mmp.MmpEwFactor``.
 INTRADAY_FEATURE_KEYS: tuple[str, ...] = (
     "ret",
     "realized_vol",
     "vwap",
     "last30m_ret",
-    "mmp_ew",
 )
-# Default feature set when ``features`` is None — the original cheap four. ``mmp_ew``
-# (the I5c rolling MMP factor) is selectable-only, so the default output columns and
-# the cost of a no-args call stay EXACTLY as before (existing callers unchanged).
-DEFAULT_FEATURE_KEYS: tuple[str, ...] = (
-    "ret",
-    "realized_vol",
-    "vwap",
-    "last30m_ret",
-)
+# Default feature set when ``features`` is None — the full generic-core set.
+DEFAULT_FEATURE_KEYS: tuple[str, ...] = INTRADAY_FEATURE_KEYS
 
 DEFAULT_LAST_WINDOW_MINUTES = 30
 
@@ -137,8 +122,6 @@ def _column_name(
     if key == "last30m_ret":
         start = _hhmm_minus(decision_time, last_window_minutes)
         return f"intraday_last{int(last_window_minutes)}m_ret_{start}_{c}"
-    if key == "mmp_ew":
-        return f"intraday_mmp{MMP_LOOKBACK}_ew_{o}_{c}"
     raise ValueError(f"Unhandled intraday feature key: {key!r}.")
 
 
@@ -156,9 +139,6 @@ def _compute_group(
     g: pd.DataFrame,
     decision_time: str,
     last_window_minutes: int,
-    keys: list[str],
-    epsilon: float,
-    session_open: str,
 ) -> dict[str, float]:
     """Per-(date, symbol) features from already PIT-filtered, bar_end-sorted bars."""
     closes = g["close"].to_numpy(dtype=float)
@@ -195,9 +175,6 @@ def _compute_group(
         "vwap": vwap,
         "last30m_ret": last30,
     }
-    # MMP is the only rolling feature; compute it ONLY when requested (I5c).
-    if "mmp_ew" in keys:
-        out["mmp_ew"] = _mmp_ew_daily_impl(g, epsilon, trade_date, session_open)
     return out
 
 
@@ -208,7 +185,6 @@ def asof_daily_features(
     session_open: str = DEFAULT_SESSION_OPEN,
     last_window_minutes: int = DEFAULT_LAST_WINDOW_MINUTES,
     features: list[str] | None = None,
-    epsilon: float = DEFAULT_EPSILON,
 ) -> pd.DataFrame:
     """PIT-safe daily features from normalized 1min ``bars``.
 
@@ -240,9 +216,7 @@ def asof_daily_features(
     index_tuples: list[tuple] = []
     data: dict[str, list[float]] = {c: [] for c in colnames}
     for (date, sym), g in visible.groupby(["trade_date", SYMBOL_LEVEL], sort=True):
-        feats = _compute_group(
-            g, decision_time, last_window_minutes, keys, epsilon, session_open
-        )
+        feats = _compute_group(g, decision_time, last_window_minutes)
         index_tuples.append((date, str(sym)))
         for key, col in zip(keys, colnames):
             data[col].append(feats[key])
@@ -305,18 +279,10 @@ __all__ = [
     "DAILY_INDEX_NAMES",
     "DATE_LEVEL",
     "DEFAULT_DECISION_TIME",
-    "DEFAULT_EPSILON",
     "DEFAULT_FEATURE_KEYS",
     "DEFAULT_LAST_WINDOW_MINUTES",
     "DEFAULT_SESSION_OPEN",
     "INTRADAY_FEATURE_KEYS",
-    "JUMP_LOOKBACK_DAYS",
-    "JUMP_MIN_PAIRS",
-    "JUMP_Z",
-    "MMP_LOOKBACK",
     "asof_daily_features",
-    "compute_jump_amount_corr",
-    "compute_minute_mmp",
-    "mmp_valid_minute_counts",
     "resample_intraday_bars",
 ]

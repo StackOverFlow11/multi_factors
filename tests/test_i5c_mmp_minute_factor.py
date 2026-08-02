@@ -13,7 +13,8 @@ Covers the goal's test groups:
 3. Config/runner — old I5a/I5b configs validate and default to the ``ret`` score;
    the I5c config selects ``mmp_ew``; an invalid score_feature fails readably;
    ``_serve_score_panel`` selects MMP without prefix matching; the report heading
-   names I5c; the config Literal mirrors INTRADAY_FEATURE_KEYS (drift guard).
+   names I5c; the config Literal covers the generic-core feature keys plus the
+   registered ``mmp_ew`` factor (drift guard).
 """
 
 from __future__ import annotations
@@ -31,11 +32,13 @@ from pydantic import ValidationError
 from data.clean.intraday_aggregate import (
     DEFAULT_FEATURE_KEYS,
     INTRADAY_FEATURE_KEYS,
-    asof_daily_features,
+)
+from data.clean.intraday_schema import normalize_intraday_bars
+from factors.compute.minute.mmp import (
+    compute_intraday_mmp_ew,
     compute_minute_mmp,
     mmp_valid_minute_counts,
 )
-from data.clean.intraday_schema import normalize_intraday_bars
 from qt.config import IntradayCfg, RootConfig, load_config
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -132,9 +135,9 @@ def test_i5c_daily_is_equal_weight_not_volume_weighted():
     vw = float(np.average(mmp[valid], weights=v[valid]))
     assert abs(ew - vw) > 1e-6  # the test actually distinguishes the two
 
-    out = asof_daily_features(_mbars(specs), features=["mmp_ew"])
-    assert list(out.columns) == [_MMP_COL]
-    daily = out[_MMP_COL].iloc[0]
+    out = compute_intraday_mmp_ew(_mbars(specs))
+    assert out.name == _MMP_COL
+    daily = out.iloc[0]
     assert daily == pytest.approx(ew)
     assert not np.isclose(daily, vw)
 
@@ -156,8 +159,8 @@ def test_i5c_invalid_denominators_are_nan_not_inf():
 def test_i5c_daily_nan_when_no_valid_minute():
     # only 5 bars -> never reaches the 20-bar lookback -> daily score NaN.
     specs = _controlled_day(n=5)
-    out = asof_daily_features(_mbars(specs), features=["mmp_ew"])
-    assert np.isnan(out[_MMP_COL].iloc[0])
+    out = compute_intraday_mmp_ew(_mbars(specs))
+    assert np.isnan(out.iloc[0])
 
 
 # --------------------------------------------------------------------------- #
@@ -165,31 +168,31 @@ def test_i5c_daily_nan_when_no_valid_minute():
 # --------------------------------------------------------------------------- #
 def test_i5c_post_cutoff_bars_do_not_change_daily_mmp():
     specs = _controlled_day(n=22)
-    base = asof_daily_features(_mbars(specs), features=["mmp_ew"])
+    base = compute_intraday_mmp_ew(_mbars(specs))
     after = specs + [
         (f"{_DAY} 14:51:00", "000001.SZ", 99.0, 99.0, 99.0, 99.0, 9999.0),
         (f"{_DAY} 14:55:00", "000001.SZ", 99.0, 99.0, 99.0, 99.0, 9999.0),
     ]
-    perturbed = asof_daily_features(_mbars(after), features=["mmp_ew"])
-    pd.testing.assert_frame_equal(base, perturbed)
+    perturbed = compute_intraday_mmp_ew(_mbars(after))
+    pd.testing.assert_series_equal(base, perturbed)
 
 
 def test_i5c_delayed_availability_excludes_bar():
     specs = _controlled_day(n=22)
     bars = _mbars(specs)
-    base = asof_daily_features(bars, features=["mmp_ew"])
+    base = compute_intraday_mmp_ew(bars)
     # push one pre-cutoff bar's availability past the 14:50 cutoff
     delayed = bars.copy()
     target = pd.Timestamp(f"{_DAY} 09:40:00")
     delayed.loc[delayed["bar_end"] == target, "available_time"] = pd.Timestamp(
         f"{_DAY} 15:00:00"
     )
-    got = asof_daily_features(delayed, features=["mmp_ew"])
+    got = compute_intraday_mmp_ew(delayed)
     dropped = bars[bars["bar_end"] != target]
-    expected = asof_daily_features(dropped, features=["mmp_ew"])
-    pd.testing.assert_frame_equal(got, expected)
+    expected = compute_intraday_mmp_ew(dropped)
+    pd.testing.assert_series_equal(got, expected)
     # and the exclusion actually changed the score (fewer bars -> different baseline/mean)
-    assert got[_MMP_COL].iloc[0] != base[_MMP_COL].iloc[0]
+    assert got.iloc[0] != base.iloc[0]
 
 
 def test_i5c_future_bars_do_not_change_earlier_mmp():
@@ -220,8 +223,8 @@ def test_i5c_pre_session_bars_excluded_from_window():
         for m in range(20)  # 09:00..09:19, all before the 09:30 session open
     ]
     specs.append((f"{_DAY} 09:31:00", "000001.SZ", 10.0, 10.2, 9.8, 10.1, 200.0))
-    out = asof_daily_features(_mbars(specs), features=["mmp_ew"], session_open="09:30:00")
-    assert np.isnan(out[_MMP_COL].iloc[0])
+    out = compute_intraday_mmp_ew(_mbars(specs), session_open="09:30:00")
+    assert np.isnan(out.iloc[0])
     counts = mmp_valid_minute_counts(_mbars(specs), session_open="09:30:00")
     assert int(counts.iloc[0]) == 0
 
@@ -229,23 +232,23 @@ def test_i5c_pre_session_bars_excluded_from_window():
 def test_i5c_pre_session_bars_do_not_change_in_session_score():
     # Prepending pre-session bars must leave a full in-session day's MMP unchanged.
     in_session = _controlled_day(n=25)  # 09:31.. (all >= 09:30)
-    base = asof_daily_features(_mbars(in_session), features=["mmp_ew"])
+    base = compute_intraday_mmp_ew(_mbars(in_session))
     pre = [
         (f"{_DAY} {9:02d}:{m:02d}:00", "000001.SZ", 9.0, 9.1, 8.9, 9.0, 50.0)
         for m in range(10)  # 09:00..09:09, before session open
     ]
-    withpre = asof_daily_features(_mbars(pre + in_session), features=["mmp_ew"])
-    pd.testing.assert_frame_equal(base, withpre)
+    withpre = compute_intraday_mmp_ew(_mbars(pre + in_session))
+    pd.testing.assert_series_equal(base, withpre)
 
 
 def test_i5c_multi_symbol_isolation():
     a = _controlled_day(symbol="000001.SZ", n=22)
     b = _controlled_day(symbol="000002.SZ", n=22)
-    out = asof_daily_features(_mbars(a + b), features=["mmp_ew"])
+    out = compute_intraday_mmp_ew(_mbars(a + b))
     # each symbol independently computed (and equals its solo computation)
-    solo_a = asof_daily_features(_mbars(a), features=["mmp_ew"])
-    assert out.loc[(pd.Timestamp(_DAY), "000001.SZ"), _MMP_COL] == pytest.approx(
-        solo_a[_MMP_COL].iloc[0]
+    solo_a = compute_intraday_mmp_ew(_mbars(a))
+    assert out.loc[(pd.Timestamp(_DAY), "000001.SZ")] == pytest.approx(
+        solo_a.iloc[0]
     )
     assert (pd.Timestamp(_DAY), "000002.SZ") in out.index
 
@@ -276,10 +279,15 @@ def test_i5c_invalid_score_feature_fails_readably():
         RootConfig(**d)
 
 
-def test_i5c_score_feature_literal_mirrors_feature_keys():
-    args = typing.get_args(IntradayCfg.model_fields["score_feature"].annotation)
-    assert set(args) == set(INTRADAY_FEATURE_KEYS)
-    assert "mmp_ew" not in DEFAULT_FEATURE_KEYS  # selectable-only, not a default column
+def test_i5c_score_feature_literal_covers_core_keys_plus_registered_mmp():
+    args = set(typing.get_args(IntradayCfg.model_fields["score_feature"].annotation))
+    # D6d: the aggregate keeps ONLY the generic core's four price features;
+    # "mmp_ew" left the aggregate (its math lives in factors.compute.minute.mmp)
+    # but stays a valid score_feature — served through the registered
+    # MmpEwFactor (qt.intraday_tail_framework._SCORE_FACTOR_IDS).
+    assert args == set(INTRADAY_FEATURE_KEYS) | {"mmp_ew"}
+    assert "mmp_ew" not in INTRADAY_FEATURE_KEYS
+    assert "mmp_ew" not in DEFAULT_FEATURE_KEYS
 
 
 def test_i5c_serve_score_panel_selects_mmp_without_prefix_matching(monkeypatch):

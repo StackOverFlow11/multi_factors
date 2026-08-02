@@ -33,6 +33,12 @@ decision date, served through the shared value store with the cache-only
 mismatch / index-set differences with a 0.0 verdict — value-level proof that
 the newly registered factor IS the legacy hook on real data.
 
+D6d NOTE: the aggregate's ``mmp_ew`` feature hook is deleted, so for
+``score_feature="mmp_ew"`` the legacy side of the score leg is read from the
+FROZEN D6c score-leg parquet (:data:`_FROZEN_SCORE_LEG_ROOT`, captured while
+the hook existed, read-only) instead of recomputed from bars; ``ret`` still
+recomputes through the aggregate's surviving generic core.
+
 Data-plane evidence
 -------------------
 Both legs record their live-API footprint. The runners' minute reads are
@@ -81,6 +87,7 @@ from factors.service import panel as serve_panel
 from qt.config import RootConfig, load_config
 from qt.factor_source import open_factor_value_store
 from data.clean.intraday_aggregate import asof_daily_features
+from factors.compute.minute.mmp import MMP_EW_FACTOR_NAME
 from qt.intraday_group_backtest import _load_anchor_minute_bars
 from qt.intraday_tail_framework import _load_minute_bars_cache_only
 from qt.phase3_capture import compare_json, compare_panels, to_jsonable
@@ -265,18 +272,59 @@ def _load_run_bars(runner: str, cfg: RootConfig, panel: pd.DataFrame, symbols, l
     return load.bars, load.covered, int(load.live_calls)
 
 
+#: The frozen D6c score leg — the ``mmp_ew`` legacy reference since D6d deleted
+#: the aggregate's ``mmp_ew`` feature hook (the legacy side can no longer be
+#: recomputed from bars; this baseline was captured while the hook existed and
+#: is frozen-forever, read-only). Keyed by the config's
+#: ``output.intraday_report_name`` — exactly how the L1 capture named the dirs.
+_FROZEN_SCORE_LEG_ROOT = Path("artifacts/refactor_baseline/d6c_i5/L1/score_leg")
+
+
 def _legacy_score_panel(cfg: RootConfig, bars: pd.DataFrame, logger) -> tuple[pd.Series, str]:
     """The RETIRED runner-side legacy score, kept here as the capture reference.
 
-    Byte-for-byte the semantics of the ``_score_panel`` D6c PR-2 deleted from
-    ``qt.intraday_tail_framework``: one configured feature through
+    ``ret`` (and any remaining generic-core feature): byte-for-byte the
+    semantics of the ``_score_panel`` D6c PR-2 deleted from
+    ``qt.intraday_tail_framework`` — one configured feature through
     ``asof_daily_features`` (per-bar PIT cutoff BEFORE daily grouping), its
-    single returned column used exactly. The capture harness owns this legacy
-    reference so the score leg still runs after the runners switched to the
-    factor service — the D6b ``phase3_capture.legacy_factor_panel`` precedent.
+    single returned column used exactly.
+
+    ``mmp_ew``: the aggregate hook is deleted (D6d), so the legacy side is read
+    from the FROZEN D6c score leg
+    (``artifacts/refactor_baseline/d6c_i5/L1/score_leg/<report_name>/
+    legacy_score.parquet``) instead of recomputed. That parquet was captured on
+    the same configs while the hook existed (score leg verdict 0.0 vs the
+    registered factor), so it IS the legacy reference — the D6b
+    ``phase3_capture`` precedent, one step further: the capture harness owns
+    the legacy reference even after its compute path is gone.
     """
     ic = cfg.intraday
     assert ic is not None
+    if ic.score_feature == "mmp_ew":
+        report_name = cfg.output.intraday_report_name
+        if not report_name:
+            raise ValueError(
+                "the mmp_ew legacy reference is keyed by output.intraday_report_name "
+                "(the frozen score-leg dir name); this config leaves it unset."
+            )
+        path = _FROZEN_SCORE_LEG_ROOT / report_name / "legacy_score.parquet"
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"no frozen D6c score leg for {report_name!r} at {path} — the "
+                "mmp_ew legacy reference is frozen-forever and cannot be "
+                "regenerated after D6d (the aggregate hook is deleted)."
+            )
+        legacy = pd.read_parquet(path)["score"]
+        if legacy.empty or not bool(legacy.notna().any()):
+            raise ValueError(
+                f"frozen legacy score at {path} is vacuous (empty or all-NaN) — "
+                "refusing to reconcile against a reference that proves nothing."
+            )
+        logger.info(
+            "legacy score (FROZEN D6c reference): feature_key=mmp_ew, %d rows from %s",
+            len(legacy), path,
+        )
+        return legacy, MMP_EW_FACTOR_NAME
     feats = asof_daily_features(
         bars,
         decision_time=ic.decision_time,
@@ -309,10 +357,10 @@ def capture_score(runner: str, config_path: str, out_dir: str) -> dict:
     ``served_score.parquet`` and ``score_reconcile.json`` into ``out_dir`` and
     returns the reconcile report.
 
-    The LEGACY side is derived here from ``asof_daily_features`` directly —
-    exactly what the retired ``_score_panel`` delegated to (D6b's
-    ``phase3_capture.legacy_factor_panel`` precedent: the capture harness owns
-    the legacy reference, the switched runners do not).
+    The LEGACY side is derived here from ``asof_daily_features`` directly for
+    the surviving generic-core features (``ret``) — exactly what the retired
+    ``_score_panel`` delegated to — and read from the FROZEN D6c score leg for
+    ``mmp_ew`` (D6d deleted the aggregate hook; see :func:`_legacy_score_panel`).
     """
     if runner not in _RUNNERS:
         raise ValueError(f"unknown runner {runner!r}; known: {sorted(_RUNNERS)}")
