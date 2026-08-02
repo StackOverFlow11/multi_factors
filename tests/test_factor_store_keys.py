@@ -77,6 +77,10 @@ def test_shared_set_is_the_enumerated_five_plus_ops():
     assert "factors.compute.minute.binding" in labels
     assert "factors.base" in labels
     assert "factors.spec" in labels
+    # Same-day-disclosure tie-break fix: pit_financials decides WHICH fina record
+    # a (trade_date, symbol) cell resolves to (value semantics for all three
+    # financial factors), and no data-fingerprint dimension could see it.
+    assert "data.clean.pit_financials" in labels
     # factors.ops expands to every module under the package
     assert any(label.startswith("factors.ops") for label in labels)
     # ...and files that merely CONSUME the binding (engine/service) are NOT
@@ -197,6 +201,41 @@ def test_binding_mutation_moves_every_registered_factor_code_hash(tmp_path):
             f"{cls.__name__}: a binding content change did not move its code hash"
         )
         assert code_hash(cls) == base
+
+
+def test_pit_financials_mutation_moves_every_financial_factor_code_hash(tmp_path):
+    """MUTATION (tie-break fix): a content change to ``data.clean.pit_financials``
+    must move the code hash of ALL THREE financial factors (roe / netprofit_yoy /
+    grossprofit_margin) — its same-day-disclosure dedup decides which fina record
+    a (trade_date, symbol) cell resolves to, and their ``adjustment="none"``
+    declaration gives the data fingerprint no adj-events dimension that could
+    see such an edit. Control: an engine module that merely CONSUMES panels
+    (factors.materialize) stays OUT of their fold, so an edit there moves
+    nothing. The fold is global (shared set), so the one-time wholesale store
+    invalidation is disclosed in the code_hash module docstring.
+    """
+    pit_label, pit_path = "data.clean.pit_financials", None
+    for label, path in shared_set_labeled_files():
+        if label == pit_label:
+            pit_path = path
+    assert pit_path is not None, "shared set unexpectedly lacks pit_financials"
+    mutated_copy = tmp_path / "pit_financials_mutated.py"
+    mutated_copy.write_bytes(Path(pit_path).read_bytes() + b"\n# tie-break mutation\n")
+
+    for factor_id in ("roe", "netprofit_yoy", "grossprofit_margin"):
+        factor = build(factor_id)
+        folded = _folded_items(factor)
+        base = content_hash_of_labeled_files(folded)
+        mutated = [
+            (label, mutated_copy if label == pit_label else path)
+            for label, path in folded
+        ]
+        assert content_hash_of_labeled_files(mutated) != base, (
+            f"{factor_id}: a pit_financials content change did not move its code hash"
+        )
+        assert code_hash(factor) == base
+        # Control: the engine consumer is not folded, so an edit to IT moves nothing.
+        assert all(label != "factors.materialize" for label, _ in folded)
 
 
 def test_one_hop_folds_a_composed_module_but_not_unrelated_modules():
