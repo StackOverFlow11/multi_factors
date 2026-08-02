@@ -34,6 +34,8 @@ from factors.compute.candidates import (
 )
 from factors.compute.financial import FinancialFactor
 from factors.compute.intraday_derived import JumpAmountCorrFactor
+from factors.compute.minute.intraday_session_ret import IntradaySessionRetFactor
+from factors.compute.minute.mmp import MmpEwFactor
 from factors.compute.momentum import MomentumFactor
 from factors.registry import (
     DEFAULT_REGISTRY,
@@ -266,6 +268,9 @@ def test_exact_names_win_over_prefixes():
         ("grossprofit_margin", {}, FinancialFactor),
         # never in the chain, but part of the registry's full surface:
         ("jump_amount_corr_20", {}, JumpAmountCorrFactor),
+        # D6c: the two I3 session features, exact names, no params:
+        ("intraday_mmp20_ew_0930_1450", {}, MmpEwFactor),
+        ("intraday_ret_0930_1450", {}, IntradaySessionRetFactor),
     ],
 )
 def test_default_registry_builds_every_family(name, params, cls):

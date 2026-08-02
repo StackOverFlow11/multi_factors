@@ -33,7 +33,7 @@ def test_every_shipped_factor_module_passes_the_allowlist():
 
 
 def test_the_registry_covers_the_full_factor_surface():
-    # The 11 minute factors + the daily families are all reachable, so the guard
+    # The 13 minute factors + the daily families are all reachable, so the guard
     # actually checks the modules whose code hash matters (and NOT the legacy
     # intraday_derived surface, which defines no factor class).
     sources = factor_source_files()

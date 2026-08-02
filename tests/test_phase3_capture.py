@@ -112,6 +112,23 @@ def test_compare_json_nan_at_same_path_is_equal():
     assert compare_json({"x": float("nan")}, {"x": float("nan")})["n_diffs"] == 0
 
 
+def test_to_jsonable_serializes_bare_nat_and_datetime_leaves():
+    # A NaT/datetime cell inside a DataFrame's object dump (or a bare leaf in
+    # any log structure) must serialize — the I5 event logs carry NaT exits.
+    import json
+    from datetime import datetime
+
+    frame = pd.DataFrame(
+        {"exit_ts": [pd.Timestamp("2026-03-31 14:51"), pd.NaT]},
+        index=pd.DatetimeIndex(["2026-03-31", "2026-04-30"]),
+    )
+    tree = to_jsonable({"event_log": frame, "bare": pd.NaT, "dt": datetime(2026, 4, 1, 14, 51)})
+    assert tree["bare"] == "NaT"
+    assert tree["dt"] == "2026-04-01T14:51:00"
+    assert tree["event_log"]["data"][1] == ["NaT"]
+    json.dumps(tree)  # the round-trip must not raise
+
+
 def test_compare_json_reports_missing_keys_and_types():
     report = compare_json({"a": 1, "b": "s"}, {"a": 1, "c": True})
     kinds = {(d["path"], d["kind"]) for d in report["diffs"]}

@@ -81,6 +81,13 @@ from factors.store.hashing import content_hash_of_labeled_files
 #: ONE-TIME EFFECT, disclosed: folding it here changes EVERY factor's key
 #: (the shared set is global), so a dev store filled before the fold is
 #: wholesale invalid and must be recomputed once (over-invalidate-safe).
+#: REGISTER OF ONE-TIME SHARED-SET CONTENT EDITS (same effect class — a content
+#: change to an existing member, not a new member; each disclosed where it
+#: landed and in its commit message):
+#:   * 2026-08 D6c: ``factors.compute.minute.binding`` gained the two I3
+#:     session-feature entries (``mmp_ew`` / ``ret`` as first-class factors) —
+#:     every existing factor's key changed once (disclosed in the binding
+#:     module docstring and its commit message).
 _SHARED_SET_SINGLE_MODULES: tuple[str, ...] = (
     "factors.compute.minute.primitives",
     "factors.compute.minute.binding",
