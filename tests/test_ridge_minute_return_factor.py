@@ -699,7 +699,7 @@ def test_per_symbol_isolation():
 # --------------------------------------------------------------------------- #
 # §0 REUSE NON-DRIFT: the four MERGED factors are bit-identical
 # --------------------------------------------------------------------------- #
-# PR-K adds no column to and changes no line of data/clean/intraday_volume_prv.py, so the
+# PR-K adds no column to and changes no line of the PRV taxonomy module (then data/clean/intraday_volume_prv.py; deleted in D6d, taxonomy now lives in factors/compute/minute/primitives.py), so the
 # taxonomy the four merged factors consume is untouched. These locks assert that as a
 # VALUE, not as a claim: each reproduces its own module's documented hand value.
 def _prv_kw(**over):
