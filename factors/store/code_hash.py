@@ -88,6 +88,23 @@ from factors.store.hashing import content_hash_of_labeled_files
 #:     session-feature entries (``mmp_ew`` / ``ret`` as first-class factors) —
 #:     every existing factor's key changed once (disclosed in the binding
 #:     module docstring and its commit message).
+#:   * 2026-08 D6d (shim/aggregate factor-math deletion): the D2 re-export
+#:     shims (10 ``data/clean/intraday_*`` modules + ``factors/compute/
+#:     intraday_derived``) and the aggregate's factor-math surface were
+#:     deleted. ``data.clean.intraday_aggregate`` is a SCHEMA-VERSION member
+#:     (``factors.store.fingerprint._SCHEMA_MODULES``), so its content change
+#:     voids EVERY stored artifact store-wide on read — a one-time,
+#:     store-wide schema-version invalidation (NOT just the two I3 factors).
+#:     The code dimension moved only where the deletion forced it: the
+#:     aggregate is a one-hop dep of ``intraday_session_ret`` /
+#:     ``amp_marginal_anomaly_vol``, and ``mmp``'s own module docstring was
+#:     updated (it documented the deleted hook as live) — so exactly those
+#:     three factors' keys changed too. Direction: over-invalidate-safe —
+#:     no value math moved (the four generic-core features and
+#:     ``resample_intraday_bars`` are byte-preserved), so the recomputed
+#:     values must be bit-identical; verified by the serve-after-delete
+#:     reconcile against the frozen d6c_i5 score leg (max_abs_diff=0.0)
+#:     recorded in the D6d commit message.
 _SHARED_SET_SINGLE_MODULES: tuple[str, ...] = (
     "factors.compute.minute.primitives",
     "factors.compute.minute.binding",

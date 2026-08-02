@@ -20,14 +20,11 @@ one factor of the eleven with no truncation at all (its ``decision_time`` /
 So the guard here is deliberately GENERIC: it covers every ``Factor`` subclass
 defined under ``factors/compute/minute`` (discovered by walking the package, not
 by a hand-maintained list — §六.8, and the same lesson D4b learned when dropping
-a factor from a binding table left the suite green) plus the ``mmp_ew`` intraday
-aggregate feature, which before D6c was a minute signal reached ONLY through
-:func:`data.clean.intraday_aggregate.asof_daily_features` rather than a Factor
-class. D6c registered both I3 session features as Factor classes
+a factor from a binding table left the suite green). D6c registered both I3
+session features as Factor classes
 (``MmpEwFactor`` / ``IntradaySessionRetFactor``), so the class walk covers them;
-the legacy aggregate-feature case is kept as a second case for the same signal
-because the I5c/I5d runners still read the aggregate path (the shim goes away
-in D6d).
+D6d deleted the legacy aggregate-feature hook they replaced, so the factor
+classes are now the ONLY read path and the only surface this guard needs.
 
 The two knives
 --------------
@@ -67,7 +64,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data.clean.intraday_aggregate import asof_daily_features
 from data.clean.intraday_schema import (
     DEFAULT_DECISION_TIME,
     SYMBOL_LEVEL,
@@ -254,7 +250,7 @@ def _assert_mutation_is_real_and_targeted(
 
 
 # --------------------------------------------------------------------------- #
-# The covered surface: every minute Factor class + the mmp_ew aggregate feature
+# The covered surface: every minute Factor class
 # --------------------------------------------------------------------------- #
 def _jump(bars: pd.DataFrame) -> pd.Series:
     return compute_jump_amount_corr(bars)
@@ -303,11 +299,6 @@ def _valley_quantile(bars: pd.DataFrame) -> pd.Series:
     return compute_valley_price_quantile(bars, _DAILY_CLOSE)
 
 
-def _mmp_ew(bars: pd.DataFrame) -> pd.Series:
-    frame = asof_daily_features(bars, features=["mmp_ew"])
-    return frame[frame.columns[0]]
-
-
 def _mmp_ew_factor(bars: pd.DataFrame) -> pd.Series:
     return compute_intraday_mmp_ew(bars)
 
@@ -333,14 +324,12 @@ _FACTOR_COMPUTES: dict[type[Factor], object] = {
     IntradaySessionRetFactor: _session_ret,
 }
 
-#: The full covered surface: the thirteen factors keyed by name, plus the legacy
-#: ``mmp_ew`` aggregate-feature case — the SAME signal as ``MmpEwFactor`` but
-#: reached through :func:`asof_daily_features`, the path the I5c/I5d runners
-#: still read (the aggregate hook goes away in D6d). Keeping both cases pins
-#: the two read paths against the same perturbation.
+#: The full covered surface: the thirteen factors keyed by name. (Until D6d the
+#: legacy ``mmp_ew`` aggregate-feature path was pinned here too as a second read
+#: path of the same signal; D6d deleted that hook, and ``MmpEwFactor`` above IS
+#: the surviving single definition point.)
 _CASES: dict[str, object] = {
     **{cls().name: fn for cls, fn in _FACTOR_COMPUTES.items()},
-    "mmp_ew": _mmp_ew,
 }
 
 

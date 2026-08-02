@@ -12,10 +12,11 @@ WHAT IS PINNED HERE (network-free)
    NEITHER the rolling baseline NOR the daily mean: wildly different pre-session
    content yields a bit-identical value, and exactly ``MMP_LOOKBACK`` in-session
    bars are needed before the first valid minute exists.
-4. EQUIVALENCE — ``compute_intraday_mmp_ew`` IS
-   ``asof_daily_features(features=["mmp_ew"])`` cell-for-cell on a multi-day,
-   multi-symbol fixture (bit-exact, NaN mask included), and the Series name is
-   the legacy aggregate column name (every shipped report keys on it verbatim).
+4. EQUIVALENCE (D6c, RETIRED in D6d) — ``compute_intraday_mmp_ew`` was pinned
+   bit-for-bit against the aggregate's ``mmp_ew`` feature hook while the hook
+   existed; D6d deleted that hook (the aggregate is generic-core only), so the
+   equivalence test is gone with it. The factor id IS still the legacy
+   aggregate column name (every shipped report keys on it verbatim).
 5. SPLIT == WHOLE — per-symbol computation concatenated equals the whole-frame
    call (the property the D4b streaming binding relies on).
 6. SURFACE — registry build of the exact name, the spec's intraday block /
@@ -25,9 +26,10 @@ MUTATION EVIDENCE (run against this file, each mutation first asserted to
 change its target; measured 2026-08-02 in this worktree):
 
 * ``<=`` -> ``<`` in the visibility filter of ``compute_intraday_mmp_ew``
-  (drops the bar whose available_time lands exactly on the cutoff):
-  ``test_equivalent_to_asof_daily_features_mmp_ew_bit_for_bit`` RED, 15 of 15
-  finite cells moved (rc=1); restored -> 9 passed.
+  (drops the bar whose available_time lands exactly on the cutoff): the D6c
+  legacy-equivalence test went RED, 15 of 15 finite cells moved (rc=1);
+  restored -> 9 passed. (That test was retired in D6d with the hook itself;
+  the same mutation is still caught by the PIT tests in section 2.)
 * dropping the ``in_session_bars`` filter (pre-session bars feed the rolling
   baseline): ``test_pre_session_bars_are_invisible_to_the_baseline_and_the_mean``
   RED — the anchor-fixture value moved 0.0499999500000375 ->
@@ -40,7 +42,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data.clean.intraday_aggregate import asof_daily_features
 from data.clean.intraday_schema import normalize_intraday_bars
 from factors.compute.minute.mmp import (
     DEFAULT_EPSILON,
@@ -173,16 +174,13 @@ def test_the_first_lookback_in_session_bars_have_no_valid_minute():
 
 
 # --------------------------------------------------------------------------- #
-# 4. equivalence with the legacy aggregate feature
+# 4. factor id == the legacy aggregate column name (the D6c bit-for-bit
+#    equivalence test retired in D6d with the aggregate's mmp_ew hook)
 # --------------------------------------------------------------------------- #
-def test_equivalent_to_asof_daily_features_mmp_ew_bit_for_bit():
-    frame = asof_daily_features(RANDOM_BARS, features=["mmp_ew"])
-    legacy = frame[frame.columns[0]]
+def test_factor_name_is_the_legacy_column_name():
     got = compute_intraday_mmp_ew(RANDOM_BARS)
-    # the factor id IS the legacy column name (report text keyed on it verbatim)
-    assert got.name == legacy.name == MMP_EW_FACTOR_NAME
+    assert got.name == MMP_EW_FACTOR_NAME
     assert int(np.isfinite(got.to_numpy()).sum()) > 0, "vacuous: all NaN"
-    pd.testing.assert_series_equal(got, legacy, check_exact=True)
 
 
 # --------------------------------------------------------------------------- #

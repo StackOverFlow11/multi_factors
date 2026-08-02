@@ -373,8 +373,10 @@ class IntradayCfg(_Strict):
     # I5c: which PIT-safe daily intraday feature the tail-rebalance score uses.
     # Default "ret" reproduces the I5a/I5b smoke (intraday_ret_0930_1450); "mmp_ew"
     # selects the exploratory Minute Microstructure Pressure factor. The allowed
-    # set mirrors data.clean.intraday_aggregate.INTRADAY_FEATURE_KEYS (a drift test
-    # locks them equal); an unknown key fails readably at validation.
+    # set is the aggregate generic core's four feature keys PLUS "mmp_ew" (a
+    # drift test locks them); "mmp_ew" and "ret" map to the D6c-registered
+    # factors (qt.intraday_tail_framework._SCORE_FACTOR_IDS) — any other key
+    # fails readably at serve time (D6d: the aggregate's mmp_ew hook is gone).
     score_feature: Literal[
         "ret", "realized_vol", "vwap", "last30m_ret", "mmp_ew"
     ] = "ret"
