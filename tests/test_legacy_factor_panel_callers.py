@@ -1,11 +1,10 @@
 """Who still calls the PRE-D6a factor path, derived from the repo — not listed.
 
 D6a moved phase0 and phase2_baseline onto ``_serve_factor_panel`` (the factor
-service) and left ``qt.pipeline._compute_factor_panel`` in place, unchanged, for
-the runners D6b migrates. Two things then need guarding, and NOTHING in the test
-suite executes those runners: they need real tushare data, so a break in them is
-invisible to every other test here. That is not hypothetical — the first draft of
-D6a changed the shared signature under them and the whole suite stayed green.
+service) and D6b moved ``qt.oos_stability`` / ``qt.subset_validation`` (with
+``qt.robustness`` inheriting through the former); ``qt.pipeline._compute_factor_panel``
+stays in place, unchanged, until D6d removes it. Two things need guarding while
+it lives:
 
   1. every call to the legacy entry point still matches its live signature; and
   2. the set of files that call it is EXACTLY the set we think it is.
@@ -34,12 +33,12 @@ cannot see is worth less than no guard:
   (``getattr(obj, "_compute_" + "factor_panel")``). No test here claims
   otherwise.
 
-⚠️ THIS FILE IS SUPPOSED TO GO RED IN D6b, AND THEN BE DELETED. D6b moves
-``oos_stability`` / ``subset_validation`` onto the service and D6d deletes
-``_compute_factor_panel`` entirely; at that point ``EXPECTED_CALLERS`` no longer
-matches and the symbol no longer exists. That is the guard reporting the
-migration finished, not a stale test. Delete it with the function; do not "fix"
-it by emptying the expected set while the function still has callers.
+⚠️ THIS FILE GOES AWAY IN D6d. D6b already moved ``oos_stability`` /
+``subset_validation`` onto the service (that is why ``EXPECTED_CALLERS`` now
+holds only the deliberate test caller); D6d deletes ``_compute_factor_panel``
+entirely, and at that point the symbol no longer exists. Delete this module with
+the function; do not "fix" it by emptying the expected set while the function
+still has callers.
 """
 
 from __future__ import annotations
@@ -63,14 +62,12 @@ DEFINING_MODULE = Path(inspect.getsourcefile(pipeline)).name
 
 #: Every file that calls it today, repo-relative.
 #:
-#: ``qt/oos_stability.py`` and ``qt/subset_validation.py`` are the two runners
-#: D6b migrates. ``tests/test_factor_source.py`` calls it too, deliberately: it
-#: is the only execution coverage the legacy path has, since the two runners
-#: cannot be run without real data.
+#: D6b moved ``qt/oos_stability.py`` and ``qt/subset_validation.py`` onto the
+#: service, so ``tests/test_factor_source.py`` is the ONLY remaining caller —
+#: deliberately: it is the only execution coverage the legacy path has left,
+#: and it goes away with the function in D6d.
 EXPECTED_CALLERS: frozenset[str] = frozenset(
     {
-        "qt/oos_stability.py",
-        "qt/subset_validation.py",
         "tests/test_factor_source.py",
     }
 )
@@ -173,9 +170,10 @@ def test_the_set_of_legacy_callers_is_exactly_what_we_think_it_is():
 
     * an ADDED file — someone put a new caller on the pre-D6a path. Route it
       through ``_serve_factor_panel`` instead, or say why it must not be.
-    * a REMOVED file — expected exactly once, when D6b migrates the two runners.
-      Then this whole module goes away with ``_compute_factor_panel`` (D6d); do
-      not keep it alive against an empty set.
+    * a REMOVED file — expected exactly once more, when D6d retires the
+      deliberate test caller in ``tests/test_factor_source.py``. Then this whole
+      module goes away with ``_compute_factor_panel``; do not keep it alive
+      against an empty set.
     """
     callers, _unbindable, _n = _census()
     found = frozenset(callers)

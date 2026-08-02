@@ -37,6 +37,7 @@ from analytics.factor import compute_ic, forward_returns
 from analytics.performance import performance_summary
 from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
+from qt.factor_source import open_factor_value_store
 from qt.pipeline import (
     _FrameScores,
     _alpha_disclosure,
@@ -46,7 +47,6 @@ from qt.pipeline import (
     _build_scores,
     _build_universe,
     _collect_downgrades,
-    _compute_factor_panel,
     _load_panel,
     _log_run_cache_stats,
     _make_logger,
@@ -56,6 +56,7 @@ from qt.pipeline import (
     _maybe_enrich_value,
     _periods_per_year,
     _process_factors,
+    _serve_factor_panel,
 )
 from qt.reports import render_oos_stability, write_oos_stability_summary
 from runtime.backtest.driver import BacktestDriver
@@ -376,7 +377,8 @@ def _run_oos_cell(
     panel = _maybe_enrich_covariates(cfg, panel, symbols, logger, cache)
     panel = _maybe_enrich_listing(cfg, panel, symbols, logger, cache)
     _log_run_cache_stats(cache, logger)
-    factor_panel = _compute_factor_panel(cfg, panel, factors, logger)
+    with open_factor_value_store(cfg, logger) as store:
+        factor_panel = _serve_factor_panel(cfg, panel, factors, symbols, logger, store=store)
     processed = _process_factors(cfg, factor_panel, panel)
 
     horizon = int(cfg.analytics.forward_return_periods[0])

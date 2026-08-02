@@ -974,12 +974,14 @@ def _serve_factor_panel(
     left invisible.
 
     This is a SECOND entry point next to :func:`_compute_factor_panel` on
-    purpose, and only until D6b: the migration moves the runners one group at a
-    time, so for the length of that migration some runners are on the service
-    and some are not. Two differently-named functions make "which runners are
-    still on the old path" a grep instead of a reading exercise, where one
-    function with an optional ``store`` would have made the old path a silent
-    default (red line #9).
+    purpose, and was needed only until D6b: the migration moved the runners one
+    group at a time, so for the length of that migration some runners were on
+    the service and some were not. Two differently-named functions made "which
+    runners are still on the old path" a grep instead of a reading exercise,
+    where one function with an optional ``store`` would have made the old path
+    a silent default (red line #9). D6b finished that migration; the legacy
+    function now remains only as the reference for its own tests until D6d
+    removes it.
     """
     served = factor_values(
         factors,
@@ -1008,16 +1010,16 @@ def _compute_factor_panel(
 ) -> pd.DataFrame:
     """PRE-D6a path: compute every factor here and persist the panel.
 
-    Still the live path for the runners D6a does not migrate
+    No production caller remains: D6b moved the last runners on this path
     (``qt.oos_stability``, ``qt.subset_validation``, and ``qt.robustness``
-    through the former). It is the second factor-sourcing path the refactor is
-    retiring; D6b moves those runners onto :func:`_serve_factor_panel` and D6d
-    removes this function. Do NOT add a new caller.
+    through the former) onto :func:`_serve_factor_panel`, so the function is
+    kept only as the legacy reference for tests
+    (``tests/test_factor_source.py``) until D6d removes it. Do NOT add a new
+    caller.
 
-    Kept behaviour-identical rather than adapted: routing those runners through
-    the service changes what their factor values come from, which needs its own
-    reconciliation on their universes and windows — it is D6b's work, not a side
-    effect of migrating phase0/phase2.
+    Kept behaviour-identical rather than adapted: it is the second
+    factor-sourcing path the refactor is retiring, and the equivalence tests
+    pin the service path against exactly what it computes here.
     """
     columns = [factor.compute(panel).rename(factor.name) for factor in factors]
     factor_panel = pd.concat(columns, axis=1)
