@@ -58,7 +58,7 @@ import json
 import logging
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -120,47 +120,54 @@ _RUNNERS = {
 # --------------------------------------------------------------------------- #
 # Runner-leg serialization (full precision; network-free; unit-tested)
 # --------------------------------------------------------------------------- #
-def to_jsonable(obj: Any) -> Any:
+def to_jsonable(obj: Any, exclude: frozenset[str] | None = None) -> Any:
     """Reduce a runner result object to a JSON tree, leaf by leaf.
 
-    Dataclass fields in :data:`EXCLUDED_RESULT_FIELDS` are dropped (the ONLY
-    exclusions). Floats pass through untouched — Python's ``repr`` round-trips
-    them exactly, and ``json`` emits ``NaN``/``Infinity`` tokens that
-    ``json.load`` reads back, so the capture is full-precision by construction.
-    DataFrames become ``{"__dataframe__", "columns", "index", "data"}`` with
-    the index as row tuples (Timestamps as ISO strings); Timestamps become ISO
-    strings (``NaT`` -> ``"NaT"``); Paths become strings.
+    Dataclass fields in ``exclude`` (default :data:`EXCLUDED_RESULT_FIELDS`)
+    are dropped (the ONLY exclusions). Floats pass through untouched —
+    Python's ``repr`` round-trips them exactly, and ``json`` emits
+    ``NaN``/``Infinity`` tokens that ``json.load`` reads back, so the capture
+    is full-precision by construction. DataFrames become ``{"__dataframe__",
+    "columns", "index", "data"}`` with the index as row tuples (Timestamps as
+    ISO strings); Timestamps become ISO strings (``NaT`` -> ``"NaT"``); a bare
+    ``NaT`` / ``datetime`` leaf (e.g. a NaT cell inside a DataFrame's object
+    dump) serializes the same way; Paths become strings.
     """
+    excluded = EXCLUDED_RESULT_FIELDS if exclude is None else exclude
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return {
-            f.name: to_jsonable(getattr(obj, f.name))
+            f.name: to_jsonable(getattr(obj, f.name), exclude)
             for f in dataclasses.fields(obj)
-            if f.name not in EXCLUDED_RESULT_FIELDS
+            if f.name not in excluded
         }
     if isinstance(obj, pd.DataFrame):
         return {
             "__dataframe__": True,
             "columns": [str(c) for c in obj.columns],
-            "index": [to_jsonable(idx) for idx in obj.index],
-            "data": to_jsonable(obj.to_numpy(dtype=object).tolist()),
+            "index": [to_jsonable(idx, exclude) for idx in obj.index],
+            "data": to_jsonable(obj.to_numpy(dtype=object).tolist(), exclude),
         }
     if isinstance(obj, pd.Series):
         return {
             "__series__": True,
             "name": str(obj.name),
-            "index": [to_jsonable(idx) for idx in obj.index],
-            "data": to_jsonable(obj.tolist()),
+            "index": [to_jsonable(idx, exclude) for idx in obj.index],
+            "data": to_jsonable(obj.tolist(), exclude),
         }
+    if obj is pd.NaT:
+        return "NaT"
     if isinstance(obj, pd.Timestamp):
         return "NaT" if pd.isna(obj) else obj.isoformat()
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
     if isinstance(obj, Path):
         return str(obj)
     if isinstance(obj, dict):
-        return {str(k): to_jsonable(v) for k, v in obj.items()}
+        return {str(k): to_jsonable(v, exclude) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [to_jsonable(v) for v in obj]
+        return [to_jsonable(v, exclude) for v in obj]
     if isinstance(obj, (set, frozenset)):
-        return sorted(to_jsonable(v) for v in obj)
+        return sorted(to_jsonable(v, exclude) for v in obj)
     if isinstance(obj, np.bool_):
         return bool(obj)
     if isinstance(obj, np.integer):
@@ -168,7 +175,7 @@ def to_jsonable(obj: Any) -> Any:
     if isinstance(obj, np.floating):
         return float(obj)
     if isinstance(obj, np.ndarray):
-        return to_jsonable(obj.tolist())
+        return to_jsonable(obj.tolist(), exclude)
     return obj
 
 
