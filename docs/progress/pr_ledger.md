@@ -27,3 +27,7 @@
 | #118 | D6a：phase0/phase2 切 FactorService（含 B1 demo-store 隔离、日频 universe 无关守卫、caller 派生普查） |
 | #119 | 修 retired-invocation 守卫的射程：文件清单从 git 派生而非目录遍历（`main` 曾红而 worktree 绿） |
 | #120 | 进度文档（D6a） |
+| #121 | retired-invocation 守卫射程声明补全（docstring 写明文件派生盲区） |
+| #122 | fina 并列披露稳定去重 correctness fix + `pit_financials` 折 code_hash（重述量化：SSE50 5.12% / CSI300 5.11% 格） |
+| #123 | D6b PR-1 phase3 基线捕获工程：capture harness + cached twins + `d6b_phase3` 冻结基线 |
+| #124 | D6b：oos/subset/robustness 切 FactorService——S1 冷/S2 暖 vs 冻结基线全叶子 0 |
