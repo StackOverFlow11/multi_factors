@@ -320,30 +320,6 @@ def _write_cfg_file(tmp_path: Path, example_config_path: str, *, source: str) ->
 
 
 # --------------------------------------------------------------------------- #
-# post-D6b: the legacy entry point's only remaining execution coverage
-# --------------------------------------------------------------------------- #
-# WHICH files still call the pre-D6a entry point, and whether their calls still
-# bind, is guarded by ``tests/test_legacy_factor_panel_callers.py`` -- a census
-# DERIVED from the repo. It replaced a hand-kept pair of filenames here, which a
-# third caller in an unnamed file walked straight past. What stays here is the
-# only thing that actually EXERCISES the legacy path.
-
-
-def test_the_legacy_entry_point_still_computes(tmp_path, example_config_path):
-    """Real coverage for the legacy reference until D6d removes it."""
-    from qt.pipeline import _compute_factor_panel
-
-    cfg = _cfg(tmp_path, example_config_path, source="demo")
-    panel = make_demo_panel()
-    factor = MomentumFactor(window=5)
-    logger = __import__("logging").getLogger("test.legacy_entry")
-
-    out = _compute_factor_panel(cfg, panel, [factor], logger)
-
-    pd.testing.assert_series_equal(out[factor.name], factor.compute(panel).rename(factor.name))
-
-
-# --------------------------------------------------------------------------- #
 # author-once: the eval wiring re-exports this provider, it does not copy it
 # --------------------------------------------------------------------------- #
 def test_the_eval_provider_is_this_provider():

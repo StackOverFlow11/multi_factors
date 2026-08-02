@@ -973,15 +973,14 @@ def _serve_factor_panel(
     this panel's own grid; the rows that reduction drops are logged rather than
     left invisible.
 
-    This is a SECOND entry point next to :func:`_compute_factor_panel` on
-    purpose, and was needed only until D6b: the migration moved the runners one
-    group at a time, so for the length of that migration some runners were on
-    the service and some were not. Two differently-named functions made "which
-    runners are still on the old path" a grep instead of a reading exercise,
-    where one function with an optional ``store`` would have made the old path
-    a silent default (red line #9). D6b finished that migration; the legacy
-    function now remains only as the reference for its own tests until D6d
-    removes it.
+    This is the ONLY factor-sourcing entry point since D6d removed the legacy
+    ``_compute_factor_panel`` (design decision 3: one path). During the D6a/D6b
+    migration two differently-named functions coexisted on purpose, so "which
+    runners are still on the old path" stayed a grep instead of a reading
+    exercise, where one function with an optional ``store`` would have made the
+    old path a silent default (red line #9). The successor census in
+    ``tests/test_no_legacy_factor_panel_path.py`` keeps the deleted path from
+    reappearing.
     """
     served = factor_values(
         factors,
@@ -998,35 +997,6 @@ def _serve_factor_panel(
         "all-NaN footprint row(s) outside the market panel and reduced away)",
         [f.name for f in factors], len(factor_panel), factor_panel.shape[1],
         served.served_rows, served.footprint_rows_dropped,
-    )
-    return factor_panel
-
-
-def _compute_factor_panel(
-    cfg: RootConfig,
-    panel: pd.DataFrame,
-    factors: list,
-    logger: logging.Logger,
-) -> pd.DataFrame:
-    """PRE-D6a path: compute every factor here and persist the panel.
-
-    No production caller remains: D6b moved the last runners on this path
-    (``qt.oos_stability``, ``qt.subset_validation``, and ``qt.robustness``
-    through the former) onto :func:`_serve_factor_panel`, so the function is
-    kept only as the legacy reference for tests
-    (``tests/test_factor_source.py``) until D6d removes it. Do NOT add a new
-    caller.
-
-    Kept behaviour-identical rather than adapted: it is the second
-    factor-sourcing path the refactor is retiring, and the equivalence tests
-    pin the service path against exactly what it computes here.
-    """
-    columns = [factor.compute(panel).rename(factor.name) for factor in factors]
-    factor_panel = pd.concat(columns, axis=1)
-    _write_factor_panel(cfg, factor_panel)
-    logger.info(
-        "factors: %s computed (%d rows x %d columns)",
-        [f.name for f in factors], len(factor_panel), factor_panel.shape[1],
     )
     return factor_panel
 

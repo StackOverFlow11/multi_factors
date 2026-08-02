@@ -11,12 +11,14 @@ path (the cell cores carry no tushare gate — that lives in
   the run log carries the service's own line. No AST — "pin the function, miss
   the wiring" is a failure shape this project has been bitten by.
 * EQUIVALENCE: the served factor panel equals, BITWISE, what the legacy path
-  computes on the same panel. The comparison inlines ``factor.compute`` rather
-  than calling ``_compute_factor_panel`` by name — a named call would make this
-  file a legacy CALLER and trip the census in
-  ``tests/test_legacy_factor_panel_callers.py``; that file's
-  ``test_the_legacy_entry_point_still_computes`` already pins the legacy
-  function itself equal to this same comprehension, so the triangle closes.
+  computed on the same panel. The comparison inlines ``factor.compute`` rather
+  than naming the pre-D6d ``_compute_factor_panel`` — D6d deleted that
+  function and its caller census; the equivalence the deleted pieces pinned
+  (legacy function == this same comprehension) survives in
+  ``qt/phase3_capture.py::legacy_factor_panel``, the verbatim copy the D6b
+  frozen-baseline reconciliation ran against the service path, and the
+  successor census in ``tests/test_no_legacy_factor_panel_path.py`` keeps the
+  deleted path from reappearing.
 * B1: a demo (synthetic-source) cell leaves NO ``factor_store/`` under
   ``output.root_dir`` — the ephemeral store leaves no durable artifact.
 """

@@ -2,7 +2,8 @@
 
 D6b switches the three phase-3 validation runners (``qt.oos_stability`` /
 ``qt.robustness`` / ``qt.subset_validation``) from the legacy factor-sourcing
-path (``factor.compute(panel)`` inside ``qt.pipeline._compute_factor_panel``)
+path (``factor.compute(panel)`` inside the pre-D6d
+``qt.pipeline._compute_factor_panel``)
 to the factor service (``qt.pipeline._serve_factor_panel``). Before any runner
 is touched, this module captures what the LEGACY code produces, so the switch
 can later be reconciled against bytes that were frozen beforehand (the same
@@ -16,8 +17,8 @@ the runner's EXACT data-load sequence (``_build_universe`` -> ``_load_panel``
 -> the four enrichments — one shared cache threaded through all of them, the
 D6a-3-fixed call shape), then compute the factor panel TWICE in one process:
 
-* legacy — ``factor.compute(panel)`` concatenated, exactly what
-  ``_compute_factor_panel`` computes (its write/log side effects excluded);
+* legacy — ``factor.compute(panel)`` concatenated, exactly what the pre-D6d
+  ``_compute_factor_panel`` computed (its write/log side effects excluded);
 * served — ``qt.factor_source.factor_values`` over the same enriched panel,
   exactly what ``_serve_factor_panel`` serves.
 
@@ -335,12 +336,13 @@ def load_cell_panel(cfg: RootConfig, logger: logging.Logger):
 
 
 def legacy_factor_panel(panel: pd.DataFrame, factors: list) -> pd.DataFrame:
-    """EXACTLY what ``qt.pipeline._compute_factor_panel`` computes (no write/log).
+    """EXACTLY what the pre-D6d ``qt.pipeline._compute_factor_panel`` computed.
 
     Kept as the verbatim three lines rather than a call into the pipeline
     helper so the capture has NO side effect on ``factors/factors.parquet`` —
     a capture that overwrites the artifact it references would be the
-    compare-with-a-copy-of-itself failure mode.
+    compare-with-a-copy-of-itself failure mode. D6d deleted the pipeline
+    helper; this copy stays as the deliberate legacy reference.
     """
     columns = [factor.compute(panel).rename(factor.name) for factor in factors]
     return pd.concat(columns, axis=1)

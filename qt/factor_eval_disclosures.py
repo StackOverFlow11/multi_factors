@@ -37,7 +37,8 @@ items, and both small:
    test).
 
 GATE-DEFAULT SINGLE SOURCE: the summarizers' floor defaults are the same
-``data.clean`` module constants the minute-binding's compute calls apply
+``factors.compute.minute`` module constants the minute-binding's compute calls
+apply
 (``factors/compute/minute/binding.py`` calls every compute function with all
 gate parameters at their module defaults). The disclosure therefore reports
 the floors the run ACTUALLY applied by construction — and a test pins the
@@ -53,21 +54,23 @@ import numpy as np
 import pandas as pd
 
 from analytics.eval.sections import Section
-from data.clean.intraday_amount_ratio import (
+from data.clean.schema import DATE_LEVEL
+from factors.compute.minute.peak_ridge_amount_ratio import (
     PEAK_RIDGE_MIN_PEAK_BARS,
     PEAK_RIDGE_MIN_RIDGE_BARS,
+    PeakRidgeAmountRatioFactor,
 )
-from data.clean.intraday_ridge_return import RIDGE_RETURN_MIN_RIDGE_BARS
-from data.clean.intraday_valley_ridge_vwap import (
+from factors.compute.minute.primitives import VOLUME_PRV_MIN_CLASSIFIABLE
+from factors.compute.minute.ridge_minute_return import (
+    RIDGE_RETURN_MIN_RIDGE_BARS,
+    RidgeMinuteReturnFactor,
+)
+from factors.compute.minute.valley_price_quantile import ValleyPriceQuantileFactor
+from factors.compute.minute.valley_ridge_vwap_ratio import (
     VALLEY_RIDGE_MIN_RIDGE_BARS,
     VALLEY_RIDGE_MIN_VALLEY_BARS,
+    ValleyRidgeVwapRatioFactor,
 )
-from data.clean.intraday_volume_prv import VOLUME_PRV_MIN_CLASSIFIABLE
-from data.clean.schema import DATE_LEVEL
-from factors.compute.minute.peak_ridge_amount_ratio import PeakRidgeAmountRatioFactor
-from factors.compute.minute.ridge_minute_return import RidgeMinuteReturnFactor
-from factors.compute.minute.valley_price_quantile import ValleyPriceQuantileFactor
-from factors.compute.minute.valley_ridge_vwap_ratio import ValleyRidgeVwapRatioFactor
 
 # Percentiles reported for the realized ridge/peak-bar distributions.
 _RIDGE_PCTL = (0, 10, 25, 50, 75, 90, 100)

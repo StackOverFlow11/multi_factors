@@ -20,15 +20,6 @@ import pytest
 from analytics.eval import EvalConfig, MANDATORY_SECTIONS, Section
 from analytics.eval.render import canonical_sections
 from analytics.eval.report import FactorEvalReport
-from data.clean.intraday_amount_ratio import (
-    PEAK_RIDGE_MIN_PEAK_BARS,
-    PEAK_RIDGE_MIN_RIDGE_BARS,
-)
-from data.clean.intraday_ridge_return import RIDGE_RETURN_MIN_RIDGE_BARS
-from data.clean.intraday_valley_ridge_vwap import (
-    VALLEY_RIDGE_MIN_RIDGE_BARS,
-    VALLEY_RIDGE_MIN_VALLEY_BARS,
-)
 from factors import registry as factor_registry
 from factors.compute.minute import (
     peak_ridge_amount_ratio as peak_module,
@@ -38,6 +29,15 @@ from factors.compute.minute import (
 )
 from factors.compute.minute import (
     valley_ridge_vwap_ratio as valley_ridge_module,
+)
+from factors.compute.minute.peak_ridge_amount_ratio import (
+    PEAK_RIDGE_MIN_PEAK_BARS,
+    PEAK_RIDGE_MIN_RIDGE_BARS,
+)
+from factors.compute.minute.ridge_minute_return import RIDGE_RETURN_MIN_RIDGE_BARS
+from factors.compute.minute.valley_ridge_vwap_ratio import (
+    VALLEY_RIDGE_MIN_RIDGE_BARS,
+    VALLEY_RIDGE_MIN_VALLEY_BARS,
 )
 from qt.exec_basis_eval import _with_extra_sections
 from qt.factor_eval_disclosures import (
