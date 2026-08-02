@@ -21,9 +21,13 @@ So the guard here is deliberately GENERIC: it covers every ``Factor`` subclass
 defined under ``factors/compute/minute`` (discovered by walking the package, not
 by a hand-maintained list — §六.8, and the same lesson D4b learned when dropping
 a factor from a binding table left the suite green) plus the ``mmp_ew`` intraday
-aggregate feature, which is a minute signal reached through
+aggregate feature, which before D6c was a minute signal reached ONLY through
 :func:`data.clean.intraday_aggregate.asof_daily_features` rather than a Factor
-class.
+class. D6c registered both I3 session features as Factor classes
+(``MmpEwFactor`` / ``IntradaySessionRetFactor``), so the class walk covers them;
+the legacy aggregate-feature case is kept as a second case for the same signal
+because the I5c/I5d runners still read the aggregate path (the shim goes away
+in D6d).
 
 The two knives
 --------------
@@ -80,6 +84,10 @@ from factors.compute.minute.intraday_amp_cut import (
     IntradayAmpCutFactor,
     compute_intraday_amp_cut,
 )
+from factors.compute.minute.intraday_session_ret import (
+    IntradaySessionRetFactor,
+    compute_intraday_session_ret,
+)
 from factors.compute.minute.jump_amount_corr import (
     JumpAmountCorrFactor,
     compute_jump_amount_corr,
@@ -87,6 +95,10 @@ from factors.compute.minute.jump_amount_corr import (
 from factors.compute.minute.minute_ideal_amplitude import (
     MinuteIdealAmplitudeFactor,
     compute_minute_ideal_amplitude,
+)
+from factors.compute.minute.mmp import (
+    MmpEwFactor,
+    compute_intraday_mmp_ew,
 )
 from factors.compute.minute.peak_interval_kurtosis import (
     PeakIntervalKurtosisFactor,
@@ -296,6 +308,14 @@ def _mmp_ew(bars: pd.DataFrame) -> pd.Series:
     return frame[frame.columns[0]]
 
 
+def _mmp_ew_factor(bars: pd.DataFrame) -> pd.Series:
+    return compute_intraday_mmp_ew(bars)
+
+
+def _session_ret(bars: pd.DataFrame) -> pd.Series:
+    return compute_intraday_session_ret(bars)
+
+
 #: minute Factor class -> the free compute that produces its raw daily series.
 _FACTOR_COMPUTES: dict[type[Factor], object] = {
     JumpAmountCorrFactor: _jump,
@@ -309,12 +329,15 @@ _FACTOR_COMPUTES: dict[type[Factor], object] = {
     RidgeMinuteReturnFactor: _ridge_return,
     PeakRidgeAmountRatioFactor: _peak_ridge_amount,
     ValleyPriceQuantileFactor: _valley_quantile,
+    MmpEwFactor: _mmp_ew_factor,
+    IntradaySessionRetFactor: _session_ret,
 }
 
-#: The full covered surface: the eleven factors keyed by name, plus mmp_ew, which
-#: is a minute signal WITHOUT a Factor class (it is an intraday-aggregate feature
-#: consumed by the I5c/I5d runners) and would otherwise slip through a walk that
-#: only knows about Factor subclasses.
+#: The full covered surface: the thirteen factors keyed by name, plus the legacy
+#: ``mmp_ew`` aggregate-feature case — the SAME signal as ``MmpEwFactor`` but
+#: reached through :func:`asof_daily_features`, the path the I5c/I5d runners
+#: still read (the aggregate hook goes away in D6d). Keeping both cases pins
+#: the two read paths against the same perturbation.
 _CASES: dict[str, object] = {
     **{cls().name: fn for cls, fn in _FACTOR_COMPUTES.items()},
     "mmp_ew": _mmp_ew,

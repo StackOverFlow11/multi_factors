@@ -59,12 +59,23 @@ from qt.exec_forward_returns import (  # noqa: E402
     intraday_spec_variant,
 )
 
-#: Every minute factor that reaches a dashboard. Derived from the binding tables
-#: (plus the deferred one) rather than listed, so a new factor is covered without
-#: anyone remembering to add it here.
+#: Every minute factor that reaches a dashboard IN THE CLOSE/EXEC VARIANT PAIR.
+#: Derived from the binding tables (plus the deferred one) rather than listed,
+#: so a new factor is covered without anyone remembering to add it here.
+#: The filter is BY PROPERTY, not by name: the pair exists only for factors
+#: whose registered spec is the DAILY form (``intraday_spec_variant`` derives
+#: the exec form from it, and refuses an already-intraday spec readably). The
+#: two D6c I3 session features are intraday-NATIVE — they ship no close/exec
+#: variant pair (D6c PR-1 registers them for FactorService, not for the eval
+#: surface) — so there is no dashboard for this guard to measure. If one ever
+#: reaches a dashboard, the guard must first learn to render its spec directly.
 MINUTE_FACTOR_IDS = tuple(
     sorted(
-        {cls().name for cls in binding_module._MINUTE_STREAM_BINDINGS}
+        {
+            cls().name
+            for cls in binding_module._MINUTE_STREAM_BINDINGS
+            if not cls().spec.is_intraday
+        }
         | {"valley_price_quantile_20"}
     )
 )

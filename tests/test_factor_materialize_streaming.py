@@ -199,14 +199,15 @@ def _streamed(factor, provider=None, view=View.CLOSE, symbols=None) -> pd.Series
 #: Per-factor budget for the ONE attributable difference between the streamed
 #: load and the whole-history load: pandas' rolling accumulation runs over a
 #: differently-sized prefix, so a factor that accumulates can differ in the last
-#: bits. MEASURED on this fixture: nine of the ten factors are EXACTLY equal
-#: (max|abs| = 0.000e+00) and only ``jump_amount_corr_20`` moves, by max|abs| =
+#: bits. MEASURED on this fixture: eleven of the twelve factors are EXACTLY
+#: equal (max|abs| = 0.000e+00 — the two D6c I3 session features included) and
+#: only ``jump_amount_corr_20`` moves, by max|abs| =
 #: 5.551e-16 / max|rel| = 4.893e-14 — four orders of magnitude under the budget
 #: below, so a real missing-row or wrong-window effect could not hide inside it
 #: (that effect is O(1), cf. the 416.0-vs-438.0 locking-offset witness). The
-#: exactness of the other nine is PINNED here on purpose: if a change turned one
-#: of them from exact into merely-close, this table would have to be edited, and
-#: that edit is the review signal.
+#: exactness of the other eleven is PINNED here on purpose: if a change turned
+#: one of them from exact into merely-close, this table would have to be edited,
+#: and that edit is the review signal.
 _RECONCILE_ATOL: dict[str, float] = {"jump_amount_corr_20": 1e-12}
 
 
@@ -250,7 +251,7 @@ def test_split_stages_reproduce_the_whole_factor_call(factor_id):
 def test_stream_bindings_cover_the_bars_only_factors_plus_the_daily_bound_one():
     """The stream table is the bars-only table PLUS exactly valley_price_quantile.
 
-    The ten bars-only factors must live in BOTH tables (a factor bound at one
+    The twelve bars-only factors must live in BOTH tables (a factor bound at one
     granularity but not the other is a readable error); valley_price_quantile is
     stream-only BY DESIGN — its combine declares a daily-panel input, so it has
     no bars-only whole-factor form — and that daily declaration is asserted here
@@ -343,8 +344,9 @@ def test_whole_factor_entry_point_still_refuses_the_daily_bound_factor():
 def test_streaming_reproduces_the_whole_universe_value(factor_id):
     """Per-symbol streaming == the one-frame, whole-history truth, cell for cell.
 
-    Index and NaN mask exact; values exact for nine of the ten factors and within
-    the measured float-reorder budget for the tenth (see ``_RECONCILE_ATOL``).
+    Index and NaN mask exact; values exact for eleven of the twelve factors and
+    within the measured float-reorder budget for the twelfth (see
+    ``_RECONCILE_ATOL``).
 
     MUTATION (run, rc=1): dropping the per-symbol re-filter in
     ``factors.materialize._symbol_bars`` while a sloppy provider is in play makes
@@ -406,7 +408,7 @@ def test_cross_sectional_classification_matches_the_factors_actual_behaviour(fac
 
     A factor is per-symbol pure iff splitting around the WHOLE factor reproduces
     the whole-universe values. This asserts BOTH directions on every bound factor:
-    the nine declared pure ones must survive that split bit-identically, and the
+    the eleven declared pure ones must survive that split bit-identically, and the
     one declared cross-sectional must not. A factor that acquired a cross-section
     without being added to the set would be caught here — the alternative is a
     comment that is true on the day it is written.

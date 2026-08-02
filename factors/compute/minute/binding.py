@@ -21,16 +21,29 @@ So the streaming materializer uses the SPLIT pair instead:
 * :func:`combine_minute_stats` — the CROSS-SECTIONAL combine, run ONCE on the
   assembled full-universe intermediate.
 
-The cut sits BEFORE the cross-section on purpose. Ten of the eleven minute
-factors are per-symbol pure, so their intermediate IS their value and the combine
-is the identity; ``intraday_amp_cut`` is not — its step 4 z-scores each date
-across the covered universe and needs >= ``AMP_CUT_MIN_CROSS_SECTION`` (=10)
-finite pairs, so a ONE-SYMBOL cross-section is all-NaN BY DEFINITION (measured:
-1692/1692 rows NaN). Splitting around the whole factor would destroy it; splitting
-before the combine reproduces it exactly. Its module already organises the math
-that way (``compute_amp_cut_stats`` then ``combine_amp_cut_cross_section``), as do
-the eval runners — this binding surfaces that existing seam rather than inventing
-one.
+The cut sits BEFORE the cross-section on purpose. Twelve of the thirteen minute
+factors have a universe-independent per-symbol stage, so their intermediate IS
+their value and the combine is the identity; ``intraday_amp_cut`` is not — its
+step 4 z-scores each date across the covered universe and needs >=
+``AMP_CUT_MIN_CROSS_SECTION`` (=10) finite pairs, so a ONE-SYMBOL cross-section
+is all-NaN BY DEFINITION (measured: 1692/1692 rows NaN). Splitting around the
+whole factor would destroy it; splitting before the combine reproduces it
+exactly. Its module already organises the math that way
+(``compute_amp_cut_stats`` then ``combine_amp_cut_cross_section``), as do the
+eval runners — this binding surfaces that existing seam rather than inventing
+one. (``valley_price_quantile``'s per-symbol qbar stage is universe-independent
+too; its combine reads the DAILY panel, declared below — no other symbols.)
+
+D6c ADDITION (the I3 session features ``mmp_ew`` / ``ret`` as first-class
+factors): their compute functions have NO ``lookback_days`` parameter (the
+value at d reads only d's own visible bars), so ``_bind`` / ``_pure_stream``
+— which read ``factor.lookback_days`` — do not apply; their entries are written
+out explicitly below. ONE-TIME EFFECT, DISCLOSED (same class as the D5 C4b
+binding fold and the pit_financials fold registered in
+``factors.store.code_hash``): this module is in the code-hash shared set, so
+THIS EDIT changes every existing factor's store key — a dev factor store
+filled before it is wholesale invalid and must be recomputed once
+(over-invalidate-safe; the direction the store prefers).
 
 CONTRACT the streaming caller relies on: ``combine`` is a PER-DATE reduction (a
 date's output depends only on that date's intermediate rows), so restricting the
@@ -78,6 +91,10 @@ from factors.compute.minute.intraday_amp_cut import (
     compute_amp_cut_stats,
     compute_intraday_amp_cut,
 )
+from factors.compute.minute.intraday_session_ret import (
+    IntradaySessionRetFactor,
+    compute_intraday_session_ret,
+)
 from factors.compute.minute.jump_amount_corr import (
     JumpAmountCorrFactor,
     compute_jump_amount_corr,
@@ -85,6 +102,10 @@ from factors.compute.minute.jump_amount_corr import (
 from factors.compute.minute.minute_ideal_amplitude import (
     MinuteIdealAmplitudeFactor,
     compute_minute_ideal_amplitude,
+)
+from factors.compute.minute.mmp import (
+    MmpEwFactor,
+    compute_intraday_mmp_ew,
 )
 from factors.compute.minute.peak_interval_kurtosis import (
     PeakIntervalKurtosisFactor,
@@ -138,10 +159,12 @@ def _bind(compute_fn) -> BindingFn:
     return _call
 
 
-#: factor class -> its bars-based raw compute. Bound: the 10 minute factors whose
+#: factor class -> its bars-based raw compute. Bound: the 12 minute factors whose
 #: raw compute needs ONLY the 1min bars. NOT bound here: valley_price_quantile
 #: (its value also needs the daily panel, so it has no bars-only whole-factor
 #: form — it IS bound in the two-stage table below, with a declared daily input).
+#: The two I3 session features (D6c) are EXPLICIT lambdas, not ``_bind``: their
+#: compute functions take no ``lookback_days`` (same-day values), only ``name``.
 _MINUTE_BINDINGS: dict[type[Factor], BindingFn] = {
     JumpAmountCorrFactor: _bind(compute_jump_amount_corr),
     MinuteIdealAmplitudeFactor: _bind(compute_minute_ideal_amplitude),
@@ -153,6 +176,10 @@ _MINUTE_BINDINGS: dict[type[Factor], BindingFn] = {
     ValleyRidgeVwapRatioFactor: _bind(compute_valley_ridge_vwap_ratio),
     RidgeMinuteReturnFactor: _bind(compute_ridge_minute_return),
     PeakRidgeAmountRatioFactor: _bind(compute_peak_ridge_amount_ratio),
+    MmpEwFactor: lambda factor, bars: compute_intraday_mmp_ew(bars, name=factor.name),
+    IntradaySessionRetFactor: lambda factor, bars: compute_intraday_session_ret(
+        bars, name=factor.name
+    ),
 }
 
 # --------------------------------------------------------------------------- #
@@ -239,6 +266,16 @@ class MinuteStreamBinding:
     combine_daily: DailyCombineInput | None = None
 
 
+def _identity_combine(factor: Factor, stats: pd.DataFrame) -> pd.Series:
+    """The combine of a per-symbol-pure factor: the intermediate IS the value."""
+    if STATS_VALUE_COL not in stats.columns:
+        raise ValueError(
+            f"{factor.name}: the per-symbol intermediate must carry the "
+            f"'{STATS_VALUE_COL}' column; got {list(stats.columns)}."
+        )
+    return stats[STATS_VALUE_COL].rename(factor.name).sort_index(kind="mergesort")
+
+
 def _pure_stream(compute_fn) -> MinuteStreamBinding:
     """Stream binding for a PER-SYMBOL PURE factor: intermediate == value.
 
@@ -252,15 +289,22 @@ def _pure_stream(compute_fn) -> MinuteStreamBinding:
         )
         return series.to_frame(STATS_VALUE_COL)
 
-    def _combine(factor: Factor, stats: pd.DataFrame) -> pd.Series:
-        if STATS_VALUE_COL not in stats.columns:
-            raise ValueError(
-                f"{factor.name}: the per-symbol intermediate must carry the "
-                f"'{STATS_VALUE_COL}' column; got {list(stats.columns)}."
-            )
-        return stats[STATS_VALUE_COL].rename(factor.name).sort_index(kind="mergesort")
+    return MinuteStreamBinding(per_symbol=_per_symbol, combine=_identity_combine)
 
-    return MinuteStreamBinding(per_symbol=_per_symbol, combine=_combine)
+
+def _session_stream(compute_fn) -> MinuteStreamBinding:
+    """``_pure_stream`` for a compute with NO ``lookback_days`` parameter (D6c).
+
+    The I3 session features are per-symbol pure same-day values, so the
+    intermediate IS the value and the combine is the same identity — the only
+    instance input is the factor ``name``.
+    """
+
+    def _per_symbol(factor: Factor, bars: pd.DataFrame) -> pd.DataFrame:
+        series = compute_fn(bars, name=factor.name)
+        return series.to_frame(STATS_VALUE_COL)
+
+    return MinuteStreamBinding(per_symbol=_per_symbol, combine=_identity_combine)
 
 
 def _pure_stream_with_diagnostics(compute_fn) -> MinuteStreamBinding:
@@ -383,7 +427,7 @@ def _requires_daily_combine(factor: Factor, stats: pd.DataFrame) -> pd.Series:
 
 
 #: factor class -> its two-stage streaming binding. Superset of
-#: ``_MINUTE_BINDINGS``: the ten bars-only factors live in both tables;
+#: ``_MINUTE_BINDINGS``: the twelve bars-only factors live in both tables;
 #: valley_price_quantile lives ONLY here (its combine declares a daily input, so
 #: it has no bars-only whole-factor form). The exact relationship is pinned by
 #: ``tests/test_factor_materialize_streaming.py``.
@@ -416,6 +460,9 @@ _MINUTE_STREAM_BINDINGS: dict[type[Factor], MinuteStreamBinding] = {
     PeakRidgeAmountRatioFactor: _pure_stream_with_diagnostics(
         compute_peak_ridge_amount_ratio
     ),
+    # The two I3 session features (D6c): per-symbol pure, no trailing window.
+    MmpEwFactor: _session_stream(compute_intraday_mmp_ew),
+    IntradaySessionRetFactor: _session_stream(compute_intraday_session_ret),
 }
 
 #: The factors whose cross-sectional combine is NOT the identity — i.e. the ones
@@ -467,14 +514,20 @@ _POOLED_BASELINE_DAYS: dict[type[Factor], int] = {
 
 VALID_DAY_POOLED_FACTORS: frozenset[type[Factor]] = frozenset(_POOLED_BASELINE_DAYS)
 
-#: The bounded minute factors (trailing window over ALL trading days, not valid
-#: days) — a fixed lookback_depth trim is load-geometry-free for these. Kept as
-#: an explicit set so the classification is a CLOSED partition of the minute
-#: surface (a new minute factor missing from BOTH sets is a readable error).
+#: The bounded minute factors — a fixed ``lookback_depth`` trim is
+#: load-geometry-free for these. Two shapes sit here: the trailing-window factors
+#: whose window counts ALL trading days (not valid days), and the D6c I3 session
+#: features, which have NO trailing window at all (a value at d reads only d's
+#: own visible bars, so their declared depth 1 is the materializer's floor).
+#: Kept as an explicit set so the classification is a CLOSED partition of the
+#: minute surface (a new minute factor missing from BOTH sets is a readable
+#: error).
 _BOUNDED_MINUTE_FACTORS: frozenset[type[Factor]] = frozenset({
     JumpAmountCorrFactor,
     MinuteIdealAmplitudeFactor,
     AmpMarginalAnomalyVolFactor,
+    MmpEwFactor,
+    IntradaySessionRetFactor,
 })
 
 

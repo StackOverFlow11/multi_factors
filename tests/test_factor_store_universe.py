@@ -757,7 +757,7 @@ def test_the_cross_sectional_combine_runs_once_per_request():
 # Payload shape: what each kind of factor stores
 # --------------------------------------------------------------------------- #
 def test_only_the_cross_sectional_factor_stores_an_intermediate():
-    """The other nine minute factors and the daily factors are NOT dragged into
+    """The other eleven minute factors and the daily factors are NOT dragged into
     the two-stage form — their values are universe-free, so they store their
     value. Derived from the DECLARED set (``is_cross_sectional_minute``), so a
     third cross-sectional factor cannot sneak in untested; today the set is

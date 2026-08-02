@@ -15,13 +15,15 @@ whether the value moves. This is the "perturb the future -> value unchanged" sha
 the project already uses, aimed at the WITHIN-DAY boundary rather than the
 across-day one.
 
-RESULT, ENCODED RATHER THAN DESCRIBED. All eleven stream-bound minute factors
-are now clean — the ten bars-bound ones measured through their whole-factor
+RESULT, ENCODED RATHER THAN DESCRIBED. All thirteen stream-bound minute factors
+are now clean — the twelve bars-bound ones measured through their whole-factor
 call, valley_price_quantile (stream-bound with a declared daily combine input,
 D5 C4b) measured through its per-symbol qbar stage, which carries its entire
-minute-bar dependence. ``jump_amount_corr_20`` was NOT when this file was
-written: its compute was the ONLY one of the eleven that applied no
-decision-time truncation of its own (grep: zero ``decision_time`` /
+minute-bar dependence. (D6c added the two I3 session features to the bound set;
+they truncate inside ``asof_daily_features`` / ``compute_intraday_mmp_ew`` like
+their siblings and measured clean here on arrival.) ``jump_amount_corr_20`` was
+NOT when this file was written: its compute was the ONLY one of the eleven that
+applied no decision-time truncation of its own (grep: zero ``decision_time`` /
 ``prepare_visible_minute_bars`` references in its module), so under the old
 runners it saw 09:30-15:00 of day d.
 
@@ -200,7 +202,7 @@ def test_the_deny_list_is_empty_and_that_emptiness_is_a_measurement():
     """
     assert KNOWN_POST_CUTOFF_DEPENDENT_IDS == frozenset()
     assert set(CLEAN_FACTOR_IDS) == set(BOUND_FACTOR_IDS)
-    assert len(BOUND_FACTOR_IDS) == 11, (
+    assert len(BOUND_FACTOR_IDS) == 13, (
         "the bound minute-factor set changed; the emptiness above only covers "
         "what this file measures, so re-check the new one before trusting it"
     )

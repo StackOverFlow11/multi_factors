@@ -19,6 +19,8 @@ The 11 minute-derived surface factors are registered too (their families were
 never in the chain — eval runners construct them directly today), so the
 registry covers the FULL factor surface the D4 service will serve; their
 builders follow the same window-named convention with ``lookback_days``.
+D6c adds the two I3 session features (``mmp_ew`` / ``ret``) under their exact
+legacy column names — no window parameter, so no prefix family.
 """
 
 from __future__ import annotations
@@ -42,6 +44,10 @@ from factors.compute.minute.intraday_amp_cut import (
     AMP_CUT_LOOKBACK_DAYS,
     IntradayAmpCutFactor,
 )
+from factors.compute.minute.intraday_session_ret import (
+    SESSION_RET_FACTOR_NAME,
+    IntradaySessionRetFactor,
+)
 from factors.compute.minute.jump_amount_corr import (
     JUMP_LOOKBACK_DAYS,
     JumpAmountCorrFactor,
@@ -49,6 +55,10 @@ from factors.compute.minute.jump_amount_corr import (
 from factors.compute.minute.minute_ideal_amplitude import (
     IDEAL_AMP_LOOKBACK_DAYS,
     MinuteIdealAmplitudeFactor,
+)
+from factors.compute.minute.mmp import (
+    MMP_EW_FACTOR_NAME,
+    MmpEwFactor,
 )
 from factors.compute.minute.peak_interval_kurtosis import (
     PEAK_INTERVAL_LOOKBACK_DAYS,
@@ -209,4 +219,19 @@ register(
     PeakRidgeAmountRatioFactor,
     prefix="peak_ridge_amount_ratio",
     builder=_lookback_builder(PeakRidgeAmountRatioFactor, PEAK_RIDGE_LOOKBACK_DAYS),
+)
+
+# -- I3 session features (D6c): exact legacy column names, no window ---------
+# -- parameter — registered so the two intraday runners can switch onto ------
+# -- FactorService (D6c PR-2). ------------------------------------------------
+
+register(
+    MmpEwFactor,
+    exact=(MMP_EW_FACTOR_NAME,),
+    builder=lambda name, params: MmpEwFactor(),
+)
+register(
+    IntradaySessionRetFactor,
+    exact=(SESSION_RET_FACTOR_NAME,),
+    builder=lambda name, params: IntradaySessionRetFactor(),
 )
