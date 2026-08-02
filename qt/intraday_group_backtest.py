@@ -48,13 +48,14 @@ from qt.config import RootConfig, load_config
 
 # Reuse the stable I5a/I5b/I5c helpers rather than copy-paste them (goal §1: avoid
 # drift). These are import-stable private helpers: run preconditions, the exec
-# config builder, the configured-feature daily score, and the raw stk_limit loader.
+# config builder, the service-served daily score, and the raw stk_limit loader.
+from qt.factor_source import open_factor_value_store
 from qt.intraday_groups import EqualWeightAll, GroupScores, assign_quantile_buckets
 from qt.intraday_tail_framework import (
     _check_i5a_preconditions,
     _exec_cfg_from,
     _load_price_limits,
-    _score_panel,
+    _serve_score_panel,
 )
 from qt.pipeline import _build_cache, _build_universe, _load_panel, _make_logger
 from runtime.backtest.engine import BacktestEngine
@@ -526,7 +527,14 @@ def run_phase_i5d_intraday_groups(config_path: str) -> I5dResult:
     )
 
     load = _load_anchor_minute_bars(cfg, symbols, anchor_dates, logger)
-    score_series, score_feature = _score_panel(cfg, load.bars, logger)
+    # Sparse monthly anchors: serve PER DAY (a single range fill would
+    # materialize the 5-year convex hull — the multi-year minute read the
+    # anchor-sliced loading exists to avoid). Values are fill-geometry
+    # invariant (P8: single fill ≡ batch fill).
+    with open_factor_value_store(cfg, logger) as store:
+        score_series, score_feature = _serve_score_panel(
+            cfg, load.bars, load.covered, store, logger, sparse_anchors=True
+        )
     score_coverage = {
         "rows": int(score_series.shape[0]),
         "valid": int(score_series.notna().sum()),

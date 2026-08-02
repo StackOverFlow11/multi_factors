@@ -3,11 +3,12 @@
 D6c switches the two intraday runners — ``qt.intraday_tail_framework`` (the
 I5a/I5b/I5c/I5f tail runner) and ``qt.intraday_group_backtest`` (the I5d/I5e
 quintile runner) — from the legacy score path (``data.clean.intraday_aggregate.
-asof_daily_features`` via ``intraday_tail_framework._score_panel``) to the
-factor service (``factors.service`` over the D6c-registered
+asof_daily_features``, formerly wrapped by the now-retired
+``intraday_tail_framework._score_panel``) to the factor service
+(``factors.service`` over the D6c-registered
 ``intraday_ret_0930_1450`` / ``intraday_mmp20_ew_0930_1450`` factors). Before
-any runner is touched, this module captures what the LEGACY code produces — the
-same "freeze first, reconcile against the frozen copy" discipline as D6b's
+any runner was touched, this module captured what the LEGACY code produced —
+the same "freeze first, reconcile against the frozen copy" discipline as D6b's
 ``qt.phase3_capture``.
 
 Two capture legs
@@ -22,8 +23,9 @@ object which carries the secret-file path, and output paths — locations, not
 values). The runner's own writes (report/log/figures) still happen — this is a
 capture OF the legacy runner, not a reimplementation.
 
-SCORE leg (:func:`capture_score`) — the load-bearing evidence BEFORE the
-switch: on the SAME bars the runner loads, the legacy ``_score_panel`` output
+SCORE leg (:func:`capture_score`) — the load-bearing evidence captured BEFORE
+the switch: on the SAME bars the runner loads, the legacy score (derived here
+by :func:`_legacy_score_panel`, the retired runner helper's exact semantics)
 is compared CELL BY CELL against the service path (``factors.service.panel``
 over the registered factor, ``view=DECISION, basis=EXEC_TO_EXEC``, per
 decision date, served through the shared value store with the cache-only
@@ -78,8 +80,9 @@ from factors.service import DecisionPoint
 from factors.service import panel as serve_panel
 from qt.config import RootConfig, load_config
 from qt.factor_source import open_factor_value_store
+from data.clean.intraday_aggregate import asof_daily_features
 from qt.intraday_group_backtest import _load_anchor_minute_bars
-from qt.intraday_tail_framework import _load_minute_bars_cache_only, _score_panel
+from qt.intraday_tail_framework import _load_minute_bars_cache_only
 from qt.phase3_capture import compare_json, compare_panels, to_jsonable
 from qt.pipeline import _build_cache, _build_universe, _load_panel, _make_logger
 
@@ -113,7 +116,7 @@ _RUNNERS = {
     "group": ("qt.intraday_group_backtest", "run_phase_i5d_intraday_groups"),
 }
 
-#: The D6c-registered factor ids the score leg may serve. ``_score_panel``'s
+#: The D6c-registered factor ids the score leg may serve. The legacy score's
 #: resolved column IS the factor id byte-for-byte (pinned by the D6c factor
 #: tests); anything else is a loud error, never a silent skip.
 _KNOWN_SCORE_FACTORS = frozenset(
@@ -262,8 +265,39 @@ def _load_run_bars(runner: str, cfg: RootConfig, panel: pd.DataFrame, symbols, l
     return load.bars, load.covered, int(load.live_calls)
 
 
+def _legacy_score_panel(cfg: RootConfig, bars: pd.DataFrame, logger) -> tuple[pd.Series, str]:
+    """The RETIRED runner-side legacy score, kept here as the capture reference.
+
+    Byte-for-byte the semantics of the ``_score_panel`` D6c PR-2 deleted from
+    ``qt.intraday_tail_framework``: one configured feature through
+    ``asof_daily_features`` (per-bar PIT cutoff BEFORE daily grouping), its
+    single returned column used exactly. The capture harness owns this legacy
+    reference so the score leg still runs after the runners switched to the
+    factor service — the D6b ``phase3_capture.legacy_factor_panel`` precedent.
+    """
+    ic = cfg.intraday
+    assert ic is not None
+    feats = asof_daily_features(
+        bars,
+        decision_time=ic.decision_time,
+        session_open=ic.session_open,
+        features=[ic.score_feature],
+    )
+    if feats.shape[1] != 1:
+        raise ValueError(
+            f"expected exactly one feature column for score_feature="
+            f"{ic.score_feature!r}, got {list(feats.columns)}."
+        )
+    col = feats.columns[0]
+    logger.info(
+        "legacy score (capture reference): feature_key=%s, column=%s, %d rows",
+        ic.score_feature, col, len(feats),
+    )
+    return feats[col].rename("score"), col
+
+
 def capture_score(runner: str, config_path: str, out_dir: str) -> dict:
-    """Score-leg capture: legacy ``_score_panel`` vs the factor service, per cell.
+    """Score-leg capture: the legacy score vs the factor service, per cell.
 
     Replays the runner's load sequence (shared cache -> universe -> daily panel
     -> the runner's own cache-only minute load), computes the legacy score,
@@ -274,6 +308,11 @@ def capture_score(runner: str, config_path: str, out_dir: str) -> dict:
     runner's anchor slicing exists to avoid). Writes ``legacy_score.parquet``,
     ``served_score.parquet`` and ``score_reconcile.json`` into ``out_dir`` and
     returns the reconcile report.
+
+    The LEGACY side is derived here from ``asof_daily_features`` directly —
+    exactly what the retired ``_score_panel`` delegated to (D6b's
+    ``phase3_capture.legacy_factor_panel`` precedent: the capture harness owns
+    the legacy reference, the switched runners do not).
     """
     if runner not in _RUNNERS:
         raise ValueError(f"unknown runner {runner!r}; known: {sorted(_RUNNERS)}")
@@ -288,7 +327,7 @@ def capture_score(runner: str, config_path: str, out_dir: str) -> dict:
     _universe, symbols = _build_universe(cfg, logger, cache)
     panel = _load_panel(cfg, symbols, logger, cache)
     bars, covered, minute_live_calls = _load_run_bars(runner, cfg, panel, symbols, logger)
-    legacy, column = _score_panel(cfg, bars, logger)
+    legacy, column = _legacy_score_panel(cfg, bars, logger)
     if column not in _KNOWN_SCORE_FACTORS:
         raise ValueError(
             f"score column {column!r} is not a D6c-registered factor id "
@@ -413,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_score = sub.add_parser(
         "capture-score",
-        help="Score-leg capture (legacy _score_panel vs the factor service).",
+        help="Score-leg capture (legacy score reference vs the factor service).",
     )
     p_score.add_argument("--runner", required=True, choices=sorted(_RUNNERS))
     p_score.add_argument("--config", required=True)
