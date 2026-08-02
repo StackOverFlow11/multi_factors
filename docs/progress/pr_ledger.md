@@ -31,3 +31,5 @@
 | #122 | fina 并列披露稳定去重 correctness fix + `pit_financials` 折 code_hash（重述量化：SSE50 5.12% / CSI300 5.11% 格） |
 | #123 | D6b PR-1 phase3 基线捕获工程：capture harness + cached twins + `d6b_phase3` 冻结基线 |
 | #124 | D6b：oos/subset/robustness 切 FactorService——S1 冷/S2 暖 vs 冻结基线全叶子 0 |
+| #126 | D6c PR-1：`mmp_ew`/`ret` 注册为正式因子 + I5 捕获 harness + `d6c_i5` 冻结基线（score 腿 6/6 max_abs_diff=0.0） |
+| #127 | D6c PR-2：intraday 两 runner 切 FactorService——S1 冷/S2 暖 × 6 配置 vs L1 全 12/12 n_diffs=0，执行面零改动 |
