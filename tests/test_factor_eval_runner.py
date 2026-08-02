@@ -21,7 +21,7 @@ import pytest
 from analytics.eval.sections import Section
 from data.clean.intraday_schema import normalize_intraday_bars
 from factors.materialize import MaterializeSources
-from factors.store import FactorValueStore
+from factors.store import FactorValueStore, RunRegistry
 from qt.config import (
     AlphaCfg,
     BacktestCfg,
@@ -481,6 +481,40 @@ def test_end_to_end_wiring_both_book_modes(monkeypatch, tmp_path, book_mode):
         assert result.exec_basis.with_book_dashboard.exists()
     else:
         assert wb.name == "factor_eval_jump_amount_corr_20_exec_with_book.md"
+
+
+def test_run_appends_to_the_run_registry_after_bootstrapping_the_book(
+    monkeypatch, tmp_path
+):
+    """D7-PR0 wiring, end to end against the tmp store root: first run seeds
+    the book then appends its own record; the second run takes the verified
+    path and appends exactly one more."""
+    captured: dict = {}
+    bundle = _wire(monkeypatch, tmp_path, captured)
+    result = run_factor_eval("ignored.yaml", "jump_amount_corr_20")
+
+    records = RunRegistry(bundle.store.root).read_all()
+    assert len(records) == 4  # 3 bootstrap book seeds + this run's record
+    seeds, run = records[:3], records[-1]
+    assert {r["factor_id"] for r in seeds} == {
+        "value_ep",
+        "value_bp",
+        "volatility_20",
+    }
+    assert all(r["status"] == "book" for r in seeds)
+    assert run["factor_id"] == "jump_amount_corr_20"
+    assert run["status"] == "watch"  # the stub's with-book deployment is Watch
+    assert run["view"] == "decision"
+    assert "book_mode=decision" in run["note"]
+    assert "verdict_with_book=Watch" in run["note"]
+    assert "verdict_no_book=Watch" in run["note"]
+    assert result.registry_status == "watch"
+
+    run_factor_eval("ignored.yaml", "jump_amount_corr_20")
+    records = RunRegistry(bundle.store.root).read_all()
+    assert len(records) == 5  # verified path: exactly one more record
+    assert records[-1]["factor_id"] == "jump_amount_corr_20"
+    assert records[-1]["status"] == "watch"
 
 
 def test_disclosure_rides_the_diagnostics_sink_into_an_extra_section(
