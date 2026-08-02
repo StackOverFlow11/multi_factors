@@ -62,19 +62,19 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 - **secrets** 一律走外部 `.config.json`；repo `.gitignore` 已排除数据产物(`*.parquet`等)、缓存、`tmp/`（仅留架构文档）。
 - 文件小而专（<800 行），immutable 优先。
 
-## 当前状态（截面写于 2026-07-30，均为实跑验证）
+## 当前状态（截面写于 2026-08-02，均为实跑验证）
 
 | 项 | 值 |
 |---|---|
-| `main` | 下表全部 gate 实测于 `8aa11c1`（PR #119） |
-| `pytest -p no:warnings` | **2705 passed + 1 skipped**（⚠️ 不要再传 `-q`：`pyproject.toml` 已含 `addopts="-q"`，叠成 `-qq` 会吞掉摘要行） |
+| `main` | 下表全部 gate 实测于 `6db1150`（PR #124） |
+| `pytest -p no:warnings` | **2730 passed + 1 skipped**（主 checkout 口径；⚠️ 不要再传 `-q`：`pyproject.toml` 已含 `addopts="-q"`，叠成 `-qq` 会吞掉摘要行） |
 | `ruff check .` | clean |
 | phase0 锚（`run-phase0 --config config/example.yaml`） | **ic 0.9600 / annual 0.8408**（自 P0 起从未变过，任何改动都不许动它） |
 | `qt.exec_baseline_freeze --verify` | **77/77 @ `45c14aa`** |
-| `validate-config` | 32/32 |
+| `validate-config` | 37/37（32 + 5 个 cached twin 配置） |
 | 唯一 OPEN 的 PR | #38（历史遗留，保持 OPEN） |
 
-**当前主线 = 因子层深度重构（设计 v3.2，D0–D7）。D5 已全部收口**：C5 四腿对账 33 格全绿（#113），**C6 完成（#115 改造 + #116 删除）——11 个旧 runner 归零，决策③「杀第二条因子取数路径」收尾**，三个重生成工具退役为 verify-only、D1 基线 frozen-forever、校验已接进 C5 harness 的三个读入点。**D6a 已收口（#118）**：phase0/phase2 切 FactorService，真实 phase2 逐格 `max_abs_diff=0.0`、锚未动（R10：新锚 D6d 才转正）；顺带堵死一个**已经在发生**的红线 #6 违反（demo 值写进共享 store）。**下一步 = D6b**（oos/subset/robustness 切服务，**必须先抓 legacy 再切**——归档数字已不复现，见 D6a-5），然后 D6c / D6d / D7 收官全量重评估（**exec-only**）。
+**当前主线 = 因子层深度重构（设计 v3.2，D0–D7）。D5 已全部收口**：C5 四腿对账 33 格全绿（#113），**C6 完成（#115 改造 + #116 删除）——11 个旧 runner 归零，决策③「杀第二条因子取数路径」收尾**，三个重生成工具退役为 verify-only、D1 基线 frozen-forever、校验已接进 C5 harness 的三个读入点。**D6a 已收口（#118）**：phase0/phase2 切 FactorService，真实 phase2 逐格 `max_abs_diff=0.0`、锚未动（R10：新锚 D6d 才转正）；顺带堵死一个**已经在发生**的红线 #6 违反（demo 值写进共享 store）。**D6b 已收口（#122–#124）**：oos/subset/robustness 切 FactorService，**先抓 legacy 再切**（D6a-5 教训）——PR-1 基线工程（capture harness + cached twins + `d6b_phase3` 冻结基线）中抓出 fina 并列披露 tie-break 缺陷（#122 单独 PR）与 fina tail 泄漏（`fina_tail_days: 0` 封），PR-2 切换后 S1 冷/S2 暖 vs 冻结基线**全叶子 0**。**下一步 = D6c**（intraday_tail_framework + intraday_group_backtest 切服务），然后 D6d / D7 收官全量重评估（**exec-only**）。
 
 > **接手必读（唯一入口）**：[`tmp/design/HANDOFF_2026-07-30_claude_code.md`](tmp/design/HANDOFF_2026-07-30_claude_code.md)
 > ——含当前截面、F1–F5 裁定速查表、六步路线、派发/评审/限额的具体操作法、陷阱清单。
@@ -109,7 +109,7 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 绝不可覆盖的 artifact
 
-`artifacts/refactor_baseline/{panels, panels_d2, exec_baseline, pr_c_cutoff_fix}` —— 后续一切对账的唯一参照物，**无法从当前代码再生**，只读。所有真实 run 一律 **cache-only**（日志须 `stk_mins_live_calls=0`）。
+`artifacts/refactor_baseline/{panels, panels_d2, exec_baseline, pr_c_cutoff_fix, d6b_phase3}` —— 后续一切对账的唯一参照物，**无法从当前代码再生**，只读。所有真实 run 一律 **cache-only**（日志须 `stk_mins_live_calls=0`）。
 
 ## 进度档案（完整历史；**按需 grep，不要整读**）
 
@@ -146,6 +146,6 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 ## 路线图
 
-1. **因子层重构收尾（当前主线）**：~~F1 (#112)~~ → ~~C5 audit (#113)~~ → ~~C5 进度文档 (#114)~~ → ~~C6 (#115+#116)~~ → ~~D6a (#118)~~ → **D6b（下一步）** → D6c → D6d → D7 收官全量重评估（**exec-only**）。
+1. **因子层重构收尾（当前主线）**：~~F1 (#112)~~ → ~~C5 audit (#113)~~ → ~~C5 进度文档 (#114)~~ → ~~C6 (#115+#116)~~ → ~~D6a (#118)~~ → ~~D6b (#122–#124)~~ → **D6c（下一步：intraday_tail_framework + intraday_group_backtest 切服务）** → D6d → D7 收官全量重评估（**exec-only**）。
 2. **因子研究**：十一因子无一到 Adopt ⇒ 下一步优先做**换手/成本敏感的组合层验证**与更长 holdout，而不是继续堆新因子；补 PR #79 的 review；修订 HTML compendium。
 3. **可选、须单独显式 goal**：I5g（强制 partial-fill / volume-cap）；数据层 D6（`PanelStore` append/partition，仅当因子研究需要可复用派生面板时才启动）；schema 守卫接 live `data-update`。
