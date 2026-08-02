@@ -31,6 +31,8 @@ panels 腿：同一 enriched panel 上 legacy `factor.compute(panel)` vs 服务�
 
 - 快照：`tmp/context/d6b/cache_snapshot_daily/`（**不入 git、不进 refactor_baseline**）——
   共享缓存的**日频 11 端点**（分钟数据不含，phase3 不需要）在某次 warm 后的 `cp -a`。
+  ⚠️ **daily-only，勿复用于分钟口径**：分钟端点不在快照里，任何走 `TushareIntradayCache`
+  的配置指到这里都会 miss 并静默转 live，隔离即破。
 - 隔离口径（两个旋钮都在 twin 配置里，属**运行期本地改动、不入 commit**）：
   ① `cache.root_dir` 指快照；② **`fina_tail_days: 0`**——fina 的 400 天 trailing-tail 策略
   默认每次跑都重抓上游，会把快照外的 vintage 混进来；置 0 后接受既有覆盖、零 live 调用。
@@ -60,14 +62,14 @@ L0（live、修复前 tie-break）vs L1（快照、修复后）的叶子差异
 ```bash
 R=<有 artifacts 树的 checkout>
 PY=/home/shaofl/Development/env_tools/envs/quant_mf/bin/python
-# 123 条 sha256 逐条核对（脚本与 exec_baseline 同款逻辑）
+# 123 条 sha256 逐条核对（manifest 每条是 {"sha256", "bytes"} 结构）
 $PY - <<'EOF'
 import hashlib, json, pathlib
 root = pathlib.Path("<R>")
 man = json.load(open(root / "docs/factors/d6b_phase3_manifest.json"))
 base = root / "artifacts/refactor_baseline/d6b_phase3"
 bad = [f for f, h in man["files"].items()
-       if hashlib.sha256((base / f).read_bytes()).hexdigest() != h]
+       if hashlib.sha256((base / f).read_bytes()).hexdigest() != h["sha256"]]
 print(f"{len(man['files']) - len(bad)}/{len(man['files'])} OK" if not bad else f"MISMATCH: {bad}")
 EOF
 ```
