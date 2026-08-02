@@ -414,6 +414,14 @@ def run_factor_eval(
     _check_config_book(cfg)
     factor = factor_registry.build(factor_id)
     spec = factor.spec
+
+    # D7-PR0 review F4 — fail-fast: precompute the run-registry key + fingerprint
+    # at the STARTUP gate, before any evaluation work. A price_level factor's
+    # fingerprint needs the per-symbol adj-factor event table, which an eval run
+    # does not carry, so it must raise HERE — not after a full evaluation.
+    run_key = store_key(factor, view=View.DECISION.value, params=None)
+    run_fingerprint = data_fingerprint(adjustment=spec.adjustment)
+
     eval_cfg = _build_eval_config(cfg)
 
     log_path = Path(cfg.output.log_dir) / f"factor_eval_{factor_id}.log"
@@ -511,16 +519,17 @@ def run_factor_eval(
     # D7-PR0 run-registry append: the WITH-BOOK deployment drives the status
     # (it is the three-axis verdict — Predictive + Incremental + Tradable; the
     # no-book run leaves Incremental NOT_ASSESSED). Both deployments ride in the
-    # note. The key/fingerprint mirror the subject's decision-view service read
+    # note. The key/fingerprint were precomputed at the startup gate (F4
+    # fail-fast); they mirror the subject's decision-view service read
     # (params=None, the registry-default params this runner always uses).
     status = status_for_run(
         factor_id, exec_basis.with_book_metrics["deployment"], book_ids=BOOK_IDS
     )
     record = registry.append_run(
-        key=store_key(factor, view=View.DECISION.value, params=None),
+        key=run_key,
         factor=factor,
         status=status,
-        fingerprint=data_fingerprint(adjustment=spec.adjustment),
+        fingerprint=run_fingerprint,
         note=(
             f"run-factor-eval factor={factor_id} book_mode={book_mode} "
             f"universe={eval_cfg.universe} "

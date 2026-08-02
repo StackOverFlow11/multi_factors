@@ -185,6 +185,7 @@ def test_a_token_like_string_in_the_run_note_is_redacted(tmp_path):
         fingerprint=data_fingerprint(adjustment=factor.spec.adjustment),
         note=(
             f"run-factor-eval factor={_NON_BOOK} token={_TOKEN} "
+            f"tushare.token={_TOKEN} "
             "config=/home/x/.config.json verdict_with_book=Watch"
         ),
     )

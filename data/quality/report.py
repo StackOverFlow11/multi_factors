@@ -35,12 +35,17 @@ _FRAME_COLUMNS = ["dataset", "check", "severity", "count", "examples", "note"]
 # Defensive report-safety guard (NOT a secrets-detection product): redact
 # secret-looking strings that a caller might pass into a finding note or example
 # value, so a rendered/stored report never carries a token-file path or key.
-# Deterministic + order-independent: each pattern -> a neutral marker.
+# Deterministic, but NOT order-independent (D7-PR0 review F2): the token VALUE
+# pattern must run BEFORE the bare `tushare.token` key pattern — redacting the
+# key first destroys the `token\s*[=:]` context and leaks the value in
+# `tushare.token=<value>` (a real leak on main before this fix).
 _REDACTED = "[REDACTED]"
 _SECRET_PATTERNS = (
+    # token=... / token: ... values, incl. the `tushare.token=<value>` form
+    # (the optional prefix keeps key+value inside ONE match).
+    re.compile(r"(?:tushare\.)?token\s*[=:]\s*\S+", re.IGNORECASE),
     re.compile(r"\S*\.config\.json", re.IGNORECASE),   # any path ending in .config.json
-    re.compile(r"tushare\.token", re.IGNORECASE),      # the secret config key
-    re.compile(r"token\s*[=:]\s*\S+", re.IGNORECASE),  # token=... / token: ... values
+    re.compile(r"tushare\.token", re.IGNORECASE),      # the bare secret config key
 )
 
 

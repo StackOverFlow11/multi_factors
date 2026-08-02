@@ -49,7 +49,19 @@ from qt.factor_eval_runner import (
 SYMS = ["000001.SZ", "000002.SZ"]
 DATES = pd.bdate_range("2021-07-01", periods=30)
 
-_METRICS = {"deployment": "Watch", "predictive": "PASS", "incremental": "NOT_ASSESSED"}
+# The two deployments DIFFER on purpose (D7-PR0 review F1): the run-registry
+# status is driven by the WITH-BOOK deployment — identical stub metrics could
+# never catch a driver swap to the no-book metrics.
+_METRICS_NO_BOOK = {
+    "deployment": "Reject",
+    "predictive": "FAIL",
+    "incremental": "NOT_ASSESSED",
+}
+_METRICS_WITH_BOOK = {
+    "deployment": "Watch",
+    "predictive": "PASS",
+    "incremental": "NOT_ASSESSED",
+}
 
 
 def _min_config(tmp_path, **overrides) -> RootConfig:
@@ -203,6 +215,40 @@ def test_build_eval_config_declares_the_exec_identity_and_shared_kwargs(tmp_path
 def test_invalid_book_mode_is_rejected_before_any_work(tmp_path):
     with pytest.raises(ValueError, match="--book-mode"):
         run_factor_eval("ignored.yaml", "jump_amount_corr_20", book_mode="bogus")
+
+
+def test_price_level_factor_fails_at_the_startup_gate_before_any_eval(
+    monkeypatch, tmp_path
+):
+    """D7-PR0 review F4: a price_level factor's fingerprint needs the per-symbol
+    adj-factor event table an eval run does not carry — the registry precompute
+    must raise at the startup gate, BEFORE build_eval_service (the evaluation
+    itself) runs. No shipped factor is price_level today, so the spec of a real
+    registered factor is doctored for this test."""
+    import dataclasses
+
+    from data.availability_policy import Adjustment
+    from factors import registry as factor_registry_mod
+
+    cfg = _min_config(tmp_path)
+    monkeypatch.setattr("qt.factor_eval_runner.load_config", lambda path: cfg)
+    factor = factor_registry_mod.build("volatility_20")
+    monkeypatch.setattr(
+        type(factor),
+        "spec",
+        dataclasses.replace(factor.spec, adjustment=Adjustment.PRICE_LEVEL),
+    )
+    monkeypatch.setattr(
+        "qt.factor_eval_runner.factor_registry.build", lambda fid: factor
+    )
+    eval_started: list = []
+    monkeypatch.setattr(
+        "qt.factor_eval_runner.build_eval_service",
+        lambda *a, **k: eval_started.append(1),
+    )
+    with pytest.raises(ValueError, match="price_level"):
+        run_factor_eval("ignored.yaml", "volatility_20")
+    assert not eval_started  # the failure fired before any evaluation work
 
 
 def test_valley_price_quantile_runs_end_to_end_with_neutralization_section(
@@ -412,7 +458,8 @@ def _stub_exec_basis(report_dir, stem, with_book_suffix="", book_view=""):
         with_book_md=paths["with_book_md"], with_book_json=paths["with_book_json"],
         no_book_dashboard=paths["no_book_dashboard"],
         with_book_dashboard=paths["with_book_dashboard"],
-        no_book_metrics=dict(_METRICS), with_book_metrics=dict(_METRICS), elapsed=0.0,
+        no_book_metrics=dict(_METRICS_NO_BOOK),
+        with_book_metrics=dict(_METRICS_WITH_BOOK), elapsed=0.0,
     )
 
 
@@ -503,11 +550,14 @@ def test_run_appends_to_the_run_registry_after_bootstrapping_the_book(
     }
     assert all(r["status"] == "book" for r in seeds)
     assert run["factor_id"] == "jump_amount_corr_20"
-    assert run["status"] == "watch"  # the stub's with-book deployment is Watch
+    # D7-PR0 review F1: the status comes from the WITH-BOOK deployment (Watch ->
+    # watch); the stub's no-book deployment is Reject (-> exploratory), so a
+    # driver swap to the no-book metrics turns this red.
+    assert run["status"] == "watch"
     assert run["view"] == "decision"
     assert "book_mode=decision" in run["note"]
     assert "verdict_with_book=Watch" in run["note"]
-    assert "verdict_no_book=Watch" in run["note"]
+    assert "verdict_no_book=Reject" in run["note"]
     assert result.registry_status == "watch"
 
     run_factor_eval("ignored.yaml", "jump_amount_corr_20")

@@ -8,7 +8,11 @@ Two registries must never be conflated (design §3.4 R25):
 The run registry is a JSONL file (``<root>/registry.jsonl``). JSONL because
 verdicts/status are APPEND-ONLY (#74: a record's meaning changes across contract
 versions, so overwriting would drop the trajectory); each ``append`` writes ONE
-line and never rewrites the file.
+line and never rewrites the file. Appends are NOT lock-guarded (disclosed, D7-PR0
+review F3): two concurrent first runs against an EMPTY registry could both seed
+the bootstrap book lines, but that is benign — the book-set assertion reads the
+log latest-record-wins (``qt.factor_eval_registry.current_book_set``), so
+duplicate seed lines cannot change the asserted set.
 
 NO-SECRET CONTRACT (R22): a registry line stores ONLY factor_id / params hash /
 code hash / view / status / endpoint NAMES / the adjustment + schema-version
