@@ -54,8 +54,15 @@ legacy ``eval_{name}``), so new and legacy artifacts coexist and can never
 overwrite each other (the compare_postmerge lesson). In ``close`` book mode
 the with-book artifacts gain a ``_bookclose`` suffix for the same reason.
 
-RunRegistry appends are a DELIBERATE DEFERRAL to D7's governance surface: this
-runner writes its artifacts but does not register runs.
+RUN REGISTRY (D7-PR0): each run is appended to the run registry
+(``factors.store.run_registry``) under the factor store root — view=decision,
+basis=exec_to_exec, status from the explicit mapping in
+``qt.factor_eval_registry`` (book member -> ``book``; Watch -> ``watch``;
+Reject / INSUFFICIENT-DATA -> ``exploratory``; Adopt is unreachable and
+refused). At startup the runner seeds-or-asserts the book
+(:func:`qt.factor_eval_registry.sync_book_registry`): an empty registry is
+seeded from ``BOOK_IDS``; a non-empty one must agree with it exactly, or the
+run fails readably before any evaluation work.
 
 ``valley_price_quantile`` IS served (PR-C4b): its per-symbol ``raw_qbar``
 intermediate rides the same store read-through as every other factor, and its
@@ -91,6 +98,7 @@ from factors.compute.minute.valley_price_quantile import (
     reversal_20,
 )
 from factors.spec import FactorSpec
+from factors.store import RunRegistry, data_fingerprint, store_key
 from qt.config import RootConfig, load_config
 from qt.exec_basis_eval import ExecBasisEvaluation, run_exec_basis_evaluation
 from qt.factor_eval_disclosures import (
@@ -101,6 +109,7 @@ from qt.factor_eval_disclosures import (
     to_section,
 )
 from qt.factor_eval_providers import EvalServiceBundle, build_eval_service
+from qt.factor_eval_registry import status_for_run, sync_book_registry
 from qt.pipeline import _make_logger, _process_factors
 
 _LOGGER_NAME = "qt.factor_eval_runner"
@@ -386,6 +395,7 @@ class FactorEvalResult:
     minute_live_calls: int
     coverage: object | None  # a qt.factor_eval_disclosures coverage, when published
     exec_basis: ExecBasisEvaluation
+    registry_status: str  # the status this run appended to the run registry (D7-PR0)
     log_path: Path
     elapsed: float
 
@@ -404,6 +414,14 @@ def run_factor_eval(
     _check_config_book(cfg)
     factor = factor_registry.build(factor_id)
     spec = factor.spec
+
+    # D7-PR0 review F4 — fail-fast: precompute the run-registry key + fingerprint
+    # at the STARTUP gate, before any evaluation work. A price_level factor's
+    # fingerprint needs the per-symbol adj-factor event table, which an eval run
+    # does not carry, so it must raise HERE — not after a full evaluation.
+    run_key = store_key(factor, view=View.DECISION.value, params=None)
+    run_fingerprint = data_fingerprint(adjustment=spec.adjustment)
+
     eval_cfg = _build_eval_config(cfg)
 
     log_path = Path(cfg.output.log_dir) / f"factor_eval_{factor_id}.log"
@@ -418,6 +436,14 @@ def run_factor_eval(
     # modes (in 'decision' mode the materializer's daily provider serves this
     # same enriched panel to ValueFactor.compute).
     bundle = build_eval_service(cfg, logger, value_factors=_build_book_factors())
+
+    # D7-PR0 startup gate: seed-or-assert the run registry's book against the
+    # code-declared BOOK_IDS BEFORE any evaluation work (an empty registry is
+    # seeded from BOOK_IDS; a non-empty one must already agree with it).
+    registry = RunRegistry(bundle.store.root)
+    book_state = sync_book_registry(registry, book_ids=BOOK_IDS)
+    logger.info("run registry book %s: %s", book_state, sorted(BOOK_IDS))
+
     decisions = _decisions(bundle.panel)
 
     # Subject: the service panel. The diagnostics sink rides along only for the
@@ -490,6 +516,32 @@ def run_factor_eval(
         exec_basis.with_book_metrics["incremental"],
     )
 
+    # D7-PR0 run-registry append: the WITH-BOOK deployment drives the status
+    # (it is the three-axis verdict — Predictive + Incremental + Tradable; the
+    # no-book run leaves Incremental NOT_ASSESSED). Both deployments ride in the
+    # note. The key/fingerprint were precomputed at the startup gate (F4
+    # fail-fast); they mirror the subject's decision-view service read
+    # (params=None, the registry-default params this runner always uses).
+    status = status_for_run(
+        factor_id, exec_basis.with_book_metrics["deployment"], book_ids=BOOK_IDS
+    )
+    record = registry.append_run(
+        key=run_key,
+        factor=factor,
+        status=status,
+        fingerprint=run_fingerprint,
+        note=(
+            f"run-factor-eval factor={factor_id} book_mode={book_mode} "
+            f"universe={eval_cfg.universe} "
+            f"window={eval_cfg.start}..{eval_cfg.end} "
+            f"oos_split={eval_cfg.oos_split} "
+            f"verdict_no_book={exec_basis.no_book_metrics['deployment']} "
+            f"verdict_with_book={exec_basis.with_book_metrics['deployment']} "
+            f"status={status}"
+        ),
+    )
+    logger.info("run registry: appended factor=%s status=%s", record.factor_id, status)
+
     return FactorEvalResult(
         config=cfg,
         spec=spec,
@@ -502,6 +554,7 @@ def run_factor_eval(
         minute_live_calls=int(getattr(bundle.sources.minute, "live_calls", 0)),
         coverage=coverage,
         exec_basis=exec_basis,
+        registry_status=status,
         log_path=log_path,
         elapsed=time.monotonic() - started,
     )

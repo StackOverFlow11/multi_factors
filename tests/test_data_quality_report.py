@@ -136,6 +136,28 @@ def test_token_kv_value_redacted():
     assert "abc123secret" not in out
 
 
+def test_tushare_token_kv_value_is_redacted():
+    """D7-PR0 review F2: the `tushare.token=<value>` form leaked the value on
+    main (the bare-key pattern ran first and destroyed the `token=` context)."""
+    token = "abcd1234deadbeefabcd1234deadbeef"  # a scan target, not a real secret
+    for form in (f"tushare.token={token}", f"tushare.token: {token}"):
+        out = sanitize_text(form)
+        assert token not in out, form
+        assert "[REDACTED]" in out, form
+
+
+def test_token_kv_both_separator_forms_are_redacted():
+    token = "abcd1234deadbeefabcd1234deadbeef"  # a scan target, not a real secret
+    assert token not in sanitize_text(f"token={token}")
+    assert token not in sanitize_text(f"token: {token}")
+
+
+def test_config_json_path_is_redacted():
+    out = sanitize_text(f"see {_SECRET_PATH} for the key")
+    assert ".config.json" not in out
+    assert "[REDACTED]" in out
+
+
 def test_benign_values_still_render():
     f = make_finding(
         "market_daily", "high_lt_low", HARD, 1,

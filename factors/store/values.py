@@ -73,6 +73,12 @@ class FactorValueStore:
     def __init__(self, root: str | Path) -> None:
         self._root = Path(root)
 
+    @property
+    def root(self) -> Path:
+        """The store root (``values/``, ``.locks/`` and the run registry's
+        ``registry.jsonl`` all live under it)."""
+        return self._root
+
     # -- paths ------------------------------------------------------------- #
     @property
     def values_root(self) -> Path:
