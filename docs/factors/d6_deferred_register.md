@@ -81,11 +81,26 @@ runners through the service.
 
 ## D6a-2 — the enrichment dispatch still uses `isinstance`
 
-**Status:** deferred. **Owner:** D6d (or its own PR).
+**Status:** DISPOSED (own PR, `fix/factor-requires-declarative-enrich`). The
+dispatch now reads the factors' DECLARED requirements: the enabled factors'
+`spec.requires` are unioned through the new
+`factors.registry.requirements_of(factors)` (the ONE aggregation loop —
+`FactorRegistry.requirements(names, params)` builds-then-delegates to it, so
+the shopping list still has a single definition), and a source-endpoint ->
+enricher route consumes it: a `fina_indicator` requirement triggers the fina
+enrichment (column = the declared source field); a `daily_basic` `pe`/`pb`
+requirement triggers the value enrichment, routed to the DERIVED
+`value_ep`/`value_bp` column by inverting
+`factors.compute.candidates.VALUE_SOURCE_FIELDS` (public now; authored once,
+so declaration and enrichment column cannot drift). All three former
+isinstance sites (`qt/pipeline.py` x2, `qt/phase2_baseline.py` x1) go through
+it. Behaviour equivalence, declaration-driven proof (a non-FinancialFactor /
+non-ValueFactor declaring the requirement gets enriched unchanged), and
+two-direction mutation evidence: `tests/test_enrichment_routing.py`.
 
-`qt/pipeline.py::_maybe_enrich_financials` and `::_maybe_enrich_value` decide
-which columns to fetch by testing `isinstance(f, FinancialFactor)` /
-`isinstance(f, ValueFactor)`. That is the pattern red line #5 forbids
+`qt/pipeline.py::_maybe_enrich_financials` and `::_maybe_enrich_value` **used
+to** decide which columns to fetch by testing `isinstance(f, FinancialFactor)` /
+`isinstance(f, ValueFactor)`. That was the pattern red line #5 forbids
 ("依赖显式声明，编排通用消费"), and the declaration it should be reading
 already exists and is already correct:
 
@@ -93,13 +108,15 @@ already exists and is already correct:
 * `ValueFactor.spec.requires == (PanelField(pe|pb, source=DAILY_BASIC),)`
 
 and `factors.registry.requirements(names, params)` — whose own docstring calls
-itself "the D4 materializer's one-stop shopping list" — has **zero production
-callers**.
+itself "the D4 materializer's one-stop shopping list" — had **zero production
+callers** before this PR (the pipeline's enrichment routing is now the first
+production consumer of the same aggregation, via `requirements_of`).
 
-**Note this is a pre-existing violation, not one D6a introduced.** Converting the
-dispatch needs a source-endpoint → enricher routing (the `requires` name the
-*source* field `pe`, while the enricher writes the *derived* column `value_ep`),
-so it is a real change with its own behaviour surface, not a rename.
+**Note this was a pre-existing violation, not one D6a introduced.** Converting
+the dispatch needed a source-endpoint -> enricher routing (the `requires` name
+the *source* field `pe`, while the enricher writes the *derived* column
+`value_ep`), so it was a real change with its own behaviour surface, not a
+rename.
 
 ---
 

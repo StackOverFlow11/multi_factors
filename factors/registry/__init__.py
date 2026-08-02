@@ -14,6 +14,7 @@ from factors.registry.registry import (
     build,
     register,
     requirements,
+    requirements_of,
     require_legal_pairing,
     resolve,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "build",
     "register",
     "requirements",
+    "requirements_of",
     "require_legal_pairing",
     "resolve",
 ]

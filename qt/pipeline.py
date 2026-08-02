@@ -40,6 +40,7 @@ from analytics.alphalens_adapter import alphalens_factor_metrics
 from analytics.factor import compute_ic, forward_returns, ic_summary, quantile_returns
 from analytics.performance import performance_summary
 from analytics.quantstats_adapter import quantstats_performance
+from data.availability_policy import DAILY_BASIC, FINA_INDICATOR
 from data.clean.adjust import front_adjust
 from data.clean.covariates import enrich_covariates, enrich_listing, enrich_pit_industry
 from data.clean.pit_industry import asof_industry
@@ -54,9 +55,8 @@ from data.feed.tushare_fina import TushareFinancialFeed
 from data.feed.tushare_flags import TushareFlagsFeed
 from data.store.panel_store import PanelStore
 from factors import registry as factor_registry
-from factors.compute.candidates import ValueFactor
+from factors.compute.candidates import VALUE_SOURCE_FIELDS
 from factors.compute.financial import SUPPORTED_FIELDS as SUPPORTED_FINANCIAL_FIELDS
-from factors.compute.financial import FinancialFactor
 from factors.process.orchestrate import covariates_from_panel, process_factor_panel
 from portfolio.construct import TopNEqualWeight
 from qt.config import RootConfig, load_config
@@ -801,6 +801,44 @@ def _build_factors(cfg: RootConfig) -> list:
     return factors
 
 
+# Source-endpoint -> enricher routing (D6a-2, red line #5: declared, not
+# isinstance-dispatched). A factor's ``spec.requires`` names the SOURCE field it
+# needs (``pe`` on ``daily_basic``); the enrichment writes the DERIVED panel
+# column (``value_ep``). The two namespaces are joined by inverting
+# ``factors.compute.candidates.VALUE_SOURCE_FIELDS`` — authored once there, so
+# the declaration and the enrichment column can never drift apart.
+_VALUE_DERIVED_FIELD: dict[str, str] = {v: k for k, v in VALUE_SOURCE_FIELDS.items()}
+
+
+def _declared_fina_fields(factors: list) -> list[str]:
+    """fina_indicator fields the enabled factors DECLARE in ``spec.requires``.
+
+    First-seen order across the factor list, deduplicated (one batched fetch).
+    Replaces the retired ``isinstance(f, FinancialFactor)`` dispatch: any factor
+    — of any class — whose declared requirements touch the ``fina_indicator``
+    endpoint is enriched, and only those.
+    """
+    return [
+        r.field
+        for r in factor_registry.requirements_of(factors)
+        if r.source == FINA_INDICATOR
+    ]
+
+
+def _declared_value_fields(factors: list) -> list[str]:
+    """Derived value columns implied by declared ``daily_basic`` pe/pb requires.
+
+    First-seen order, deduplicated. A ``daily_basic`` requirement on a field
+    with no derived value column (not pe/pb) routes nowhere — this enricher is
+    not its producer.
+    """
+    return [
+        _VALUE_DERIVED_FIELD[r.field]
+        for r in factor_registry.requirements_of(factors)
+        if r.source == DAILY_BASIC and r.field in _VALUE_DERIVED_FIELD
+    ]
+
+
 def _maybe_enrich_financials(
     cfg: RootConfig,
     panel: pd.DataFrame,
@@ -809,15 +847,16 @@ def _maybe_enrich_financials(
     logger: logging.Logger,
     cache=None,
 ) -> pd.DataFrame:
-    """Attach ann_date-aligned columns for ALL financial factors (single fetch).
+    """Attach ann_date-aligned columns for ALL declared fina fields (one fetch).
 
-    Every :class:`FinancialFactor` field among the enabled ``factors`` is fetched
-    in ONE ``fina_indicator`` pass and as-of aligned in ONE
-    :func:`asof_financials` call (P3-1) — no per-factor refetch. Financial factors
-    require the tushare data path: a demo run has no disclosure dates, so we fail
-    with a readable error rather than fabricate financials.
+    Every ``fina_indicator`` field the enabled ``factors`` declare in
+    ``spec.requires`` is fetched in ONE ``fina_indicator`` pass and as-of
+    aligned in ONE :func:`asof_financials` call (P3-1) — no per-factor refetch.
+    Financial factors require the tushare data path: a demo run has no
+    disclosure dates, so we fail with a readable error rather than fabricate
+    financials.
     """
-    fields = [f.name for f in factors if isinstance(f, FinancialFactor)]
+    fields = _declared_fina_fields(factors)
     if not fields:
         return panel
     if cfg.data.source != "tushare":
@@ -855,14 +894,14 @@ def _maybe_enrich_value(
     logger: logging.Logger,
     cache=None,
 ) -> pd.DataFrame:
-    """Attach value_ep / value_bp columns when value factors are enabled (P3-5).
+    """Attach value_ep / value_bp columns when factors declare pe/pb (P3-5).
 
     ONE daily_basic fetch covers both fields. The published pe/pb are same-day
     ratios (PIT-safe by construction); the inversion guards non-positive ratios
     to NaN (a negative or zero pe/pb would otherwise flip the value ranking).
     Demo has no pe/pb — a readable error, never fabricated ratios.
     """
-    fields = [f.name for f in factors if isinstance(f, ValueFactor)]
+    fields = _declared_value_fields(factors)
     if not fields:
         return panel
     if cfg.data.source != "tushare":
