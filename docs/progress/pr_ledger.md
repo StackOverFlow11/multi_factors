@@ -33,3 +33,7 @@
 | #124 | D6b：oos/subset/robustness 切 FactorService——S1 冷/S2 暖 vs 冻结基线全叶子 0 |
 | #126 | D6c PR-1：`mmp_ew`/`ret` 注册为正式因子 + I5 捕获 harness + `d6c_i5` 冻结基线（score 腿 6/6 max_abs_diff=0.0） |
 | #127 | D6c PR-2：intraday 两 runner 切 FactorService——S1 冷/S2 暖 × 6 配置 vs L1 全 12/12 n_diffs=0，执行面零改动 |
+| #128 | 进度文档（D6c） |
+| #129 | D6d PR-1：shim import 全 repoint 到 `factors.compute.minute.*` + 删 legacy 取数路径（`_serve_factor_panel` 成独一入口）+ 继任守卫 AST census |
+| #130 | D6d PR-2：删 10 shim + `intraday_derived` + aggregate 因子数学（R14 通用核纯态；store schema-version 一次失效实测 46 key 恰 6 变） |
+| #131 | D6d PR-3：新锚转正——`test_phase0_anchor.py` FINAL 全精度三级比对，删 4dp 旧锚断言（1-ulp mutation 验证不削弱门禁） |
