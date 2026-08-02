@@ -33,7 +33,9 @@ cannot see is worth less than no guard:
   it red too (that is how the census tells "no violations" apart from "the
   detector went blind").
 * WHAT IT STILL CANNOT SEE: a panel assembled by calling ``.compute`` outside
-  a comprehension (a plain for-loop appending columns), a call through a
+  a comprehension (a plain for-loop appending columns), a ``.compute`` call
+  hidden in a comprehension's ``if`` clause rather than its element
+  expression(s), a call through a
   dynamically built name (``getattr(obj, "_compute_" + "factor_panel")``), and
   anything in a file git ignores. No test here claims otherwise.
 
@@ -137,20 +139,22 @@ def _compute_comprehension_sites(tree: ast.AST) -> list[tuple[str, int]]:
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 visit(child, child.name)
                 continue
-            if isinstance(child, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            if isinstance(child, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
                 targets = {
                     t.id
                     for gen in child.generators
                     for t in ast.walk(gen.target)
                     if isinstance(t, ast.Name)
                 }
+                _elts = (child.elt,) if not isinstance(child, ast.DictComp) else (child.key, child.value)
                 if any(
                     isinstance(n, ast.Call)
                     and isinstance(n.func, ast.Attribute)
                     and n.func.attr == "compute"
                     and isinstance(n.func.value, ast.Name)
                     and n.func.value.id in targets
-                    for n in ast.walk(child.elt)
+                    for elt in _elts
+                    for n in ast.walk(elt)
                 ):
                     sites.append((function, child.lineno))
             visit(child, function)
