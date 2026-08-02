@@ -6,9 +6,13 @@ A stored factor value is only valid while the CODE that produced it is unchanged
 1. the factor's own module file;
 2. the ENUMERATED shared set every factor leans on:
    ``{factors.compute.minute.primitives, factors.compute.minute.binding,
-   factors.ops.*, factors.base, factors.spec}`` (the binding joined in D5 C4b —
-   it carries load-bearing value semantics the column-shape validation cannot
-   see);
+   factors.ops.*, factors.base, factors.spec, data.clean.pit_financials}``
+   (the binding joined in D5 C4b — it carries load-bearing value semantics the
+   column-shape validation cannot see; ``data.clean.pit_financials`` joined with
+   the same-day-disclosure tie-break fix — it decides WHICH fina record a
+   (trade_date, symbol) cell resolves to, value semantics for all three
+   financial factors, while their ``adjustment="none"`` declaration contributes
+   no adj-events fingerprint dimension that could see the change);
 3. the factor module's DIRECT project-internal imports that are NOT already in the
    shared set — folded ONE HOP, module-granular, derived from the AST (never a
    manual list, red line #6).
@@ -68,11 +72,21 @@ from factors.store.hashing import content_hash_of_labeled_files
 #: disclosed: the first fold changes all 11 minute factors' keys (and the daily
 #: factors' — the shared set is global), so a factor store filled before the
 #: fold is wholesale invalid and must be recomputed once.
+#: ``data.clean.pit_financials`` joined with the same-day-disclosure tie-break
+#: fix (2026-08): its as-of dedup decides WHICH fina record a (trade_date,
+#: symbol) cell resolves to — load-bearing value semantics for roe /
+#: netprofit_yoy / grossprofit_margin — yet no store-key dimension could see it
+#: (the financial factors declare ``adjustment="none"``, so the data fingerprint
+#: has no adj-events component for them). Same gap class as the binding fold.
+#: ONE-TIME EFFECT, disclosed: folding it here changes EVERY factor's key
+#: (the shared set is global), so a dev store filled before the fold is
+#: wholesale invalid and must be recomputed once (over-invalidate-safe).
 _SHARED_SET_SINGLE_MODULES: tuple[str, ...] = (
     "factors.compute.minute.primitives",
     "factors.compute.minute.binding",
     "factors.base",
     "factors.spec",
+    "data.clean.pit_financials",
 )
 _SHARED_SET_PACKAGES: tuple[str, ...] = ("factors.ops",)
 

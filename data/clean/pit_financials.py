@@ -45,8 +45,23 @@ def asof_financials(
     f["symbol"] = f["symbol"].astype(str)
     f["ann_date"] = pd.to_datetime(f["ann_date"].astype(str), format="%Y%m%d", errors="coerce")
     f = f.dropna(subset=["ann_date"])
-    # de-dup identical disclosures; keep the last record per (symbol, ann_date)
-    f = f.sort_values("ann_date").drop_duplicates(["symbol", "ann_date"], keep="last")
+    # De-dup same-day disclosures: several reports routinely share one
+    # (symbol, ann_date) — e.g. the FY annual and Q1 disclosed the same day.
+    # Among them the FRESHEST reporting period (latest end_date) wins: it is the
+    # newest information the trade date could know. The sort keys fully determine
+    # the order and the sort is STABLE, so the survivor is independent of the
+    # frame's size/composition/row order — the previous single-key
+    # ``sort_values("ann_date")`` (quicksort, unstable) let the survivor of a
+    # tied pair flip with the surrounding frame, so the same (trade_date,
+    # symbol) cell resolved to different fina records for different universes.
+    if "end_date" in f.columns:
+        f["end_date"] = pd.to_datetime(
+            f["end_date"].astype(str), format="%Y%m%d", errors="coerce"
+        )
+    else:
+        f["end_date"] = f["ann_date"]
+    f = f.sort_values(["ann_date", "end_date"], kind="stable", na_position="first")
+    f = f.drop_duplicates(["symbol", "ann_date"], keep="last")
 
     keys = pd.DataFrame(
         {
