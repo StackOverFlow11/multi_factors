@@ -30,7 +30,7 @@
 
 `.gitignore` 排除了 `tmp/`（仅保留 `tmp/framework/architecture.html`），所以下面这些**不在版本控制里**：
 
-- `tmp/design/HANDOFF_2026-07-30_claude_code.md` —— 当前唯一有效的执行交接（重构 D5 C5）
-- `tmp/context/cc_handoff_20260730_d5_c5/HANDOFF.md` —— F1–F5 的逐格实测证据
+- `archive/tmp/design/HANDOFF_2026-07-30_claude_code.md` —— 当前唯一有效的执行交接（重构 D5 C5；2026-08-03 随 PR #137 归档进 `archive/`）
+- `archive/tmp/context/cc_handoff_20260730_d5_c5/HANDOFF.md` —— F1–F5 的逐格实测证据（同上，已归档）
 - `tmp/design/factor_refactor_design_v3.md` —— 重构设计权威（红线 #1–#11 / 四腿对账 / D0–D7）
 - `tmp/design/RESULTS_post_pr75_2026-07-21.md`、`tmp/design/FINDING_adj_factor_seam_2026-07-21.md` —— 修正引擎重跑与除权审计的原始记录

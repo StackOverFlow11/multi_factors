@@ -15,17 +15,27 @@ field. Anything new joining the set fails here; anything leaving it fails here t
 
 WHAT IT FOUND
 -------------
-Six fields are truncated across the shipped corpus, and none of them is noise —
-every one is an explanatory caveat cut mid-sentence:
+Five fields are truncated across the shipped corpus, and none of them is noise —
+every one is an explanatory caveat cut mid-sentence. The corpus is every
+exported factor-eval report on disk, BOTH generations: the legacy ``eval_*.json``
+stem and the current unified-runner ``factor_eval_*.json`` stem (the PR #137
+follow-up extended the scan to the current generation after the legacy reports
+moved to ``archive/``; counts below are the measured values on the 39-file
+``factor_eval_*`` corpus on disk at that change):
 
-* ``spec.description`` — 44/44 artifacts;
-* ``section[return_risk].payload.monotonicity_spearman_by_date_ci_note`` — 44/44;
-* ``section[oos_generalization].payload.monotonicity_reversed_status`` — 44/44,
+* ``spec.description`` — 33/39 artifacts;
+* ``section[return_risk].payload.monotonicity_spearman_by_date_ci_note`` — 39/39;
+* ``section[oos_generalization].payload.monotonicity_reversed_status`` — 39/39,
   cut at "This evaluator scores ONE cell and cannot ...[truncated]", i.e. the half
   that states what the evaluator CANNOT do is the half that is gone;
-* ``section[caveats].payload.multiple_testing_note`` — 44/44;
-* ``section[purity].payload.vif_status`` — 22/44;
-* ``section[data_coverage].payload.forward_return_source`` — 20/44.
+* ``section[caveats].payload.multiple_testing_note`` — 39/39;
+* ``section[purity].payload.vif_status`` — 25/39.
+
+A sixth field, ``section[data_coverage].payload.forward_return_source`` (20/44 on
+the legacy corpus), is not truncated anywhere in the current generation, so it
+LEFT the recorded set when the corpus moved — caught by the exact-set guard
+below, which is precisely the record-keeping discipline this file exists to
+enforce, not a weakening of it.
 
 This predates the correctness fix (the frozen #79 baseline has it too), so it is
 recorded here rather than fixed here — see the PR notes for the cost comparison.
@@ -62,7 +72,6 @@ KNOWN_TRUNCATED_FIELDS: frozenset[str] = frozenset(
         "section[oos_generalization].payload.monotonicity_reversed_status",
         "section[caveats].payload.multiple_testing_note",
         "section[purity].payload.vif_status",
-        "section[data_coverage].payload.forward_return_source",
     }
 )
 
@@ -103,7 +112,16 @@ def _leaves(obj, path: str = ""):
 
 
 def _shipped_reports() -> list[pathlib.Path]:
-    return sorted(_REPORTS.glob("eval_*.json")) if _REPORTS.is_dir() else []
+    """Every exported factor-eval report on disk, BOTH generations.
+
+    ``eval_*`` is the legacy runner stem, ``factor_eval_*`` the current unified
+    runner's; the census covers whichever is on disk so a report of either
+    generation is scanned (the PR #137 follow-up added the current stem after
+    the legacy reports moved to ``archive/`` left this scan empty).
+    """
+    if not _REPORTS.is_dir():
+        return []
+    return sorted(set(_REPORTS.glob("eval_*.json")) | set(_REPORTS.glob("factor_eval_*.json")))
 
 
 def _census(paths) -> dict[str, int]:
@@ -118,7 +136,7 @@ def _census(paths) -> dict[str, int]:
 
 requires_corpus = pytest.mark.skipif(
     not _shipped_reports(),
-    reason="no eval_*.json on disk (artifacts/ is gitignored and run-generated)",
+    reason="no eval_*.json / factor_eval_*.json on disk (artifacts/ is gitignored and run-generated)",
 )
 
 
@@ -182,7 +200,13 @@ def test_a_corrected_factors_artifact_carries_the_whole_declaration_on_disk():
         doc = json.loads(path.read_text(encoding="utf-8"))
         assert doc["corrections"] == declared, f"{path.name} lost the declaration"
         checked += 1
-    assert checked >= 4, f"expected the 4 jump artifacts, checked {checked}"
+    # Non-vacuous guard: the pin tracks the shipped corpus. The current
+    # generation ships THREE jump artifacts (measured 2026-08-03:
+    # factor_eval_jump_amount_corr_20_exec_{no_book,with_book,
+    # with_book_bookclose}.json); the legacy corpus had four. Lowering the pin
+    # does not weaken the per-file assertion above — every jump artifact on
+    # disk is still compared against the declared corrections object.
+    assert checked >= 3, f"expected the 3 jump artifacts, checked {checked}"
 
 
 @requires_corpus
