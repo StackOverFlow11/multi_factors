@@ -7,6 +7,12 @@
 > `data/availability_policy.py`。本文只引用常量名与语义，不复述数值表——重复即是 #76/#78/#82
 > 那一类"行为变了而措辞没变"缺陷的温床。
 > **基线**：`main` @ `1f9d85e`。文中全部 `file:line` 与 `test 文件::测试名` 均在该基线上实读核对。
+>
+> ⚠️ **时效注记（2026-08-02，D6d 后补）**：文中引用的 `data/clean/intraday_*.py`（10 个 re-export
+> shim）与 `factors/compute/intraday_derived.py` 已在 **D6d（PR #130）删除**——这些 file:line 证据
+> 描述的是 D0 时的代码面，对应实体现在的家都在 `factors/compute/minute/`（一因子一文件）；
+> `data/clean/intraday_aggregate.py` 仍在但已去因子数学（R14 通用核纯态）。作为历史契约本文不逐行
+> 改写；分类学指派本身（adjustment / overnight_boundary / 性质编目）经 D1–D7 全程验证仍然成立。
 
 ---
 
