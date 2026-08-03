@@ -27,6 +27,10 @@ artifacts_local_phase0/
 *.h5
 data/**/*.csv
 
+# Local ground archive of non-current process artifacts (no git history by
+# design; frozen authorities live in artifacts/refactor_baseline/).
+/archive/
+
 # OS
 .DS_Store
 Thumbs.db
