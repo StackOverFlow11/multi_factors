@@ -29,9 +29,10 @@ panels 腿：同一 enriched panel 上 legacy `factor.compute(panel)` vs 服务�
 
 ## 二、数据面（冻结快照与隔离口径）
 
-- 快照：**主 checkout** 的 `tmp/context/d6b/cache_snapshot_daily/`（**不入 git、不进 refactor_baseline**）——
+- 快照：**主 checkout** 的 `archive/tmp/context/d6b/cache_snapshot_daily/`（**不入 git、不进 refactor_baseline**）——
   共享缓存的**日频 11 端点**（分钟数据不含，phase3 不需要）在某次 warm 后的 `cp -a`。
-  （捕获期曾位于 d6b-prep worktree 内，D6b 收口后已迁回主 checkout 同相对路径；worktree 已删除。）
+  （捕获期曾位于 d6b-prep worktree 内，D6b 收口后迁回主 checkout `tmp/context/d6b/` 同相对路径，
+  worktree 已删除；2026-08-03 随 PR #137 归档移至 `archive/` 下同相对路径。）
   ⚠️ **daily-only，勿复用于分钟口径**：分钟端点不在快照里，任何走 `TushareIntradayCache`
   的配置指到这里都会 miss 并静默转 live，隔离即破。
 - 隔离口径（两个旋钮都在 twin 配置里，属**运行期本地改动、不入 commit**）：
