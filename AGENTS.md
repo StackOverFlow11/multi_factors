@@ -76,11 +76,11 @@ data → universe → factors(特征) → alpha(合成/预测) → portfolio(+ri
 
 **因子层深度重构（设计 v3.2，D0–D7）全部收官（2026-08-02）。** 收官三步：**D6a-2（#133）** panel 富化从 isinstance 分派改声明式路由（红线 #5 最后一条豁免核销，`requirements_of` 迎来首个生产消费者；行为等价 fixture + 真数据 oos/subset 对账 n_diffs=0 ×2，评审 APPROVE）；**D7-PR0（#134）** run registry 首次接线（启动门 `sync_book_registry` + 评估后 append RunRecord，status 映射：Reject→exploratory 不是 retired——退役=显式人工决策）；**D7 全量重评估**（纯执行无代码 PR，2026-08-02）：14 因子 × {no_book, with_book} + 11 × bookclose，pilot + 24 run 全 rc=0、全程 `stk_mins_live_calls=0`，**三层对账零 STOP**——层 1 vs C5 快照 22 对全 0 差异 + MD 逐字节同、层 2 vs 冻结基线 22 次 reconcile 全 rc=0 零 unclassified（77/77 硬门每入口强制）、层 3 书因子裁决 **value_ep Reject / value_bp Reject / volatility_20 INS-DATA → 全 exploratory**（符号全对、强度不够 0.30 ICIR 门）。verdict 总表与 C5 快照**零变化**（Watch 7 / Reject 3 / INS-DATA 1）。registry 28 行 = 25 run + 3 seed（watch 14 / exploratory 8 / book 6）。**重构达成的架构统一：因子取数单一经 `factors.service`（FactorService 独一入口）、评估统一经 FactorEvalRunner（exec-only 统一 runner，11 个旧 runner 归零）、run registry 接线（每次评估留 RunRecord）。** 全量细节与三层对账证据见 `docs/progress/07_factor_layer_refactor.md` 收官条与 `tmp/context/d7/` 两份报告（tmp 不入 git，仅本机）。仍开放的 follow-up：fina_indicator 快照覆盖漂移（D6d 登记①，未结）；store key 无 cutoff 维（D6c 登记，runner guard 挡着，结构性修复未做）；未注册 score_feature 报错前置 fast-fail；`ret` 数学留 aggregate（R14 通用核）；HTML compendium 修订按 D7 结果单独立项；registry append 无锁（单写者假设）。研究侧诚实注记：因子簿三因子在 exec-only CSI500 评估面上过不了契约默认门（close 视图符号级确认 ≠ exec 视图过门，书身份不否定、照实披露）。
 
-> **接手必读（唯一入口）**：[`tmp/design/HANDOFF_2026-07-30_claude_code.md`](tmp/design/HANDOFF_2026-07-30_claude_code.md)
-> ——含当前截面、F1–F5 裁定速查表、六步路线、派发/评审/限额的具体操作法、陷阱清单。
-> 伴侣文档 `tmp/context/cc_handoff_20260730_d5_c5/HANDOFF.md`（**动手修 F1–F5 前必须整读其 §2**，逐格实测证据在那里）。
-> 设计权威 `tmp/design/factor_refactor_design_v3.md`（红线 #1–#11、四腿对账、D0–D7、实施期修订 A1/A2/A3）。
-> ⚠️ **`tmp/` 被 `.gitignore` 排除**——这三份文档只在本机，不在 git 里。
+> **接手必读（唯一入口）**：[`docs/progress/README.md`](docs/progress/README.md)（进度档案索引——按主题 grep，勿整读；PR 号查 `pr_ledger.md`）
+> ——当前截面以本文件「当前状态」表为准：D0–D7 已收官，`main` 是权威。
+> 设计权威 `tmp/design/factor_refactor_design_v3.md`（红线 #1–#11、四腿对账、D0–D7、实施期修订 A1/A2/A3，只在本机）。
+> 历史 HANDOFF / 任务卡 / 过程评审等文档已于 2026-08-03 归档至本机 `archive/`（映射与保留项见 `archive/README.md`）。
+> ⚠️ **`tmp/` 与 `archive/` 均被 `.gitignore` 排除**——只在本机，不在 git 里；tracked 历史用 `git log -- <旧路径>` 检索。
 
 ## 常设授权（owner 明确给过，不必逐项再确认）
 

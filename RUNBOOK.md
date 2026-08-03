@@ -469,7 +469,7 @@ Semantics worth knowing before reading the report:
   reproduce the P3-6 numbers exactly — the in-run no-drift check.
 - NOTE: every `run-phase3-subset` config writes
   `artifacts/reports/phase3_subset_validation.md` — a P3-7 run overwrites a
-  P3-6 report (regenerable; numbers live in CLAUDE.md/TEST_REPORT).
+  P3-6 report (regenerable; numbers recorded in docs/progress/01_phase0_3_daily_pipeline.md).
 
 ## Phase 3-8 — CSI500 independent generalization check (EXPLORATORY)
 

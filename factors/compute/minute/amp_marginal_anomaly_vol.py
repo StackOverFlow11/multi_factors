@@ -5,7 +5,8 @@ Reproduces the Changjiang high-frequency-factor series #19 (长江证券《高�
 derived from 5min bars (themselves DERIVED from the 1min cache).
 
 The source report is UNDER-SPECIFIED; the five choices below are deliberate,
-DISCLOSED interpretations pinned in the task card (task_card_pr_e_*.md §0), not tuned
+DISCLOSED interpretations pinned in the task card
+(``archive/tmp/design/task_card_pr_e_amp_marginal_anomaly_vol.md`` §0), not tuned
 knobs. They are reproduced verbatim on the factor spec so a reader can see exactly
 what was assumed:
 
